@@ -5,100 +5,153 @@
 {% block extra_css %}
 <link href="/static/vendor/leaflet.css" rel="stylesheet">
 <link href="/static/vendor/leaflet-gesture-handling.min.css" rel="stylesheet">
+<link href="/static/vendor/gridstack.min.css" rel="stylesheet">
 <link href="/static/css/pages/dashboard.css" rel="stylesheet">
 {% endblock %}
 
 {% block content %}
 <div id="wb-page-config" data-is-admin="{{ 'true' if user['is_admin'] else 'false' }}" class="d-none" aria-hidden="true"></div>
 <div class="container-fluid wb-page dashboard-page">
-<div class="wb-page-header">
+<div class="wb-page-header d-flex align-items-center justify-content-between flex-wrap gap-2">
     <h1 class="page-title compact-title"><span class="material-icons me-2" aria-hidden="true">dashboard</span>Dashboard</h1>
+    <div class="wb-dashboard-toolbar d-flex align-items-center gap-2">
+        <button id="wb-dashboard-edit-toggle" class="btn btn-outline-secondary d-inline-flex align-items-center gap-1" type="button">
+            <span class="material-icons" aria-hidden="true">tune</span>Edit dashboard
+        </button>
+        <button id="wb-dashboard-add-widget" class="btn btn-outline-secondary d-inline-flex align-items-center gap-1 d-none" type="button" data-bs-toggle="modal" data-bs-target="#wb-add-widget-modal">
+            <span class="material-icons" aria-hidden="true">edit</span>Edit widgets
+        </button>
+        <button id="wb-dashboard-reset-layout" class="btn btn-outline-secondary d-inline-flex align-items-center gap-1 d-none" type="button">
+            <span class="material-icons" aria-hidden="true">restart_alt</span>Reset layout
+        </button>
+        <button id="wb-dashboard-edit-done" class="btn btn-primary d-inline-flex align-items-center gap-1 d-none" type="button">
+            <span class="material-icons" aria-hidden="true">check</span>Done
+        </button>
+        <p class="wb-dashboard-edit-hint small text-secondary mb-0">Layout editing is available on larger screens.</p>
+    </div>
 </div>
-<div class="dashboard-page-body">
 
-<!-- Stats Cards + Network Gauges -->
-<div class="row g-3 dashboard-stats-row">
-    <!-- KPI Cards -->
-    <div class="col-12 col-xl-5 col-xxl-4">
-        <div class="dashboard-kpi-grid">
-            <div class="dashboard-kpi-tile">
-                <div class="card dashboard-kpi-card h-100">
-                    <div class="card-body">
-                        <div class="dashboard-kpi-header">
-                            <span class="material-icons dashboard-kpi-icon" aria-hidden="true">hub</span>
-                            <div class="dashboard-kpi-title">Nodes</div>
+<div class="grid-stack wb-dashboard-grid wb-dashboard-grid--loading" id="wb-dashboard-grid">
+
+    <!-- kpi-nodes -->
+    <div class="grid-stack-item" gs-id="kpi-nodes" gs-x="0" gs-y="0" gs-w="3" gs-h="2" gs-min-w="2" gs-min-h="2" data-widget-id="kpi-nodes">
+        <div class="grid-stack-item-content">
+            <div class="dashboard-widget-header d-none"><span class="dashboard-drag-handle material-icons" aria-hidden="true">drag_indicator</span></div>
+            <div class="card dashboard-kpi-card h-100">
+                <div class="card-body">
+                    <div class="dashboard-kpi-header">
+                        <span class="material-icons dashboard-kpi-icon" aria-hidden="true">hub</span>
+                        <div class="dashboard-kpi-title">Nodes</div>
+                    </div>
+
+                    <div class="dashboard-kpi-primary">
+                        <div class="dashboard-kpi-value" id="nodes-count">–</div>
+                    </div>
+
+                    <div class="dashboard-kpi-caption">Online</div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- kpi-connections -->
+    <div class="grid-stack-item" gs-id="kpi-connections" gs-x="3" gs-y="0" gs-w="3" gs-h="2" gs-min-w="2" gs-min-h="2" data-widget-id="kpi-connections">
+        <div class="grid-stack-item-content">
+            <div class="dashboard-widget-header d-none"><span class="dashboard-drag-handle material-icons" aria-hidden="true">drag_indicator</span></div>
+            <div class="card dashboard-kpi-card h-100">
+                <div class="card-body">
+                    <div class="dashboard-kpi-header">
+                        <span class="material-icons dashboard-kpi-icon" aria-hidden="true">cell_tower</span>
+                        <div class="dashboard-kpi-title">Connections</div>
+                    </div>
+
+                    <div class="dashboard-kpi-primary">
+                        <div class="dashboard-kpi-value" id="peers-count">–</div>
+                    </div>
+
+                    <div class="dashboard-kpi-caption" id="peers-count-label">Peers Online</div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- kpi-traffic -->
+    <div class="grid-stack-item" gs-id="kpi-traffic" gs-x="6" gs-y="0" gs-w="3" gs-h="2" gs-min-w="2" gs-min-h="2" data-widget-id="kpi-traffic">
+        <div class="grid-stack-item-content">
+            <div class="dashboard-widget-header d-none"><span class="dashboard-drag-handle material-icons" aria-hidden="true">drag_indicator</span></div>
+            <div class="card dashboard-kpi-card h-100">
+                <div class="card-body">
+                    <div class="dashboard-kpi-header">
+                        <span class="material-icons dashboard-kpi-icon" aria-hidden="true">swap_vert</span>
+                        <div class="dashboard-kpi-title">Traffic</div>
+                    </div>
+
+                    <div class="dashboard-kpi-stack">
+                        <div class="dashboard-kpi-metric dashboard-kpi-metric--down">
+                            <div class="dashboard-kpi-metric-value" id="total-rx">↓ –</div>
+                            <div class="dashboard-kpi-metric-label">Downloaded</div>
                         </div>
 
-                        <div class="dashboard-kpi-primary">
-                            <div class="dashboard-kpi-value" id="nodes-count">–</div>
-                        </div>
+                        <div class="dashboard-kpi-separator" aria-hidden="true"></div>
 
-                        <div class="dashboard-kpi-caption">Online</div>
+                        <div class="dashboard-kpi-metric dashboard-kpi-metric--up">
+                            <div class="dashboard-kpi-metric-value" id="total-tx">↑ –</div>
+                            <div class="dashboard-kpi-metric-label">Uploaded</div>
+                        </div>
                     </div>
                 </div>
             </div>
+        </div>
+    </div>
 
-            <div class="dashboard-kpi-tile">
-                <div class="card dashboard-kpi-card h-100">
-                    <div class="card-body">
-                        <div class="dashboard-kpi-header">
-                            <span class="material-icons dashboard-kpi-icon" aria-hidden="true">cell_tower</span>
-                            <div class="dashboard-kpi-title">Connections</div>
-                        </div>
-
-                        <div class="dashboard-kpi-primary">
-                            <div class="dashboard-kpi-value" id="peers-count">–</div>
-                        </div>
-
-                        <div class="dashboard-kpi-caption" id="peers-count-label">Peers Online</div>
+    <!-- kpi-bandwidth -->
+    <div class="grid-stack-item" gs-id="kpi-bandwidth" gs-x="9" gs-y="0" gs-w="3" gs-h="2" gs-min-w="2" gs-min-h="2" data-widget-id="kpi-bandwidth">
+        <div class="grid-stack-item-content">
+            <div class="dashboard-widget-header d-none"><span class="dashboard-drag-handle material-icons" aria-hidden="true">drag_indicator</span></div>
+            <div class="card dashboard-kpi-card h-100">
+                <div class="card-body">
+                    <div class="dashboard-kpi-header">
+                        <span class="material-icons dashboard-kpi-icon" aria-hidden="true">speed</span>
+                        <div class="dashboard-kpi-title">Bandwidth</div>
                     </div>
-                </div>
-            </div>
 
-            <div class="dashboard-kpi-tile">
-                <div class="card dashboard-kpi-card h-100">
-                    <div class="card-body">
-                        <div class="dashboard-kpi-header">
-                            <span class="material-icons dashboard-kpi-icon" aria-hidden="true">swap_vert</span>
-                            <div class="dashboard-kpi-title">Traffic</div>
+                    <div class="dashboard-kpi-stack">
+                        <div class="dashboard-kpi-metric dashboard-kpi-metric--down">
+                            <div class="dashboard-kpi-metric-value" id="speedtest-download">–</div>
+                            <div class="dashboard-kpi-metric-label">Download</div>
                         </div>
 
-                        <div class="dashboard-kpi-stack">
-                            <div class="dashboard-kpi-metric dashboard-kpi-metric--down">
-                                <div class="dashboard-kpi-metric-value" id="total-rx">↓ –</div>
-                                <div class="dashboard-kpi-metric-label">Downloaded</div>
-                            </div>
+                        <div class="dashboard-kpi-separator" aria-hidden="true"></div>
 
-                            <div class="dashboard-kpi-separator" aria-hidden="true"></div>
-
-                            <div class="dashboard-kpi-metric dashboard-kpi-metric--up">
-                                <div class="dashboard-kpi-metric-value" id="total-tx">↑ –</div>
-                                <div class="dashboard-kpi-metric-label">Uploaded</div>
-                            </div>
+                        <div class="dashboard-kpi-metric dashboard-kpi-metric--up">
+                            <div class="dashboard-kpi-metric-value" id="speedtest-upload">–</div>
+                            <div class="dashboard-kpi-metric-label">Upload</div>
                         </div>
                     </div>
                 </div>
             </div>
+        </div>
+    </div>
 
-            <div class="dashboard-kpi-tile">
-                <div class="card dashboard-kpi-card h-100">
-                    <div class="card-body">
-                        <div class="dashboard-kpi-header">
-                            <span class="material-icons dashboard-kpi-icon" aria-hidden="true">speed</span>
-                            <div class="dashboard-kpi-title">Bandwidth</div>
-                        </div>
-
-                        <div class="dashboard-kpi-stack">
-                            <div class="dashboard-kpi-metric dashboard-kpi-metric--down">
-                                <div class="dashboard-kpi-metric-value" id="speedtest-download">–</div>
-                                <div class="dashboard-kpi-metric-label">Download</div>
-                            </div>
-
-                            <div class="dashboard-kpi-separator" aria-hidden="true"></div>
-
-                            <div class="dashboard-kpi-metric dashboard-kpi-metric--up">
-                                <div class="dashboard-kpi-metric-value" id="speedtest-upload">–</div>
-                                <div class="dashboard-kpi-metric-label">Upload</div>
+    <!-- network-gauges -->
+    <div class="grid-stack-item" gs-id="network-gauges" gs-x="0" gs-y="2" gs-w="8" gs-h="5" gs-min-w="4" gs-min-h="3" data-widget-id="network-gauges">
+        <div class="grid-stack-item-content">
+            <div class="dashboard-widget-header d-none"><span class="dashboard-drag-handle material-icons" aria-hidden="true">drag_indicator</span></div>
+            <div class="card h-100">
+                <div class="card-header">
+                    <div class="d-flex justify-content-between align-items-center flex-wrap gap-2">
+                        <h2 class="h5 mb-0">
+                            <span class="material-icons align-middle me-1" aria-hidden="true">speed</span>
+                            Network
+                        </h2>
+                        <span class="badge bg-secondary" id="network-stats-status">Loading...</span>
+                    </div>
+                </div>
+                <div class="card-body d-flex flex-column">
+                    <div id="network-gauges-container" class="network-gauges-grid w-100 flex-grow-1" tabindex="0" aria-label="Network gauges">
+                        <div class="text-center py-3">
+                            <div class="spinner-border spinner-border-sm text-primary" role="status">
+                                <span class="visually-hidden">Loading network stats...</span>
                             </div>
                         </div>
                     </div>
@@ -107,127 +160,126 @@
         </div>
     </div>
 
-    <!-- Network Throughput Gauges -->
-    <div class="col-12 col-xl-7 col-xxl-8">
-        <div class="card h-100">
-            <div class="card-header">
-                <div class="d-flex justify-content-between align-items-center flex-wrap gap-2">
+    <!-- speedtest-chart -->
+    <div class="grid-stack-item" gs-id="speedtest-chart" gs-x="8" gs-y="2" gs-w="4" gs-h="5" gs-min-w="3" gs-min-h="4" data-widget-id="speedtest-chart">
+        <div class="grid-stack-item-content">
+            <div class="dashboard-widget-header d-none"><span class="dashboard-drag-handle material-icons" aria-hidden="true">drag_indicator</span></div>
+            <div class="card speedtest-card h-100">
+                <div class="card-header d-flex justify-content-between align-items-center flex-wrap gap-2">
                     <h2 class="h5 mb-0">
                         <span class="material-icons align-middle me-1" aria-hidden="true">speed</span>
-                        Network
+                        Speedtest
                     </h2>
-                    <span class="badge bg-secondary" id="network-stats-status">Loading...</span>
+                    <div class="d-flex gap-2 align-items-center">
+                        <select id="speedtest-node" class="form-select form-select-sm speedtest-node-select" aria-label="Filter by node" data-ui-component="speedtest-controls" data-ui-density="compact" data-ui-importance="secondary">
+                            <option value="" selected>Master</option>
+                            <option value="all">All Nodes</option>
+                        </select>
+                        <select id="speedtest-range" class="form-select form-select-sm speedtest-range-select" aria-label="Select time range" data-ui-component="speedtest-controls" data-ui-density="compact" data-ui-importance="secondary">
+                            <option value="7d" selected>7 d</option>
+                            <option value="30d">30 d</option>
+                            <option value="90d">90 d</option>
+                            <option value="180d">180 d</option>
+                            <option value="y1">1 y</option>
+                        </select>
+                    </div>
+                </div>
+                <div class="card-body">
+                    <span class="visually-hidden" id="speedtest-chart-summary" aria-live="polite">Loading bandwidth history…</span>
+                    <div class="speedtest-chart-wrap">
+                        <canvas id="speedtest-chart" role="img" aria-label="Bandwidth history"
+                            aria-describedby="speedtest-chart-summary"></canvas>
+                        <div id="speedtest-chart-empty" class="chart-empty-state wb-empty-state-overlay d-none">
+                            <span class="material-icons" aria-hidden="true">show_chart</span>
+                            <span class="chart-empty-state-text">No Data Available</span>
+                        </div>
+                    </div>
+                    <div id="speedtest-last-run" class="text-muted small mt-2 d-none">
+                        <span class="material-icons align-middle me-1 speedtest-last-icon" aria-hidden="true">schedule</span>
+                        Last run: <span id="speedtest-last-ts">–</span>
+                    </div>
                 </div>
             </div>
-            <div class="card-body d-flex flex-column">
-                <div id="network-gauges-container" class="network-gauges-grid w-100 flex-grow-1" tabindex="0" aria-label="Network gauges">
-                    <div class="text-center py-3">
-                        <div class="spinner-border spinner-border-sm text-primary" role="status">
-                            <span class="visually-hidden">Loading network stats...</span>
+        </div>
+    </div>
+
+    <!-- peer-map -->
+    <div class="grid-stack-item" gs-id="peer-map" gs-x="0" gs-y="7" gs-w="8" gs-h="8" gs-min-w="4" gs-min-h="5" data-widget-id="peer-map">
+        <div class="grid-stack-item-content">
+            <div class="dashboard-widget-header d-none"><span class="dashboard-drag-handle material-icons" aria-hidden="true">drag_indicator</span></div>
+            <div class="card h-100">
+                <div class="card-header">
+                    <div class="d-flex justify-content-between align-items-center flex-wrap gap-2">
+                        <h2 class="h5 mb-0">
+                            <span class="material-icons align-middle me-1" aria-hidden="true">public</span>
+                            Peer Locations
+                        </h2>
+                        <div class="d-flex gap-3 align-items-center map-kpis">
+                            <span class="map-kpi" title="Online Peers">
+                                <span class="material-icons icon-sm text-primary" aria-hidden="true">fiber_manual_record</span>
+                                <span id="map-kpi-online">0</span>
+                            </span>
+                            <span class="map-kpi" title="Total Locations">
+                                <span class="material-icons icon-sm text-muted" aria-hidden="true">place</span>
+                                <span id="map-kpi-total">0</span>
+                            </span>
+                            <span class="map-kpi d-none d-md-inline" title="Countries">
+                                <span class="material-icons icon-sm text-muted" aria-hidden="true">flag</span>
+                                <span id="map-kpi-countries">0</span>
+                            </span>
+                            <span id="peer-map-status" class="badge bg-secondary d-none d-md-inline" aria-live="polite">Loading…</span>
                         </div>
                     </div>
                 </div>
-            </div>
-        </div>
-    </div>
-</div>
-
-<!-- Map and Charts Row -->
-<div class="wb-main-grid dashboard-main-grid">
-    <!-- SPEEDTEST -->
-    <div class="dashboard-speedtest-col">
-        <div class="card speedtest-card">
-            <div class="card-header d-flex justify-content-between align-items-center flex-wrap gap-2">
-                <h2 class="h5 mb-0">
-                    <span class="material-icons align-middle me-1" aria-hidden="true">speed</span>
-                    Speedtest
-                </h2>
-                <div class="d-flex gap-2 align-items-center">
-                    <select id="speedtest-node" class="form-select form-select-sm speedtest-node-select" aria-label="Filter by node" data-ui-component="speedtest-controls" data-ui-density="compact" data-ui-importance="secondary">
-                        <option value="" selected>Master</option>
-                        <option value="all">All Nodes</option>
-                    </select>
-                    <select id="speedtest-range" class="form-select form-select-sm speedtest-range-select" aria-label="Select time range" data-ui-component="speedtest-controls" data-ui-density="compact" data-ui-importance="secondary">
-                        <option value="7d" selected>7 d</option>
-                        <option value="30d">30 d</option>
-                        <option value="90d">90 d</option>
-                        <option value="180d">180 d</option>
-                        <option value="y1">1 y</option>
-                    </select>
-                </div>
-            </div>
-            <div class="card-body">
-                <span class="visually-hidden" id="speedtest-chart-summary" aria-live="polite">Loading bandwidth history…</span>
-                <div class="speedtest-chart-wrap">
-                    <canvas id="speedtest-chart" role="img" aria-label="Bandwidth history"
-                        aria-describedby="speedtest-chart-summary"></canvas>
-                    <div id="speedtest-chart-empty" class="chart-empty-state wb-empty-state-overlay d-none">
-                        <span class="material-icons" aria-hidden="true">show_chart</span>
-                        <span class="chart-empty-state-text">No Data Available</span>
-                    </div>
-                </div>
-                <div id="speedtest-last-run" class="text-muted small mt-2 d-none">
-                    <span class="material-icons align-middle me-1 speedtest-last-icon" aria-hidden="true">schedule</span>
-                    Last run: <span id="speedtest-last-ts">–</span>
+                <div class="card-body p-0">
+                    <div id="peer-map" role="region" aria-label="Peer locations map"></div>
                 </div>
             </div>
         </div>
     </div>
 
-    <!-- MAP -->
-    <div class="dashboard-map-col">
-        <div class="card h-100">
-            <div class="card-header">
-                <div class="d-flex justify-content-between align-items-center flex-wrap gap-2">
+    <!-- recent-peers -->
+    <div class="grid-stack-item" gs-id="recent-peers" gs-x="8" gs-y="7" gs-w="4" gs-h="8" gs-min-w="3" gs-min-h="4" data-widget-id="recent-peers">
+        <div class="grid-stack-item-content">
+            <div class="dashboard-widget-header d-none"><span class="dashboard-drag-handle material-icons" aria-hidden="true">drag_indicator</span></div>
+            <div class="card d-flex flex-column recent-peers-card h-100">
+                <div class="card-header">
                     <h2 class="h5 mb-0">
-                        <span class="material-icons align-middle me-1" aria-hidden="true">public</span>
-                        Peer Locations
+                        <span class="material-icons align-middle me-1" aria-hidden="true">history</span>
+                        Recent Peer Activity
                     </h2>
-                    <div class="d-flex gap-3 align-items-center map-kpis">
-                        <span class="map-kpi" title="Online Peers">
-                            <span class="material-icons icon-sm text-primary" aria-hidden="true">fiber_manual_record</span>
-                            <span id="map-kpi-online">0</span>
-                        </span>
-                        <span class="map-kpi" title="Total Locations">
-                            <span class="material-icons icon-sm text-muted" aria-hidden="true">place</span>
-                            <span id="map-kpi-total">0</span>
-                        </span>
-                        <span class="map-kpi d-none d-md-inline" title="Countries">
-                            <span class="material-icons icon-sm text-muted" aria-hidden="true">flag</span>
-                            <span id="map-kpi-countries">0</span>
-                        </span>
-                        <span id="peer-map-status" class="badge bg-secondary d-none d-md-inline" aria-live="polite">Loading…</span>
-                    </div>
                 </div>
-            </div>
-            <div class="card-body p-0">
-                <div id="peer-map" role="region" aria-label="Peer locations map"></div>
-            </div>
-        </div>
-    </div>
-
-    <!-- RECENT PEERS -->
-    <div class="dashboard-recent-peers-col">
-        <div class="card d-flex flex-column recent-peers-card">
-            <div class="card-header">
-                <h2 class="h5 mb-0">
-                    <span class="material-icons align-middle me-1" aria-hidden="true">history</span>
-                    Recent Peer Activity
-                </h2>
-            </div>
-            <div class="card-body flex-grow-1" data-ui-lint-allow="nested-scroll" tabindex="0" aria-label="Recent peer activity list">
-                <div id="recent-peers">
-                    <div class="text-center py-4">
-                        <div class="spinner-border text-primary" role="status">
-                            <span class="visually-hidden">Loading...</span>
+                <div class="card-body flex-grow-1" data-ui-lint-allow="nested-scroll" tabindex="0" aria-label="Recent peer activity list">
+                    <div id="recent-peers">
+                        <div class="text-center py-4">
+                            <div class="spinner-border text-primary" role="status">
+                                <span class="visually-hidden">Loading...</span>
+                            </div>
                         </div>
                     </div>
                 </div>
             </div>
         </div>
     </div>
+
 </div>
 </div>
+
+<div id="wb-add-widget-modal" class="modal fade" tabindex="-1" aria-labelledby="wb-add-widget-title" aria-hidden="true">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2 id="wb-add-widget-title" class="modal-title h5">Edit widgets</h2>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+                <ul id="wb-add-widget-list" class="list-group"></ul>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Close</button>
+            </div>
+        </div>
+    </div>
 </div>
 
 {% endblock %}
@@ -235,5 +287,8 @@
 {% block extra_js %}
 <script src="/static/js/dashboard_traffic_shared.js"></script>
 <script src="/static/vendor/chart.umd.min.js"></script>
+<script src="/static/vendor/gridstack-all.js"></script>
+<script src="/static/js/dashboard_widgets.js"></script>
 <script src="/static/js/dashboard.js"></script>
+<script src="/static/js/dashboard_grid.js"></script>
 {% endblock %}

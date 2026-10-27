@@ -13,7 +13,7 @@ WireBuddy can be installed in several ways:
 | Method | Difficulty | Best For |
 |--------|-----------|----------|
 | [Docker Compose](#docker-compose-recommended) | ⭐ Easy | Production, most users |
-| [Docker Run](#docker-run) | ⭐⭐ Moderate | Custom setups |
+| [Docker Run](docker.md#docker-run) | ⭐⭐ Moderate | Custom setups |
 | [Local Development](#local-development) | ⭐⭐⭐ Advanced | Development, testing |
 
 ---
@@ -65,145 +65,16 @@ The easiest and most reliable way to run WireBuddy.
     sudo usermod -aG docker $USER
     ```
 
-### 2. System Configuration
+### 2. Install and start WireBuddy
 
-Enable IP forwarding (required for WireGuard):
-
-```bash
-sudo sysctl -w net.ipv4.conf.all.forwarding=1
-sudo sysctl -w net.ipv6.conf.all.forwarding=1
-```
-
-Make it persistent:
-
-```bash
-cat <<EOF | sudo tee /etc/sysctl.d/99-wireguard.conf
-net.ipv4.conf.all.forwarding = 1
-net.ipv6.conf.all.forwarding = 1
-EOF
-```
-
-Enable conntrack accounting for traffic analytics:
-
-```bash
-sudo sysctl -w net.netfilter.nf_conntrack_acct=1
-echo "net.netfilter.nf_conntrack_acct = 1" | sudo tee -a /etc/sysctl.d/99-wireguard.conf
-```
-
-### 3. Download WireBuddy
-
-```bash
-git clone https://github.com/Gill-Bates/wirebuddy.git
-cd wirebuddy
-```
-
-### 4. Configure Environment
-
-```bash
-cp .env-example .env
-```
-
-Generate a secure secret key:
-
-```bash
-openssl rand -base64 32
-```
-
-Edit `.env` and set:
-
-```bash
-WIREBUDDY_SECRET_KEY=your_generated_key_here
-LOG_LEVEL=INFO
-```
-
-### 5. Review Docker Compose Configuration
-
-The included `docker/docker-compose.yml`:
-
-```yaml
-services:
-  wirebuddy:
-    image: giiibates/wirebuddy:latest
-    container_name: wirebuddy
-    restart: always
-    stop_grace_period: 40s
-    network_mode: host  # Required for WireGuard
-    cap_drop:
-      - ALL
-    cap_add:
-      - NET_ADMIN          # WireGuard interfaces, iptables/nft rules
-      - NET_BIND_SERVICE   # Unbound binds the privileged DNS port 53
-      - SETUID             # Unbound drops privileges to the 'unbound' user
-      - SETGID
-      - CHOWN              # hands the DNS query log to that user
-      - DAC_OVERRIDE       # root writes into the unbound-owned log directory
-    environment:
-      WIREBUDDY_SECRET_KEY: "${WIREBUDDY_SECRET_KEY:?Set WIREBUDDY_SECRET_KEY in .env}"
-      WIREBUDDY_DATA_DIR: /app/data
-      WIREBUDDY_PORT: "${WIREBUDDY_PORT:-8000}"
-    devices:
-      - /dev/net/tun:/dev/net/tun
-    volumes:
-      - ./data:/app/data
-    security_opt:
-      - no-new-privileges:true
-```
+Follow the [Quick Start](quick-start.md) for the sysctl settings (IP
+forwarding, conntrack accounting), the `.env` file, the first start and the
+bootstrap credentials. The [Docker Setup](docker.md) guide covers the Compose
+file, its capabilities and security options, persistent data, health checks and
+`docker run`.
 
 !!! warning "Network Mode Host"
     WireBuddy requires `network_mode: host` to manage WireGuard interfaces and access conntrack statistics. This is a Linux-specific feature.
-
-### 6. Start WireBuddy
-
-```bash
-docker compose --env-file .env -f docker/docker-compose.yml up -d
-```
-
-View logs:
-
-```bash
-docker compose --env-file .env -f docker/docker-compose.yml logs -f wirebuddy
-```
-
-### 7. Access Web Interface
-
-Open your browser to:
-
-```
-http://localhost:8000
-```
-
-Bootstrap credentials on first boot:
-- Username: `admin`
-- Password: auto-generated on first start and printed to the container log — run `docker compose --env-file .env -f docker/docker-compose.yml logs wirebuddy` and look for the generated bootstrap password
-
-!!! danger "Change Default Password"
-    On first login WireBuddy redirects you to a mandatory password change screen; the temporary password is invalidated once you set a new one.
-
----
-
-## Docker Run
-
-For manual Docker container management:
-
-```bash
-docker run -d \
-  --name wirebuddy \
-  --network host \
-  --cap-drop ALL \
-  --cap-add NET_ADMIN \
-  --cap-add NET_BIND_SERVICE \
-  --cap-add SETUID \
-  --cap-add SETGID \
-  --cap-add CHOWN \
-  --cap-add DAC_OVERRIDE \
-  --security-opt no-new-privileges:true \
-  --device /dev/net/tun:/dev/net/tun \
-  -e WIREBUDDY_SECRET_KEY="your_secret_key_here" \
-  -e LOG_LEVEL=INFO \
-  -v $(pwd)/data:/app/data \
-  --restart unless-stopped \
-  giiibates/wirebuddy:latest
-```
 
 ---
 
@@ -284,7 +155,7 @@ WIREBUDDY_DEV_RELOAD=true
 
 ### 6. System Configuration
 
-Apply the same sysctl settings as in Docker installation:
+Apply the sysctl settings described in the [Quick Start](quick-start.md#step-3-enable-ip-forwarding):
 
 ```bash
 sudo sysctl -w net.ipv4.conf.all.forwarding=1
@@ -329,16 +200,7 @@ After installation, proceed with:
 
 ## Updating WireBuddy
 
-To update to the latest version:
-
-```bash
-cd wirebuddy
-docker compose --env-file .env -f docker/docker-compose.yml pull
-docker compose --env-file .env -f docker/docker-compose.yml up -d
-```
-
-!!! info "Data Persistence"
-    Your configuration and data are stored in `docker/data/` and persist across updates.
+See [Docker Setup: Updating](docker.md#updating).
 
 ## Reverse Proxy
 

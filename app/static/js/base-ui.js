@@ -99,15 +99,42 @@ document.addEventListener('DOMContentLoaded', function () {
         });
     }
 
-    // Bootstrap Modal Accessibility Fix
-    // Prevents ARIA warning when modal or its descendants have focus during hide
-    // Use event delegation on document to catch all modals (including dynamic ones)
+    const modalReturnFocus = new WeakMap();
+    document.addEventListener('show.bs.modal', function (event) {
+        const modal = event.target;
+        if (!(modal instanceof HTMLElement) || modal.id === 'wbReconnectModal') return;
+
+        const active = event.relatedTarget instanceof HTMLElement ? event.relatedTarget : document.activeElement;
+        if (!(active instanceof HTMLElement) || active === document.body || modal.contains(active)) return;
+        const dropdown = active.closest('.dropdown-menu')?.closest('.dropdown');
+        const dropdownToggle = dropdown?.querySelector('[data-bs-toggle="dropdown"]');
+        modalReturnFocus.set(modal, dropdownToggle || active);
+    });
+
+    // Blur before Bootstrap hides the modal, then restore the invoking control once hidden.
     document.addEventListener('hide.bs.modal', function (event) {
         const modal = event.target;
-        // If focus is on the modal itself or inside it, blur it
         if (document.activeElement === modal || modal.contains(document.activeElement)) {
             document.activeElement.blur();
         }
     }, true); // Use capture phase to ensure we run before Bootstrap
+
+    document.addEventListener('hidden.bs.modal', function (event) {
+        const modal = event.target;
+        if (!(modal instanceof HTMLElement)) return;
+        const target = modalReturnFocus.get(modal);
+        modalReturnFocus.delete(modal);
+        if (!target) return;
+
+        const openModal = document.querySelector('.modal.show');
+        if (openModal && !openModal.contains(target)) return;
+        const canFocus = element => element instanceof HTMLElement && element.isConnected
+            && !element.matches(':disabled') && element.getClientRects().length > 0;
+        const fallbackRoot = openModal || document.querySelector('main') || document;
+        const fallback = Array.from(fallbackRoot.querySelectorAll('button, a[href], input, select, textarea'))
+            .find(canFocus);
+        const returnTarget = canFocus(target) ? target : fallback;
+        returnTarget?.focus({ preventScroll: true });
+    });
 });
 

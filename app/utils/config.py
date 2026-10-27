@@ -35,7 +35,7 @@ _DEFAULT_TRUSTED_PROXY_CIDRS = "127.0.0.0/8,::1/128"
 IPNetwork = ipaddress.IPv4Network | ipaddress.IPv6Network
 
 
-def _parse_proxy_cidrs(raw: str) -> tuple[IPNetwork, ...]:
+def parse_proxy_cidrs(raw: str, source: str = "trusted-proxy") -> tuple[IPNetwork, ...]:
 	"""Parse a comma-separated CIDR list, skipping and logging invalid entries."""
 	networks: list[IPNetwork] = []
 	for item in (part.strip() for part in raw.split(",")):
@@ -44,7 +44,7 @@ def _parse_proxy_cidrs(raw: str) -> tuple[IPNetwork, ...]:
 		try:
 			networks.append(ipaddress.ip_network(item, strict=False))
 		except ValueError:
-			_log.warning("Ignoring invalid trusted-proxy CIDR entry: %r", item)
+			_log.warning("Ignoring invalid %s CIDR entry: %r", source, item)
 	return tuple(networks)
 
 
@@ -66,6 +66,10 @@ class Config:
 	# CIDRs of reverse proxies whose forwarded headers (X-Forwarded-*,
 	# client-cert fingerprint) are trusted. Empty tuple = trust nothing.
 	trusted_proxies: tuple[IPNetwork, ...] = field(default_factory=tuple)
+	# Opt-in: reject plaintext-HTTP authentication (user login and node
+	# bearer/enrollment auth) outright instead of only warning. Loopback stays
+	# exempt so local development over HTTP keeps working.
+	require_https_auth: bool = False
 
 	@property
 	def public_origin_hostname(self) -> str | None:
@@ -214,7 +218,9 @@ def load_config() -> Config:
 
 	public_origin = os.getenv("WIREBUDDY_PUBLIC_ORIGIN", "").strip()
 	trusted_proxies_raw = os.getenv("WIREBUDDY_TRUSTED_PROXIES", "").strip()
-	trusted_proxies = _parse_proxy_cidrs(trusted_proxies_raw) if trusted_proxies_raw else _parse_proxy_cidrs(_DEFAULT_TRUSTED_PROXY_CIDRS)
+	trusted_proxies = parse_proxy_cidrs(trusted_proxies_raw) if trusted_proxies_raw else parse_proxy_cidrs(_DEFAULT_TRUSTED_PROXY_CIDRS)
+
+	require_https_auth = os.getenv("WIREBUDDY_REQUIRE_HTTPS_AUTH", "").strip().lower() in ("true", "1", "yes")
 
 	return Config(
 		base_dir=base_dir,
@@ -226,6 +232,7 @@ def load_config() -> Config:
 		secret_key=secret_key,
 		public_origin=public_origin,
 		trusted_proxies=trusted_proxies,
+		require_https_auth=require_https_auth,
 	)
 
 

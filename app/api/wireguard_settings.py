@@ -24,7 +24,7 @@ from ..db.sqlite_settings import delete_setting, get_bool_setting, get_setting, 
 from ..dns import unbound_process as unbound
 from ..dns.unbound_config import write_local_data_overrides
 from ..utils.deps import get_config, get_conn
-from ..utils.rate_limit import RATE_LIMIT_CRITICAL, RATE_LIMIT_UI_HEAVY, limiter
+from ..utils.rate_limit import RATE_LIMIT_CRITICAL, RATE_LIMIT_UI_HEAVY, rate_limit
 from ..utils.vault import decrypt as vault_decrypt
 from ..utils.version import check_for_updates
 from .auth import get_current_user, require_admin
@@ -118,6 +118,8 @@ class WgSettingsPayload(BaseModel):
 	enable_status_page: bool | None = Field(None, description="Enable public internal status page")
 	enable_swagger: bool | None = Field(None, description="Enable Swagger API documentation")
 	traffic_analysis_enabled: bool | None = Field(None, description="Enable traffic country analysis")
+	# strict: reject bool and numeric strings so only a real integer is stored
+	peer_stale_months: int | None = Field(None, strict=True, ge=1, le=120, description="Months after which an inactive peer is marked stale")
 	gui_https_enabled: bool | None = Field(None, description="Terminate TLS directly on the GUI port (requires restart)")
 
 	def get_db_value(self, field: str) -> str | None:
@@ -365,7 +367,8 @@ def get_dns_for_peer(
 	If ``peer_address`` contains an IPv6 address and the interface has IPv6,
 	both IPv4 and IPv6 DNS servers are returned (comma-separated).
 
-	If ``use_adblocker`` is False, returns the configured default DNS servers.
+	If ``use_adblocker`` is False, returns the interface's configured ``dns``
+	value when set, otherwise the supplied default DNS servers.
 
 	Note: This is a synchronous function performing database I/O. Call it via
 	``run_in_threadpool`` from async request handlers.
@@ -373,15 +376,19 @@ def get_dns_for_peer(
 	Raises:
 		InterfaceConfigError: If interface is not found or has invalid address.
 	"""
-	if not use_adblocker:
-		return default_dns
-
-	# Get interface to extract gateway IP
 	iface = get_interface(conn, interface_name)
 	if not iface:
 		msg = f"Interface '{interface_name}' not found while resolving peer DNS"
 		_log.error(msg)
 		raise InterfaceConfigError(msg)
+
+	if not use_adblocker:
+		# Per-interface DNS takes precedence; the column is free text and may be
+		# NULL/empty, in which case fall back to the global default.
+		iface_dns = (iface["dns"] or "").strip()
+		return iface_dns or default_dns
+
+	# Get interface to extract gateway IP
 	if not iface["address"]:
 		msg = f"Interface '{interface_name}' has no IPv4 address for WireBuddy DNS"
 		_log.error(msg)
@@ -424,10 +431,8 @@ async def get_wg_settings(
 	return ok_response(data=result)
 
 
-@router.patch("/settings", response_model=OkResponse[WgSettingsUpdateResult])
-@limiter.limit(RATE_LIMIT_CRITICAL)
+@router.patch("/settings", response_model=OkResponse[WgSettingsUpdateResult], dependencies=[Depends(rate_limit(RATE_LIMIT_CRITICAL))])
 async def update_wg_settings(
-	request: Request,
 	payload: WgSettingsPayload,
 	_: sqlite3.Row = Depends(require_admin),
 	conn: sqlite3.Connection = Depends(get_conn),
@@ -507,8 +512,7 @@ async def update_wg_settings(
 	return ok_response(data=data)
 
 
-@router.get("/settings/psk", response_model=OkResponse[PskResponseData])
-@limiter.limit(RATE_LIMIT_UI_HEAVY)
+@router.get("/settings/psk", response_model=OkResponse[PskResponseData], dependencies=[Depends(rate_limit(RATE_LIMIT_UI_HEAVY))])
 async def get_global_psk(
 	request: Request,
 	_: sqlite3.Row = Depends(require_admin),
@@ -527,8 +531,7 @@ async def get_global_psk(
 	return ok_response(data={"masked": _mask_secret(plain)})
 
 
-@router.post("/settings/psk/reveal", response_model=OkResponse[PskRevealResponseData])
-@limiter.limit(RATE_LIMIT_CRITICAL)
+@router.post("/settings/psk/reveal", response_model=OkResponse[PskRevealResponseData], dependencies=[Depends(rate_limit(RATE_LIMIT_CRITICAL))])
 async def reveal_global_psk(
 	request: Request,
 	response: Response,
@@ -555,10 +558,8 @@ async def reveal_global_psk(
 	return ok_response(data={"key": plain, "masked": _mask_secret(plain)})
 
 
-@router.post("/settings/generate-psk", response_model=OkResponse[PskResponseData])
-@limiter.limit(RATE_LIMIT_CRITICAL)
+@router.post("/settings/generate-psk", response_model=OkResponse[PskResponseData], dependencies=[Depends(rate_limit(RATE_LIMIT_CRITICAL))])
 async def generate_global_psk(
-	request: Request,
 	_: sqlite3.Row = Depends(require_admin),
 	conn: sqlite3.Connection = Depends(get_conn),
 ):
@@ -573,10 +574,8 @@ async def generate_global_psk(
 	return ok_response(data={"masked": masked})
 
 
-@router.put("/settings/psk", response_model=OkResponse[PskResponseData])
-@limiter.limit(RATE_LIMIT_CRITICAL)
+@router.put("/settings/psk", response_model=OkResponse[PskResponseData], dependencies=[Depends(rate_limit(RATE_LIMIT_CRITICAL))])
 async def set_global_psk(
-	request: Request,
 	payload: GlobalPskPayload,
 	_: sqlite3.Row = Depends(require_admin),
 	conn: sqlite3.Connection = Depends(get_conn),
@@ -596,10 +595,8 @@ async def set_global_psk(
 	return ok_response(data={"masked": _mask_secret(psk)})
 
 
-@router.get("/settings/check-updates", response_model=OkResponse[UpdateInfoResponse])
-@limiter.limit(RATE_LIMIT_UI_HEAVY)
+@router.get("/settings/check-updates", response_model=OkResponse[UpdateInfoResponse], dependencies=[Depends(rate_limit(RATE_LIMIT_UI_HEAVY))])
 async def check_updates(
-	request: Request,
 	response: Response,
 	current_user: sqlite3.Row = Depends(get_current_user),
 	force: bool = Query(False, description="Bypass cache and check immediately"),

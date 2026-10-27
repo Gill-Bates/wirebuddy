@@ -14,10 +14,11 @@ helpers (sqlite_auth / sqlite_nodes) onto ``parse_db_timestamp``.
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta, timezone, tzinfo
+from pathlib import Path
 
 import pytest
 
-from app.utils.time import ensure_utc, parse_db_timestamp, parse_utc
+from app.utils.time import ensure_utc, parse_db_timestamp, parse_utc, to_utc_iso
 
 # ─── parse_utc ───────────────────────────────────────────────────────────────
 
@@ -136,3 +137,46 @@ def test_parse_db_timestamp_naive_policy_depends_on_representation_by_design():
 	same_instant = datetime(2026, 6, 15, 12, 0, 0)  # noqa: DTZ001 - naive input is the case under test
 	assert parse_db_timestamp(same_instant.isoformat()) is None
 	assert parse_db_timestamp(same_instant) == same_instant.replace(tzinfo=UTC)
+
+
+# ─── to_utc_iso (server -> browser wire format) ──────────────────────────────
+
+
+@pytest.mark.parametrize(
+	("value", "expected"),
+	[
+		(datetime(2026, 6, 15, 12, 0, 0, 123456, tzinfo=UTC), "2026-06-15T12:00:00.123Z"),
+		(datetime(2026, 6, 15, 12, 0, 0, tzinfo=timezone(timedelta(hours=2))), "2026-06-15T10:00:00.000Z"),
+		# Naive datetime and naive-less ISO string with offset both resolve to UTC.
+		(datetime(2026, 6, 15, 12, 0, 0), "2026-06-15T12:00:00.000Z"),  # noqa: DTZ001 - naive input is the case under test
+		("2026-06-15T12:00:00+02:00", "2026-06-15T10:00:00.000Z"),
+		(None, ""),
+		("garbage", ""),
+	],
+)
+def test_to_utc_iso(value, expected):
+	assert to_utc_iso(value) == expected
+
+
+def test_templates_do_not_format_datetimes_server_side():
+	"""Display formatting belongs to the browser (WBFormat); templates only emit UTC."""
+	templates = Path(__file__).resolve().parent.parent / "app" / "templates"
+	offenders = [
+		f"{path.relative_to(templates)}:{number}"
+		for path in templates.rglob("*.html")
+		for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1)
+		if ".strftime(" in line and "|utc_iso" not in line
+	]
+	assert offenders == []
+
+
+def test_utc_iso_filter_is_registered():
+	from app.api.frontend_shared import _jinja_templates
+
+	template = _jinja_templates.env.from_string("{{ value|utc_iso }}")
+	assert template.render(value=datetime(2026, 6, 15, 12, 0, 0, tzinfo=UTC)) == "2026-06-15T12:00:00.000Z"
+
+
+def test_users_template_uses_utc_iso_filter():
+	template = Path(__file__).resolve().parent.parent / "app" / "templates" / "users.html"
+	assert "|utc_iso" in template.read_text(encoding="utf-8")

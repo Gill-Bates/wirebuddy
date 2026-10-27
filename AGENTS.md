@@ -1,4 +1,4 @@
-<!-- Generated: 2026-09-21 | Updated: 2026-09-21 -->
+<!-- Generated: 2026-09-21 | Updated: 2026-10-27 -->
 
 # WireBuddy
 
@@ -10,7 +10,7 @@ WireBuddy is a self-hosted WireGuard management platform ("Use WireGuard with ea
 |------|-------------|
 | `run.py` | Local entry point: loads `.env`, then hands over to `app/server.py` (config, DB schema, uvicorn, HTTPS plus the port-80 ACME listener when built-in TLS is active). Not shipped in the Docker image |
 | `pyproject.toml` | Single source of truth for the release version and Python dependencies (runtime + `dev`/`docs` extras); also read by the Docker build |
-| `setup.conf` | Personal dev/deploy cheat sheet (venv setup, dev server, docker buildx). Contains secrets/credentials: never copy its values into docs, commits or output |
+| `setup.conf` | Personal dev/deploy cheat sheet (venv setup, dev server, docker buildx). Local only and git-ignored, not tracked. Contains secrets/credentials: never copy its values into docs, commits or output |
 | `.trivyignore` | Trivy exceptions for the image scan in `docker-build.yml`; each entry needs a reason and an `exp:` date (file kept even when empty) |
 | `Caddyfile` | Reverse-proxy/HTTPS configuration |
 | `CHANGELOG.md` | Release notes; update for user-visible changes |
@@ -23,9 +23,9 @@ WireBuddy is a self-hosted WireGuard management platform ("Use WireGuard with ea
 | `app/` | The application: API, DB layer, DNS, node sync, scheduled tasks, UI assets (see `app/AGENTS.md`) |
 | `docker/` | Dockerfile, entrypoint and compose files (see `docker/AGENTS.md`) |
 | `docs/` | User/developer documentation site sources (see `docs/AGENTS.md`) |
-| `tests/` | pytest suite for the backend (see `tests/AGENTS.md`) |
-| `tools/` | Developer tooling: the Playwright-based UI linter, a standalone Stylelint setup for the CSS, plus two CI helpers, `pyproject-deps.py` and `ci-seed-admin.py` (see `tools/AGENTS.md`) |
-| `.github/` | CI workflows (PR gate, release, docs, UI audit), screenshots and agent prompt files (see `.github/AGENTS.md`) |
+| `tests/` | pytest suite for the backend plus the `tests/e2e/` browser drivers (see `tests/AGENTS.md`) |
+| `tools/` | Developer tooling: the Playwright-based UI linter, a standalone Stylelint setup for the CSS, plus two helpers, `pyproject-deps.py` (CI) and `ci-seed-admin.py` (local audit seeding) (see `tools/AGENTS.md`) |
+| `.github/` | CI workflows (PR gate, release, docs), screenshots and agent prompt files (see `.github/AGENTS.md`) |
 
 ## For AI Agents
 
@@ -40,7 +40,8 @@ WireBuddy is a self-hosted WireGuard management platform ("Use WireGuard with ea
 - Backend: `pytest` from the repo root (tests in `tests/`). Gated on every PR by `.github/workflows/ci.yml`.
 - Lint: `ruff check .`; format: `ruff format .`, checked by `ruff format --check .` in CI. The **full** configured rule set gates every PR and the tree is at zero findings. Deliberate exemptions live in `pyproject.toml` with the reasoning beside each one; narrower cases carry a per-line `# noqa` naming the reason. Fix rather than exempt, and if a rule genuinely does not apply, annotate the line instead of widening the ignore list.
 - Container: `bash -n docker/entrypoint.sh` and `docker build --check -f docker/Dockerfile .`. Both gate PRs, because the image itself is only built from a release tag.
-- Frontend/UI: the Playwright audit needs a running instance, its own `npm install` and credentials from the environment — `cd tools/ui-lint && npm install && npm run install:browsers`, then `UI_LINT_USERNAME=... UI_LINT_PASSWORD=... npm run audit`. `run-ui-lint.mjs` aborts if either variable is unset; never hard-code them. On a fresh database seed the account first with `tools/ci-seed-admin.py`, or the first-boot bootstrap gate leaves every view unreachable — `tools/AGENTS.md` has the full recipe. See `tools/ui-lint/AGENTS.md` for the `UI_LINT_*` list. `.github/workflows/ui-audit.yml` runs this in CI but deliberately never blocks a PR.
+- Frontend/UI (preferred): browser checks run against an isolated throwaway instance with the central toolset, `PLAYWRIGHT_DIR=/opt/ux-test-tools PYTHON=.venv/bin/python node tests/e2e/<driver>.mjs <artifact-dir>` (`ui_lint_isolated.mjs`, `live_resize.mjs`, `ios_viewport_audit.mjs`; `PLAYWRIGHT_BROWSER`/`COLOR_SCHEME` select the matrix cell). See `tests/e2e/AGENTS.md`; Lightpanda is for fast non-visual DOM checks. Drivers are not part of `pytest`.
+- Frontend/UI (manual): the Playwright audit needs a running instance, its own `npm install` and credentials from the environment — `cd tools/ui-lint && npm install && npm run install:browsers`, then `UI_LINT_USERNAME=... UI_LINT_PASSWORD=... npm run audit`. `run-ui-lint.mjs` aborts if either variable is unset; never hard-code them. On a fresh database seed the account first with `tools/ci-seed-admin.py`, or the first-boot bootstrap gate leaves every view unreachable — `tools/AGENTS.md` has the full recipe. See `tools/ui-lint/AGENTS.md` for the `UI_LINT_*` list. UX/UI audits run only locally; no CI workflow runs them.
 
 ### Common Patterns
 - FastAPI routers in `app/api/`, data access in `app/db/sqlite_*.py`, cross-cutting helpers in `app/utils/`, background jobs in `app/tasks/`.

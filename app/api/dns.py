@@ -28,7 +28,7 @@ from pathlib import Path
 from typing import Literal
 from urllib.parse import urlparse
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field, field_validator
 from starlette.concurrency import run_in_threadpool
 
@@ -72,7 +72,7 @@ from ..utils.async_utils import spawn_tracked_task
 from ..utils.config import get_config
 from ..utils.deps import get_conn, get_dns_dir, get_tsdb_dir
 from ..utils.network import parse_ip_str
-from ..utils.rate_limit import RATE_LIMIT_HEAVY, limiter
+from ..utils.rate_limit import RATE_LIMIT_HEAVY, rate_limit
 from ..utils.time import parse_utc
 from .auth import get_current_user, require_admin
 from .response import OkResponse, ok_response
@@ -295,41 +295,22 @@ def _compute_trend_data_tsdb_sync(
 	"""Compute trend data from TSDB in a worker thread."""
 	now = datetime.now(UTC)
 	since = now - timedelta(hours=hours)
-	bucket_start = _make_bucket_start(bucket_minutes)
-	tsdb_limit = hours * 60 + 100
-	total_points = tsdb.query(
-		tsdb_dir,
-		peer_key=DNS_STATS_PEER_KEY,
-		metric=DNS_METRIC_TOTAL,
-		since=since,
-		until=now,
-		limit=tsdb_limit,
-	)
-	blocked_points = tsdb.query(
-		tsdb_dir,
-		peer_key=DNS_STATS_PEER_KEY,
-		metric=DNS_METRIC_BLOCKED,
-		since=since,
-		until=now,
-		limit=tsdb_limit,
-	)
+	# Bucketed streaming covers the whole window; a raw tsdb.query() would be
+	# capped at MAX_QUERY_POINTS and silently drop older minutes on long ranges.
+	bucket_seconds = bucket_minutes * 60
 	buckets: dict[datetime, dict[str, int]] = {}
-	for point in total_points:
-		if point.ts < since:
-			continue
-		bucket_ts = bucket_start(point.ts)
-		if bucket_ts not in buckets:
-			buckets[bucket_ts] = {"total": 0, "blocked": 0}
-		if isinstance(point.value, (int, float)):
-			buckets[bucket_ts]["total"] += int(point.value)
-	for point in blocked_points:
-		if point.ts < since:
-			continue
-		bucket_ts = bucket_start(point.ts)
-		if bucket_ts not in buckets:
-			buckets[bucket_ts] = {"total": 0, "blocked": 0}
-		if isinstance(point.value, (int, float)):
-			buckets[bucket_ts]["blocked"] += int(point.value)
+	for metric, field in ((DNS_METRIC_TOTAL, "total"), (DNS_METRIC_BLOCKED, "blocked")):
+		for point in tsdb.query_bucketed(
+			tsdb_dir,
+			peer_key=DNS_STATS_PEER_KEY,
+			metric=metric,
+			since=since,
+			until=now,
+			bucket_seconds=bucket_seconds,
+			reducer="sum",
+		):
+			counts = buckets.setdefault(point.ts, {"total": 0, "blocked": 0})
+			counts[field] += int(point.value)
 	return _build_trend_response(buckets, since, now, hours, bucket_minutes)
 
 
@@ -1052,10 +1033,8 @@ async def dns_trend(
 # ---------------------------------------------------------------------------
 
 
-@router.post("/start", response_model=OkResponse[dict[str, object] | None])
-@limiter.limit(RATE_LIMIT_HEAVY)
+@router.post("/start", response_model=OkResponse[dict[str, object] | None], dependencies=[Depends(rate_limit(RATE_LIMIT_HEAVY))])
 async def dns_start(
-	request: Request,
 	conn: sqlite3.Connection = Depends(get_conn),
 	_: sqlite3.Row = Depends(require_admin),
 ):
@@ -1067,10 +1046,8 @@ async def dns_start(
 	return await _control_dns_service(conn, unbound.start, set_enabled=True)
 
 
-@router.post("/stop", response_model=OkResponse[dict[str, object] | None])
-@limiter.limit(RATE_LIMIT_HEAVY)
+@router.post("/stop", response_model=OkResponse[dict[str, object] | None], dependencies=[Depends(rate_limit(RATE_LIMIT_HEAVY))])
 async def dns_stop(
-	request: Request,
 	conn: sqlite3.Connection = Depends(get_conn),
 	_: sqlite3.Row = Depends(require_admin),
 ):
@@ -1078,10 +1055,8 @@ async def dns_stop(
 	return await _control_dns_service(conn, unbound.stop, set_enabled=False)
 
 
-@router.post("/restart", response_model=OkResponse[dict[str, object] | None])
-@limiter.limit(RATE_LIMIT_HEAVY)
+@router.post("/restart", response_model=OkResponse[dict[str, object] | None], dependencies=[Depends(rate_limit(RATE_LIMIT_HEAVY))])
 async def dns_restart(
-	request: Request,
 	conn: sqlite3.Connection = Depends(get_conn),
 	_: sqlite3.Row = Depends(require_admin),
 ):
@@ -1104,10 +1079,8 @@ async def get_dns_config(
 	return ok_response(data=data)
 
 
-@router.post("/config", response_model=OkResponse[dict[str, object]])
-@limiter.limit(RATE_LIMIT_HEAVY)
+@router.post("/config", response_model=OkResponse[dict[str, object]], dependencies=[Depends(rate_limit(RATE_LIMIT_HEAVY))])
 async def update_dns_config(
-	request: Request,
 	payload: DnsConfigUpdate,
 	conn: sqlite3.Connection = Depends(get_conn),
 	dns_dir: Path = Depends(get_dns_dir),
@@ -1325,10 +1298,8 @@ async def get_blocklist_sources(
 	return ok_response(data=data)
 
 
-@router.post("/blocklist/sources", response_model=OkResponse[dict[str, object]])
-@limiter.limit(RATE_LIMIT_HEAVY)
+@router.post("/blocklist/sources", response_model=OkResponse[dict[str, object]], dependencies=[Depends(rate_limit(RATE_LIMIT_HEAVY))])
 async def set_blocklist_sources(
-	request: Request,
 	payload: BlocklistSourcesUpdate,
 	conn: sqlite3.Connection = Depends(get_conn),
 	_: sqlite3.Row = Depends(require_admin),
@@ -1378,10 +1349,8 @@ async def set_blocklist_sources(
 	)
 
 
-@router.post("/blocklist/update", response_model=OkResponse[dict[str, object]])
-@limiter.limit(RATE_LIMIT_HEAVY)
+@router.post("/blocklist/update", response_model=OkResponse[dict[str, object]], dependencies=[Depends(rate_limit(RATE_LIMIT_HEAVY))])
 async def update_blocklists(
-	request: Request,
 	payload: BlocklistUpdate | None = None,
 	conn: sqlite3.Connection = Depends(get_conn),
 	_: sqlite3.Row = Depends(require_admin),
@@ -1579,10 +1548,8 @@ async def get_custom_rules(
 	return ok_response(data=data)
 
 
-@router.patch("/custom-rules", response_model=OkResponse[dict[str, object]])
-@limiter.limit(RATE_LIMIT_HEAVY)
+@router.patch("/custom-rules", response_model=OkResponse[dict[str, object]], dependencies=[Depends(rate_limit(RATE_LIMIT_HEAVY))])
 async def update_custom_rules(
-	request: Request,
 	payload: CustomRulesUpdate,
 	conn: sqlite3.Connection = Depends(get_conn),
 	_: sqlite3.Row = Depends(require_admin),
@@ -1648,10 +1615,8 @@ async def update_custom_rules(
 	)
 
 
-@router.post("/custom-rules/actions", response_model=OkResponse[dict[str, object]])
-@limiter.limit(RATE_LIMIT_HEAVY)
+@router.post("/custom-rules/actions", response_model=OkResponse[dict[str, object]], dependencies=[Depends(rate_limit(RATE_LIMIT_HEAVY))])
 async def add_custom_rule_action(
-	request: Request,
 	payload: CustomRuleActionRequest,
 	conn: sqlite3.Connection = Depends(get_conn),
 	_: sqlite3.Row = Depends(require_admin),
@@ -1966,10 +1931,8 @@ def _test_dot_server(addr: str, timeout: float = 5.0) -> dict:
 	return result
 
 
-@router.post("/test-upstream", response_model=OkResponse[dict[str, object]])
-@limiter.limit(RATE_LIMIT_HEAVY)
+@router.post("/test-upstream", response_model=OkResponse[dict[str, object]], dependencies=[Depends(rate_limit(RATE_LIMIT_HEAVY))])
 async def test_upstream_dns(
-	request: Request,
 	payload: DnsTestRequest,
 	_: sqlite3.Row = Depends(require_admin),
 ):
@@ -1995,10 +1958,8 @@ async def test_upstream_dns(
 	)
 
 
-@router.delete("/logs", response_model=OkResponse[dict[str, object]])
-@limiter.limit(RATE_LIMIT_HEAVY)
+@router.delete("/logs", response_model=OkResponse[dict[str, object]], dependencies=[Depends(rate_limit(RATE_LIMIT_HEAVY))])
 async def delete_dns_logs(
-	request: Request,
 	dns_dir: Path = Depends(get_dns_dir),
 	_: sqlite3.Row = Depends(require_admin),
 ):
@@ -2110,10 +2071,8 @@ async def get_adblocker_status(
 	return ok_response(data=_get_adblocker_status_sync(conn, now))
 
 
-@router.post("/adblocker/mode", response_model=OkResponse[dict[str, object]])
-@limiter.limit(RATE_LIMIT_HEAVY)
+@router.post("/adblocker/mode", response_model=OkResponse[dict[str, object]], dependencies=[Depends(rate_limit(RATE_LIMIT_HEAVY))])
 async def set_adblocker_mode(
-	request: Request,
 	payload: AdblockerModePayload,
 	conn: sqlite3.Connection = Depends(get_conn),
 	_: sqlite3.Row = Depends(require_admin),

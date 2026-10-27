@@ -17,6 +17,15 @@ The dashboard summarizes the current deployment with:
 Values are refreshed by the UI from the authenticated API. A missing metric is
 shown as unavailable rather than inferred from unrelated data.
 
+The dashboard is a draggable, resizable grid (GridStack). Select **Edit
+dashboard** to enter edit mode, then move or resize tiles by dragging a tile's
+header strip. **Edit widgets** adds or removes individual tiles, **Reset
+layout** restores the factory default, and **Done** saves the arrangement. An
+unsaved edit can be discarded with the Escape key. The layout is saved per user
+(persisted via `PUT /api/dashboard/layout`), so each account keeps its own
+arrangement. On small screens (phones) the tiles stack in a fixed order and
+layout editing is disabled.
+
 ## Traffic Page
 
 The **Traffic** page provides:
@@ -33,6 +42,13 @@ accounting and the GeoLite2 databases.
 
 The all-peer chart limits visual density on large installations; selecting a
 single peer shows separate receive and transmit series.
+
+For very long ranges the country and ASN totals may exceed the TSDB point cap.
+When that happens the response does not silently cut the window: it flags the
+result as truncated and reports the effective window the returned data actually
+covers (`truncated`, `requested_hours`, and `effective_hours` on
+`/stats/traffic-by-country` and `/stats/traffic-by-asn`), so a partial total is
+never presented as complete.
 
 ## Collection Intervals
 

@@ -1,5 +1,5 @@
 <!-- Parent: ../AGENTS.md -->
-<!-- Generated: 2026-09-21 | Updated: 2026-09-21 -->
+<!-- Generated: 2026-09-21 | Updated: 2026-10-27 -->
 
 # app
 
@@ -11,7 +11,7 @@ The `wirebuddy` Python package: a FastAPI application factory (`create_app` in `
 |------|-------------|
 | `__init__.py` | Package docstring; exposes `create_app` lazily for `uvicorn app:create_app` |
 | `server.py` | Web server start (`main()`): bind settings from the DB with optional `--host`/`--port` overrides, built-in HTTPS certificate resolution and the plaintext ACME listener; used by `run.py` and, with HTTPS enabled, by the Docker entrypoint (`python -m app.server`) |
-| `main.py` | Application factory and lifespan: registers `TrustedHostMiddleware`, `RequestIDMiddleware`, `CSRFMiddleware`, mounts all routers (`/api/...`, `/api/wireguard`, `/api/dns`, `/api/nodes`, frontend pages), starts scheduler/DNS/tasks, log formatters, trusted `ip`/`wg`/`wg-quick` resolution (`utils.binaries.first_executable`), `/health`, `/ready`, `/swagger`; the scheduled-task DB/input readers live in `tasks/db_inputs.py`, not here |
+| `main.py` | Application factory and lifespan: registers `TrustedHostMiddleware`, `RequestIDMiddleware`, `CSRFMiddleware`, mounts all routers (`/api/...`, `/api/wireguard`, `/api/dns`, `/api/nodes`, frontend pages), starts scheduler/DNS/tasks, log formatters, trusted `ip`/`wg`/`wg-quick` resolution (`utils.binaries.first_executable`), `/health`, `/ready`, `/swagger`, static assets served with `Cache-Control: no-cache` (`_RevalidatingStaticFiles`), `_bind_is_loopback` for the Host-header decision; the scheduled-task DB/input readers live in `tasks/db_inputs.py`, not here |
 
 ## Subdirectories
 | Directory | Purpose |
@@ -51,6 +51,6 @@ The `wirebuddy` Python package: a FastAPI application factory (`create_app` in `
 - `app/api`, `app/db`, `app/dns`, `app/middleware`, `app/models`, `app/node`, `app/tasks`, `app/utils`, `app/speedtest`.
 
 ### External
-- FastAPI, Starlette, uvicorn, Jinja2, slowapi (via `utils.rate_limit`).
+- FastAPI, Starlette, uvicorn, Jinja2 (rate limiting is the in-tree `utils.rate_limit`).
 
 <!-- MANUAL: Any manually added notes below this line are preserved on regeneration -->

@@ -11,11 +11,18 @@ from __future__ import annotations
 import ipaddress
 import logging
 from ipaddress import IPv4Address, IPv4Network, IPv6Address, IPv6Network
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+	from starlette.requests import Request
+
+	from .config import Config
 
 __all__ = [
 	"allowed_ips_with_dns_routes",
 	"parse_ip",
 	"parse_ip_str",
+	"resolve_client_ip",
 ]
 
 _log = logging.getLogger(__name__)
@@ -82,6 +89,63 @@ def parse_ip_str(value: str | None) -> str | None:
 	"""Parse an IP and return its normalized string representation."""
 	parsed = parse_ip(value)
 	return str(parsed) if parsed is not None else None
+
+
+def resolve_client_ip(request: Request) -> str | None:
+	"""Return the client IP, trusting proxy headers only from a trusted socket peer.
+
+	SECURITY: Starts from the ORIGINAL socket address in ``request.scope["client"]``,
+	not from what uvicorn's proxy middleware rewrote, so a spoofed
+	``X-Forwarded-For`` from an untrusted peer cannot change the result. Returns
+	``None`` when no usable socket address exists; callers decide how to react.
+	"""
+	from .config import get_config
+
+	scope_client = request.scope.get("client")
+	if not scope_client or not scope_client[0]:
+		return None
+	socket_ip = parse_ip_str(scope_client[0])
+	if not socket_ip:
+		return None
+
+	config = get_config()
+	if config.is_trusted_proxy_ip(socket_ip):
+		forwarded_for = request.headers.get("X-Forwarded-For")
+		if forwarded_for:
+			client = _client_from_forwarded_chain(forwarded_for, config)
+			if client:
+				return client
+
+		x_real_ip = request.headers.get("X-Real-IP")
+		if x_real_ip:
+			candidate = parse_ip_str(x_real_ip)
+			if candidate:
+				return candidate
+
+	return socket_ip
+
+
+def _client_from_forwarded_chain(forwarded_for: str, config: Config) -> str | None:
+	"""Walk an ``X-Forwarded-For`` chain right-to-left against the trusted-proxy allowlist.
+
+	The rightmost entry is the hop that the trusted socket peer received the
+	request from. Trusting ``XFF[0]`` blindly lets any client spoof its address;
+	instead, skip entries whose sender is itself a trusted proxy and return the
+	first untrusted hop from the right as the real client. Returns ``None`` when
+	the whole chain is trusted or holds no parseable address.
+	"""
+	hops = [part.strip() for part in forwarded_for.split(",") if part.strip()]
+	# Right-to-left: each hop was reported by the one to its right. Keep walking
+	# while that reporter is a trusted proxy; the first untrusted reporter means
+	# the hop it reported is attacker-controlled and the loop stops at it.
+	for hop in reversed(hops):
+		candidate = parse_ip_str(hop)
+		if candidate is None:
+			# An unparseable entry breaks the chain of trust; stop walking.
+			return None
+		if not config.is_trusted_proxy_ip(candidate):
+			return candidate
+	return None
 
 
 def allowed_ips_with_dns_routes(

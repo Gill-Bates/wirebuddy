@@ -1,5 +1,5 @@
 <!-- Parent: ../AGENTS.md -->
-<!-- Generated: 2026-09-21 | Updated: 2026-09-21 -->
+<!-- Generated: 2026-09-21 | Updated: 2026-10-27 -->
 
 # db
 
@@ -10,8 +10,9 @@ Persistence layer. SQLite access is split into `sqlite_*.py` modules by domain (
 | File | Description |
 |------|-------------|
 | `sqlite_runtime.py` | Connection factory, per-thread connections, `db_call()`/`db_call_or()` one-shot call wrappers, datetime adapters, WAL checkpoint, `transaction()` context manager with savepoints |
-| `sqlite_schema.py` | `init_schema` (tables: users, passkeys, passkey_challenges, auth_tokens, settings, schema_version, login_attempts, peers, interfaces, nodes, node_commands, node_interfaces), migrations, default settings, `ensure_default_admin` |
+| `sqlite_schema.py` | `init_schema` (tables: users, dashboard_layouts, passkeys, passkey_challenges, auth_tokens, settings, schema_version, login_attempts, peers, interfaces, nodes, node_commands, node_interfaces), migrations, default settings, `ensure_default_admin` (first boot only: password from `_generate_pronounceable_password` (6 letters + 2 digits + 1 special character), `must_change_password=1`, printed once to stdout by `_print_bootstrap_credentials`; never logged and never written to a file) |
 | `sqlite_settings.py` | Key/value settings, typed helpers (bool/JSON/retention), validation, missing-setting recovery, blocklist and DNS upstream settings |
+| `sqlite_dashboard.py` | Per-user dashboard layout in the `dashboard_layouts` table (one row per widget, CHECK bounds, FK cascade to users): get/set (atomic replace)/delete plus the one-time migration of legacy `dashboard_layout:user:<id>` settings keys (run from `_run_migrations`; invalid/orphaned blobs are logged and dropped) |
 | `sqlite_users.py` | User CRUD, OTP secret encryption, recovery codes, auth method, passkey onboarding, last-admin protection |
 | `sqlite_auth.py` | Auth token lifecycle and login-attempt lockout policy |
 | `sqlite_passkeys.py` | WebAuthn credential rows and challenge store |

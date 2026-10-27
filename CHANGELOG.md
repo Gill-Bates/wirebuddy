@@ -1,3 +1,25 @@
+## [1.7.0] - 2026-10-28
+
+- ``New`` The dashboard is customizable: drag and resize tiles, add or remove widgets, and reset to the default layout. Layouts are saved per user (existing ones migrate automatically and are included in backups); editing needs a viewport of 992 px or more.
+- ``New`` Peers not seen for a configurable number of months (Settings → WireGuard, default 6) show an orange `Stale` badge that clears once the peer reappears.
+- ``Fix`` The dashboard and other pages no longer end in a doubled bottom gap or scroll past their last card on desktop (the footer and the page bottom spacing were reserved twice), and edited stylesheets/scripts are now revalidated instead of being served stale from the browser cache.
+- ``Fix`` Node traffic metrics are delivered reliably, with no gaps or double-counting after partial writes; country, ASN and DNS trend totals no longer skew after transient storage errors.
+- ``Fix`` Long-range traffic, DNS trend and country/ASN charts now cover the full requested window instead of being cut short at the time-series query limit.
+- ``Fix`` DNS log-retention changes (including 0 days) apply to the running resolver within seconds, global allow rules consistently override client-specific blocks, and a crashed ingestion writer no longer hangs.
+- ``Fix`` GeoIP lookups no longer hang after a cancellation or a stalled system resolver.
+- ``Fix`` Node enrollment against an IPv6 master address, importing an existing WireGuard keypair for a new peer, and peer config/QR downloads using the interface DNS (ad-blocker off) work again.
+- ``Fix`` Backup restore rejects archives with foreign-key violations, and a failed node deletion is now flagged so it can be retried.
+- ``Fix`` Dates, times and certificate expiry on the Users and Settings pages are shown in your browser's locale and time zone.
+- ``Security`` New opt-in `WIREBUDDY_REQUIRE_HTTPS_AUTH` rejects password logins and node authentication over plaintext HTTP (loopback exempt).
+- ``Security`` The client IP behind a reverse proxy is resolved via `X-Forwarded-For` against `WIREBUDDY_TRUSTED_PROXIES`, so a spoofed header can no longer influence login lockout, MFA binding or auditing.
+- ``Security`` The first-boot admin password is no longer logged; it is printed once to the console (stdout) and never stored in a file.
+- ``Security`` Peer enable/disable/migrate and client isolation now fail closed: if a change cannot be applied to the live interface or firewall, the request fails and the stored state is rolled back.
+- ``Security`` Regenerating a node's token now fully re-enrolls it: the old tunnel peer is removed from the live interface and config, stale control commands are purged, and the node's event stream is closed.
+- ``Security`` Rate limiting is counted before authentication and IPv6 clients share one counter per /64; Unbound now runs from fixed absolute paths with locked-down config permissions.
+
+<details markdown="1">
+<summary>Previous versions...</summary>
+
 ## [1.6.2] - 2026-10-01
 
 - ``Fix`` Deleting a WireGuard interface works again when nodes were provisioned for it, and a failed database delete no longer removes its config file.
@@ -17,10 +39,6 @@
 - ``Security`` TOTP codes are single-use, and OTP setup can no longer be re-run or confirmed twice on an account that already has MFA.
 - ``Security`` A pending mandatory password change is now enforced server-side (`428` for the API, redirect for UI pages).
 - ``Security`` Interface deletion reports and later removes a leftover private key; PostUp/PostDown hooks are limited to 2048 bytes of printable ASCII.
-
-
-<details markdown="1">
-<summary>Previous versions...</summary>
 
 ## [1.6.1] - 2026-09-21
 

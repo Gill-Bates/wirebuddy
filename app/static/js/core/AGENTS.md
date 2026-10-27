@@ -1,5 +1,5 @@
 <!-- Parent: ../AGENTS.md -->
-<!-- Generated: 2026-09-21 | Updated: 2026-09-21 -->
+<!-- Generated: 2026-09-21 | Updated: 2026-10-27 -->
 # core
 
 ## Purpose
@@ -8,8 +8,9 @@ Runtime infrastructure shared by every page controller; loaded from `base.html` 
 ## Key Files
 | File | Description |
 |------|-------------|
-| `dom.js` | Small DOM helper set (~130 lines): `el()` element builder (text via `textContent`, delegated `on` handlers), `clearChildren()`, `fragment()`; exposed as `window.el` and `window.WB.dom` / `window.WBDom` |
+| `dom.js` | Small DOM helper set (~160 lines): `el()` element builder (text via `textContent`, delegated `on` handlers), `clearChildren()`, `fragment()`; exposed as `window.el` and `window.WB.dom` / `window.WBDom` |
 | `design-tokens.js` | `window.DesignTokens`: reads CSS custom properties at runtime so JS (e.g. Chart.js colours) follows the CSS tokens |
+| `format.js` | `window.WBFormat`: browser-locale/time-zone formatting (`format`, `number`, `relative`) and auto-localisation of `<time datetime="…Z" data-wb-format="date\|time\|datetime">`; the server only emits UTC (`utc_iso` Jinja filter) |
 | `logger.js` | `window.WBLogger`: levelled, structured frontend logging with optional context |
 
 ## For AI Agents

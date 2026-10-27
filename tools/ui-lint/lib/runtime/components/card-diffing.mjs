@@ -5,8 +5,10 @@
 
 import fs from 'node:fs';
 
-import { PNG } from 'pngjs';
-import pixelmatch from 'pixelmatch';
+import { loadDep } from '../../deps.mjs';
+
+const { PNG } = await loadDep('pngjs');
+const { default: pixelmatch } = await loadDep('pixelmatch');
 
 export function diffKpiSets(nameA, setA, nameB, setB) {
     const results = [];

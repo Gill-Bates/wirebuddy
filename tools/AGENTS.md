@@ -1,17 +1,17 @@
 <!-- Parent: ../AGENTS.md -->
-<!-- Generated: 2026-09-21 | Updated: 2026-09-21 -->
+<!-- Generated: 2026-09-21 | Updated: 2026-10-27 -->
 # tools
 
 ## Purpose
 
-Container for developer tooling that is not part of the WireBuddy application runtime: two small Python helpers used by CI, `stylelint/`, a standalone Stylelint setup for the app CSS, and `ui-lint`, a Node/Playwright-based UI linter that audits the running web frontend (layout, accessibility, overflow, tokens, console/network health).
+Container for developer tooling that is not part of the WireBuddy application runtime: two small Python helpers (one for CI, one for local UI audits), `stylelint/`, a standalone Stylelint setup for the app CSS, and `ui-lint`, a Node/Playwright-based UI linter that audits the running web frontend (layout, accessibility, overflow, tokens, console/network health).
 
 ## Key Files
 
 | File | Purpose |
 |---|---|
 | `pyproject-deps.py` | Prints one dependency group from `pyproject.toml` as a flat pip requirements list (`dev`, `docs`, or the runtime set when no group is given; `--exclude NAME` is repeatable). Exists because pip's `-r` and Trivy's filesystem scanner still want a flat file, and because the same list was previously inlined as a `tomllib` one-liner in several workflow steps. Standard library only |
-| `ci-seed-admin.py` | Creates a ready-to-use admin in a **fresh** database so the UI audit can log in. Run it *before* the server starts: a pre-existing user makes `ensure_default_admin()` a no-op, which is what keeps the first-boot bootstrap gate closed. Refuses to run against a database that already has admins or a mismatched secret key. CI only |
+| `ci-seed-admin.py` | Creates a ready-to-use admin in a **fresh** database so a local UI audit can log in. Run it *before* the server starts: a pre-existing user makes `ensure_default_admin()` a no-op, which is what keeps the first-boot bootstrap gate closed. Refuses to run against a database that already has admins or a mismatched secret key. Local audit helper only |
 
 ## Subdirectories
 
@@ -34,7 +34,7 @@ Container for developer tooling that is not part of the WireBuddy application ru
 
 - Each Node tool documents its own test command; see `ui-lint/AGENTS.md`. Python tests live in `/opt/wirebuddy/tests`, not here.
 - The Python helpers are covered by `ruff check .` and exercised on every CI run; there are no unit tests for them.
-- Reproduce a full UI audit locally:
+- Preferred: the isolated runner `tests/e2e/ui_lint_isolated.mjs` does all of the following in one command (see `tests/e2e/AGENTS.md`). Manual equivalent for a full UI audit:
 
   ```bash
   export WIREBUDDY_SECRET_KEY="$(python -c 'import base64,secrets; print(base64.b64encode(secrets.token_bytes(32)).decode())')"
@@ -59,7 +59,7 @@ Container for developer tooling that is not part of the WireBuddy application ru
 
 - `app/` (the frontend under test is served by the WireBuddy app at runtime; `ci-seed-admin.py` does import `app.db` and `app.utils.config`)
 - `../pyproject.toml` — the dependency and version source `pyproject-deps.py` reads
-- `../.github/workflows/` — `ci.yml`, `docs-build.yml` and `ui-audit.yml` are the callers of both Python helpers
+- `../.github/workflows/` — `ci.yml` and `docs-build.yml` call `pyproject-deps.py`; `ci-seed-admin.py` is run locally only
 
 ### External
 

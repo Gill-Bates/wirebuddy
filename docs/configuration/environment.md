@@ -183,7 +183,9 @@ WIREBUDDY_CSRF_ALLOWED_ORIGINS=https://vpn2.example.com
 
 Optional comma-separated Host-header allowlist. Derived automatically from the
 hostname in `WIREBUDDY_PUBLIC_ORIGIN` when unset. Set this explicitly only to
-accept additional hostnames or when no public origin is configured.
+accept additional hostnames or when no public origin is configured. If neither
+is set, Host-header validation is off and startup logs a warning, or only an
+informational message when the listener is bound to loopback.
 
 ```bash
 WIREBUDDY_ALLOWED_HOSTS=vpn.example.com,localhost
@@ -335,9 +337,26 @@ Allows WireBuddy to point `/etc/resolv.conf` at its managed Unbound resolver.
 
 Default: disabled.
 
+### `WIREBUDDY_REQUIRE_HTTPS_AUTH`
+
+Opt-in. Set to `true`, `1`, or `yes` to reject authentication over plaintext
+HTTP. When enabled, password logins and node bearer/enrollment authentication
+are refused unless the request arrives over HTTPS. A single implicit exception
+applies to loopback peers, so local HTTP development keeps working.
+
+Default: disabled. With the flag off and the built-in HTTPS listener off,
+plaintext authentication is allowed but logs a warning, preserving the
+historical behaviour for documented plain-HTTP LAN installs.
+
+This flag is independent of **Settings → General → Serve GUI over HTTPS**:
+enabling the built-in HTTPS listener already forces the same rejection, and
+this variable additionally enforces it when the listener is off (for example
+behind a TLS-terminating reverse proxy). See
+[Security Configuration](security.md).
+
 ### `WIREBUDDY_RATE_LIMIT_UI_HEAVY`
 
-SlowAPI rate string for expensive UI routes. Default: `60/minute`.
+Rate limit string (`N/second|minute|hour|day`) for expensive UI routes; an invalid value stops startup. Default: `60/minute`.
 
 ### Login Lockout Tuning
 

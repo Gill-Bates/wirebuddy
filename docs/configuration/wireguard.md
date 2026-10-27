@@ -22,6 +22,7 @@ Under **Settings → WireGuard → Global Settings**:
 |---|---|---|
 | MTU | `1280`–`9000`, default `1420` | Written to generated configurations |
 | Persistent Keepalive | `0`–`600`, recommended `25` | Helps peers behind NAT; `0` disables it |
+| Peer stale threshold (months) | `1`–`120`, default `6` | Peers whose Last Seen is at least this many calendar months old get an orange `Stale` badge; computed at display time and cleared by new activity |
 | Use PresharedKey | optional | Adds the global PSK to newly generated peer configurations |
 
 Regenerating the global preshared key requires downloading or scanning affected

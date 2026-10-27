@@ -198,6 +198,8 @@ void (async function () {
                 keepaliveInput.value = settings.wg_persistent_keepalive;
             }
 
+            setPeerStaleMonths(settings.peer_stale_months);
+
             const localhostToggle = document.getElementById('gui-localhost-only');
             if (localhostToggle) {
                 localhostToggle.checked = toBool(settings.gui_localhost_only);
@@ -449,6 +451,44 @@ void (async function () {
         return ipv6Regex.test(addr);
     }
 
+    // Peer stale threshold slider: index -> months (non-linear, bounds mirror the server's 1..120).
+    // The real value lives in peerStaleMonths so a stored off-tick value (e.g. 9) is never snapped.
+    const PEER_STALE_MONTH_TICKS = [1, 3, 6, 12, 18, 24, 36, 60, 120];
+    const PEER_STALE_MONTHS_DEFAULT = 6;
+    let peerStaleMonths = PEER_STALE_MONTHS_DEFAULT;
+
+    function peerStaleMonthsLabel(months) {
+        if (months >= 12 && months % 12 === 0) {
+            const years = months / 12;
+            return years === 1 ? '1 year' : `${years} years`;
+        }
+        return months === 1 ? '1 month' : `${months} months`;
+    }
+
+    function peerStaleIndexForMonths(months) {
+        let best = 0;
+        PEER_STALE_MONTH_TICKS.forEach((tick, idx) => {
+            if (Math.abs(tick - months) < Math.abs(PEER_STALE_MONTH_TICKS[best] - months)) best = idx;
+        });
+        return best;
+    }
+
+    function renderPeerStaleMonths() {
+        const slider = document.getElementById('wg-peer-stale-months');
+        if (!slider) return;
+        const label = peerStaleMonthsLabel(peerStaleMonths);
+        slider.value = String(peerStaleIndexForMonths(peerStaleMonths));
+        slider.setAttribute('aria-valuetext', label);
+        const badge = document.getElementById('wg-peer-stale-months-value');
+        if (badge) badge.textContent = label;
+    }
+
+    function setPeerStaleMonths(raw) {
+        const parsed = Number.parseInt(String(raw ?? ''), 10);
+        peerStaleMonths = Number.isInteger(parsed) && parsed >= 1 && parsed <= 120 ? parsed : PEER_STALE_MONTHS_DEFAULT;
+        renderPeerStaleMonths();
+    }
+
     function parseOptionalInt(rawValue, min, max, label) {
         const value = String(rawValue ?? '').trim();
         if (value === '') {
@@ -530,6 +570,11 @@ void (async function () {
                 return false;
             }
             payload.wg_persistent_keepalive = keepaliveResult.value;
+        }
+
+        if (document.getElementById('wg-peer-stale-months') && includeField('peer_stale_months')) {
+            // Send the real month count, never the slider index
+            payload.peer_stale_months = peerStaleMonths;
         }
 
         // Include localhost toggle state
@@ -841,6 +886,20 @@ void (async function () {
     }
     if (wgMtu) wgMtu.addEventListener('change', saveWgSettingsDebounced);
     if (wgKeepalive) wgKeepalive.addEventListener('change', saveWgSettingsDebounced);
+    const wgPeerStale = document.getElementById('wg-peer-stale-months');
+    if (wgPeerStale) {
+        const staleMonthsFromSlider = () => PEER_STALE_MONTH_TICKS[Number.parseInt(wgPeerStale.value, 10)] ?? PEER_STALE_MONTHS_DEFAULT;
+        // Live preview while dragging; persist only on release
+        wgPeerStale.addEventListener('input', () => {
+            peerStaleMonths = staleMonthsFromSlider();
+            renderPeerStaleMonths();
+        }, { passive: true });
+        wgPeerStale.addEventListener('change', () => {
+            peerStaleMonths = staleMonthsFromSlider();
+            renderPeerStaleMonths();
+            saveWgSettingsDebounced();
+        });
+    }
     if (enableStatusPage) {
         enableStatusPage.addEventListener('change', () => saveWgSettings({ fields: ['enable_status_page'] }));
     }
@@ -1313,9 +1372,9 @@ void (async function () {
             return;
         }
 
-        // Validate interface name (1-15 alphanumeric chars, _, -)
-        if (!/^[a-zA-Z0-9_-]{1,15}$/.test(name)) {
-            wbToast('Interface name must be 1–15 alphanumeric characters (a-z, 0-9, _, -)', 'warning');
+        // Validate interface name (letter first, then up to 14 alphanumeric chars, _, -)
+        if (!/^[a-zA-Z][a-zA-Z0-9_-]{0,14}$/.test(name)) {
+            wbToast('Interface name must start with a letter and be 1–15 characters (a-z, 0-9, _, -)', 'warning');
             return;
         }
 
@@ -1459,6 +1518,7 @@ void (async function () {
     }
 
     async function submitInterfaceForm() {
+        if (document.getElementById('btn-iface-submit')?.disabled) return;
         if (editingInterfaceName) {
             await updateInterface();
             return;
@@ -1481,46 +1541,10 @@ void (async function () {
     }
 
     const ifaceModalEl = document.getElementById('ifaceModal');
-    let ifaceModalReturnFocusEl = null;
     if (ifaceModalEl) {
-        ifaceModalEl.addEventListener('show.bs.modal', function () {
-            const activeEl = document.activeElement;
-            ifaceModalReturnFocusEl = activeEl instanceof HTMLElement && !ifaceModalEl.contains(activeEl)
-                ? activeEl
-                : null;
-        });
-
-        ifaceModalEl.addEventListener('hide.bs.modal', function () {
-            const activeEl = document.activeElement;
-            if (activeEl instanceof HTMLElement && ifaceModalEl.contains(activeEl)) {
-                activeEl.blur();
-            }
-
-            const fallbackFocusEl = openCreateInterfaceModalBtn instanceof HTMLElement
-                ? openCreateInterfaceModalBtn
-                : null;
-            let returnFocusEl = null;
-
-            if (
-                ifaceModalReturnFocusEl instanceof HTMLElement
-                && ifaceModalReturnFocusEl.isConnected
-                && !ifaceModalEl.contains(ifaceModalReturnFocusEl)
-                && !ifaceModalReturnFocusEl.hasAttribute('disabled')
-            ) {
-                returnFocusEl = ifaceModalReturnFocusEl;
-            } else if (fallbackFocusEl && !fallbackFocusEl.hasAttribute('disabled')) {
-                returnFocusEl = fallbackFocusEl;
-            }
-
-            if (returnFocusEl && typeof returnFocusEl.focus === 'function') {
-                returnFocusEl.focus({ preventScroll: true });
-            }
-        });
-
         ifaceModalEl.addEventListener('hidden.bs.modal', function () {
             setInterfaceSubmitBusy(false);
             void prepareCreateInterfaceModal();
-            ifaceModalReturnFocusEl = null;
         });
     }
 
@@ -1592,6 +1616,9 @@ void (async function () {
     async function requestCertificate() {
         if (!requireAdminAction()) return;
 
+        const submitBtn = document.getElementById('btn-request-certificate');
+        if (!submitBtn || submitBtn.disabled) return;
+
         const domain = document.getElementById('cert-domain').value.trim();
         const email = document.getElementById('cert-email').value.trim();
         const staging = document.getElementById('cert-staging').checked;
@@ -1602,6 +1629,7 @@ void (async function () {
         }
 
         const spinner = document.getElementById('cert-spinner');
+        submitBtn.disabled = true;
         spinner.classList.remove('d-none');
 
         try {
@@ -1619,6 +1647,7 @@ void (async function () {
         } catch (error) {
             wbToast('Failed to request certificate: ' + error.message, 'danger');
         } finally {
+            submitBtn.disabled = false;
             spinner.classList.add('d-none');
         }
     }

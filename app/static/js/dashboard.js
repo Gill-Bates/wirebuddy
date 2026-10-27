@@ -191,8 +191,23 @@ function syncSpeedtestChartSize() {
     if (!canvas || !speedtestChart) return;
 
     if (resizeSpeedtestCanvas(canvas)) {
+        setSpeedtestChartDensity();
         speedtestChart.resize();
     }
+}
+
+function setSpeedtestChartDensity() {
+    if (!speedtestChart) return;
+    const compact = window.matchMedia('(max-width: 575.98px)').matches;
+    const scales = speedtestChart.options.scales;
+    scales.y.title.display = !compact;
+    scales.y.ticks.maxTicksLimit = compact ? 5 : 11;
+    scales.y.ticks.callback = compact
+        ? (value) => Number(value) >= 1000 ? `${Number(value) / 1000}k` : value
+        : undefined;
+    scales.y1.title.display = !compact;
+    scales.y1.ticks.maxTicksLimit = compact ? 5 : 11;
+    speedtestChart.update('none');
 }
 
 function unwrapList(payload, key) {
@@ -1025,6 +1040,10 @@ function stopAutoRefresh() {
     }).catch(() => {
         // Start auto-refresh even on failure (backoff will handle retries)
         startAutoRefresh();
+    }).finally(() => {
+        // Signal the layout layer (dashboard_grid.js) that first data has settled so its reveal
+        // race can wait for real tile heights (bounded by REVEAL_TIMEOUT_MS). Fired once.
+        document.dispatchEvent(new CustomEvent('wb:dashboard-data-ready'));
     });
 })();
 
@@ -1336,6 +1355,7 @@ function initSpeedtestChart() {
             },
         },
     });
+    setSpeedtestChartDensity();
 }
 
 async function refreshSpeedtestChart(signal) {
@@ -2182,3 +2202,13 @@ if (networkGaugesContainer) {
 
     // Theme changes are handled via CSS custom properties, no JS update needed
 }
+
+// ─── GRID LAYOUT SEAM ────────────────────────────────────────
+// Minimal, read-only resize seam consumed by dashboard_grid.js on GridStack resizestop (and once at
+// reveal). The closures read the module-scoped peerMap/speedtestChart lazily at call time, so this
+// statement's position in the file is immaterial; each callback is a safe no-op until its instance
+// exists. No data logic lives here — dashboard.js keeps owning the chart/map lifecycle.
+window.WBDashboard = Object.freeze({
+    resizeSpeedtestChart: () => syncSpeedtestChartSize(),
+    invalidatePeerMap: () => { if (peerMap && peerMap.getContainer()) peerMap.invalidateSize(true); },
+});

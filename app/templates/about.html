@@ -160,7 +160,7 @@
                         <h2 class="h6 fw-semibold mb-0">Dependencies</h2>
                     </div>
                     <div class="card-body p-0 d-flex flex-column">
-                        <div class="table-responsive dependencies-scroll flex-grow-1" tabindex="0" aria-label="Dependencies table">
+                        <div class="table-responsive dependencies-scroll flex-grow-1" data-ui-lint-allow="nested-scroll" tabindex="0" aria-label="Dependencies table">
                             <table class="table table-sm table-hover mb-0 dependencies-table">
                                 <thead class="sticky-top">
                                     <tr>
@@ -191,7 +191,7 @@
                         <span class="material-icons me-2" aria-hidden="true">history</span>
                         <h2 class="h6 fw-semibold mb-0">Changelog</h2>
                     </div>
-                    <div class="card-body wb-card-body-surface changelog-content flex-grow-1 flex-scroll">
+                    <div class="card-body wb-card-body-surface changelog-content flex-grow-1">
                         {# Safe: _render_changelog() in app/api/frontend_pages.py runs the rendered
                            Markdown through nh3.clean() with a tag/attribute allowlist and an
                            http/https/mailto URL scheme allowlist before it reaches the template. #}

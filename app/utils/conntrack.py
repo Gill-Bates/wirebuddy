@@ -63,6 +63,7 @@ import threading
 import time
 from collections import defaultdict
 from collections.abc import Iterator
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -76,8 +77,11 @@ __all__ = [
 	"ASN_TRAFFIC_METRIC",
 	"GEO_TRAFFIC_KEY",
 	"GEO_TRAFFIC_METRIC",
+	"CountrySample",
 	"acquire_sampler_leadership",
+	"commit_country_traffic",
 	"init_conntrack_accounting",
+	"prepare_country_traffic",
 	"release_sampler_leadership",
 	"reset_state",
 	"sample_country_traffic",
@@ -134,6 +138,10 @@ _ct_lock = threading.Lock()  # serialises both conntrack state AND sampling
 _ct_initialized = False
 _acct_warned = False  # log "accounting disabled" only once per process
 _ct_overflow_warned = False
+# Monotonic token bumped whenever _ct_prev is replaced or reset. A two-phase
+# commit carries the token it sampled under and is refused if the baseline
+# moved meanwhile, so a stale checkpoint can never clobber a newer baseline.
+_ct_generation = 0
 
 # Locking note:
 # - Do not call _get_wireguard_subnets() while holding _ct_lock.
@@ -647,10 +655,42 @@ def release_sampler_leadership() -> None:
 # ---------------------------------------------------------------------------
 
 
-def sample_country_traffic(
+@dataclass(frozen=True)
+class CountrySample:
+	"""A computed traffic sample awaiting a durable write.
+
+	``country`` and ``asn`` hold the per-country/per-ASN byte deltas; the caller
+	writes them to the TSDB and only then calls :func:`commit_country_traffic`
+	with ``checkpoint`` to advance the baseline. ``is_empty`` is ``True`` for a
+	first-run baseline or a no-op sample, for which nothing needs persisting.
+	"""
+
+	country: dict[str, dict[str, Any]]
+	asn: dict[str, dict[str, Any]]
+	checkpoint: object | None
+	is_empty: bool
+
+
+def _empty_sample() -> CountrySample:
+	"""A sample with nothing to persist and no baseline to advance."""
+	return CountrySample(country={}, asn={}, checkpoint=None, is_empty=True)
+
+
+def prepare_country_traffic(
 	peer_ip_map: dict[str, str] | None = None,
-) -> tuple[dict[str, dict[str, Any]], dict[str, dict[str, Any]]]:
-	"""Sample the conntrack table and return **new** bytes by country and ASN.
+) -> CountrySample:
+	"""Sample conntrack and compute deltas **without** advancing the baseline.
+
+	Phase one of a two-phase, crash-safe sampling protocol. It computes the
+	per-country and per-ASN byte deltas since the last committed baseline but
+	does **not** move ``_ct_prev``. The caller writes the deltas durably (TSDB)
+	and only then calls :func:`commit_country_traffic` with the returned
+	``checkpoint`` to advance the baseline. If the caller crashes or its write
+	fails before committing, the same traffic is re-delivered on the next
+	sample instead of being silently folded into the baseline and lost.
+
+	The first-run baseline is still established here (there is nothing to
+	persist for it), returning an empty sample with no checkpoint.
 
 	Args:
 		peer_ip_map: Optional ``{wg_internal_ip: peer_name}`` mapping for
@@ -658,24 +698,19 @@ def sample_country_traffic(
 		             included in the result.
 
 	Returns:
-		Tuple of (country_deltas, asn_deltas):
-		- country_deltas: ``{country_code: {"rx": int, "tx": int, "peers": list[str]}}``
-		- asn_deltas: ``{asn_number: {"rx": int, "tx": int, "name": str, "peers": list[str]}}``
-		where *rx* = download (reply direction → to client) and
-		*tx* = upload (original direction → from client).
-		On the first call after startup the baseline is recorded and
-		empty dicts are returned (no spike).
+		A :class:`CountrySample`; *rx* = download (reply direction → to client)
+		and *tx* = upload (original direction → from client).
 
 	Note:
 		Connections that disappear between two samples lose their final
 		delta — this is an inherent limitation of polling conntrack.
 
 	Multi-worker:
-		This keeps a process-local baseline and must run in a single process.
-		Callers that may run under multiple workers must gate this behind
+		Keeps a process-local baseline and must run in a single process. Callers
+		that may run under multiple workers must gate this behind
 		``acquire_sampler_leadership()``.
 	"""
-	global _ct_initialized, _ct_prev, _acct_warned, _ct_overflow_warned
+	global _ct_initialized, _ct_prev, _ct_generation, _acct_warned, _ct_overflow_warned
 
 	# Warn if byte accounting appears to be off — log once, re-arm when it recovers
 	acct_active: bool | None = None
@@ -692,7 +727,7 @@ def sample_country_traffic(
 						"(nf_conntrack_acct=0) — run on the host: "
 						"sysctl -w net.netfilter.nf_conntrack_acct=1"
 					)
-				return {}, {}
+				return _empty_sample()
 			if _acct_warned:
 				# Accounting was just enabled (e.g. user ran sysctl on host)
 				_acct_warned = False
@@ -703,7 +738,7 @@ def sample_country_traffic(
 	subnets, gateway_ips = _get_wireguard_subnets()
 	if not subnets:
 		_log.debug("COUNTRY_TRAFFIC no WireGuard subnets detected")
-		return {}, {}
+		return _empty_sample()
 
 	# _ct_lock serialises both conntrack state access and the sampling
 	# itself, preventing two concurrent calls from corrupting _ct_prev.
@@ -746,16 +781,23 @@ def sample_country_traffic(
 
 		if not saw_line:
 			_log.debug("COUNTRY_TRAFFIC no conntrack data available")
-			return {}, {}
+			return _empty_sample()
 		if _ct_overflow_warned and len(current) < _MAX_TRACKED_CONNECTIONS:
 			_ct_overflow_warned = False
 
 		# --- First call: establish baseline, no deltas ------------------
+		# Nothing is delivered to the caller here, so advancing the baseline
+		# immediately loses no data and needs no deferred commit.
 		if not _ct_initialized:
 			_ct_prev = current
+			_ct_generation += 1
 			_ct_initialized = True
 			_log.info("COUNTRY_TRAFFIC baseline recorded (%d conntrack entries)", len(current))
-			return {}, {}
+			return _empty_sample()
+
+		# Snapshot the generation this sample was computed under; the deferred
+		# commit is accepted only while the baseline has not moved since.
+		sampled_generation = _ct_generation
 
 		# --- Compute deltas per connection ------------------------------
 		deltas: list[tuple[str, str, int, int]] = []  # (dst_ip, src_ip, delta_tx, delta_rx)
@@ -783,8 +825,9 @@ def sample_country_traffic(
 
 			deltas.append((key[3], key[1], delta_tx, delta_rx))
 
-		# Update baseline for next sample (replaces entire dict to prevent unbounded growth)
-		_ct_prev = current
+		# The baseline is NOT advanced here. The caller advances it via
+		# commit_country_traffic() only after a durable write succeeds, so a
+		# failed aggregation or TSDB write re-delivers this traffic next time.
 
 	# GeoIP + ASN aggregation intentionally outside _ct_lock
 	# to minimize lock hold time during potentially expensive lookups.
@@ -796,7 +839,51 @@ def sample_country_traffic(
 	country_result = _serialize_agg(country_agg)
 	asn_result = _serialize_agg(asn_agg)
 
-	return country_result, asn_result
+	checkpoint = (sampled_generation, current)
+	return CountrySample(country=country_result, asn=asn_result, checkpoint=checkpoint, is_empty=False)
+
+
+def commit_country_traffic(checkpoint: object | None) -> bool:
+	"""Advance the baseline after the caller durably stored the sample.
+
+	Phase two of the two-phase protocol. Pass the ``checkpoint`` from a
+	:class:`CountrySample`. Returns ``True`` when the baseline was advanced,
+	``False`` when the checkpoint is empty/``None`` or stale (the baseline was
+	reset or already advanced since the sample was taken), in which case the
+	traffic stays pending and is re-delivered on the next sample.
+	"""
+	global _ct_prev, _ct_generation
+
+	if not isinstance(checkpoint, tuple) or len(checkpoint) != 2:
+		return False
+	sampled_generation, snapshot = checkpoint
+
+	with _ct_lock:
+		if not _ct_initialized or _ct_generation != sampled_generation:
+			_log.debug("COUNTRY_TRAFFIC commit skipped: baseline moved since sampling")
+			return False
+		_ct_prev = snapshot
+		_ct_generation += 1
+		return True
+
+
+def sample_country_traffic(
+	peer_ip_map: dict[str, str] | None = None,
+) -> tuple[dict[str, dict[str, Any]], dict[str, dict[str, Any]]]:
+	"""Sample conntrack and immediately commit the baseline (single-phase).
+
+	Backwards-compatible single-call wrapper: it advances the baseline as soon
+	as the deltas are computed, so a caller that cannot guarantee a durable
+	write should prefer :func:`prepare_country_traffic` +
+	:func:`commit_country_traffic`.
+
+	Returns ``(country_deltas, asn_deltas)`` as before; on the first call after
+	startup the baseline is recorded and empty dicts are returned.
+	"""
+	sample = prepare_country_traffic(peer_ip_map)
+	if not sample.is_empty:
+		commit_country_traffic(sample.checkpoint)
+	return sample.country, sample.asn
 
 
 def reset_state() -> None:
@@ -807,13 +894,16 @@ def reset_state() -> None:
 	"""
 	# _ct_prev is mutated in place with .clear() in this function, never
 	# rebound, so it is not part of the global declaration.
-	global _ct_initialized, _wg_subnets_cache, _wg_gateway_ips_cache, _wg_subnets_ts, _acct_warned
+	global _ct_initialized, _ct_generation, _wg_subnets_cache, _wg_gateway_ips_cache, _wg_subnets_ts, _acct_warned
 
 	release_sampler_leadership()
 
 	# Acquire both locks in consistent order (wg_lock → ct_lock)
 	with _wg_lock, _ct_lock:
 		_ct_prev.clear()
+		# Bump the generation so any pending two-phase commit from before the
+		# reset is refused instead of resurrecting a stale baseline.
+		_ct_generation += 1
 		_ct_initialized = False
 		_acct_warned = False
 		_wg_subnets_cache = []

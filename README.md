@@ -67,7 +67,7 @@
 |  **GeoIP** | MaxMind GeoLite2 integration, interactive heatmap, country flags & ASN badges |
 |  **HTTPS & Certificates** | Built-in HTTPS with self-signed or Let's Encrypt certificates, HTTP-01 validation, and certificate management |
 |  **User Management** | Multi-user roles, Passkeys (WebAuthn) & MFA (TOTP), login tracking |
-|  **Web UI** | Responsive Bootstrap 5, dark/light/auto theme, Material Icons |
+|  **Web UI** | Customizable drag-and-drop dashboard, responsive Bootstrap 5, dark/light/auto theme, Material Icons |
 
 ---
 

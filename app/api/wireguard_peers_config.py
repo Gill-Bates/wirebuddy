@@ -25,7 +25,7 @@ from ..models.peers import PeerConfig, PeerStats
 from ..utils.config import WG_DEFAULT_DNS
 from ..utils.deps import get_config, get_conn
 from ..utils.network import allowed_ips_with_dns_routes
-from ..utils.rate_limit import RATE_LIMIT_CRITICAL, limiter
+from ..utils.rate_limit import RATE_LIMIT_CRITICAL, rate_limit
 from ..utils.vault import decrypt as vault_decrypt
 from .auth import require_admin
 from .response import ok_response
@@ -292,8 +292,7 @@ async def get_peer_stats(
 	return ok_response(data=stats)
 
 
-@router.get("/peers/{peer_id}/qrcode")
-@limiter.limit(RATE_LIMIT_CRITICAL)
+@router.get("/peers/{peer_id}/qrcode", dependencies=[Depends(rate_limit(RATE_LIMIT_CRITICAL))])
 async def get_peer_qrcode(
 	request: Request,
 	peer_id: int,
@@ -338,8 +337,7 @@ async def get_peer_qrcode(
 		raise HTTPException(status_code=500, detail="QR code generation failed")
 
 
-@router.get("/peers/{peer_id}/config")
-@limiter.limit(RATE_LIMIT_CRITICAL)
+@router.get("/peers/{peer_id}/config", dependencies=[Depends(rate_limit(RATE_LIMIT_CRITICAL))])
 async def get_peer_config(
 	request: Request,
 	peer_id: int,

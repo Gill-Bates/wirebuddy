@@ -40,7 +40,6 @@ import fnmatch
 import ipaddress
 import logging
 import re
-import time
 from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import NamedTuple
@@ -61,6 +60,7 @@ __all__ = [
 	"get_custom_block_rules",
 	"normalize_client_scope",
 	"parse_rules",
+	"resolve_effective_action",
 	"rule_applies_to_client",
 ]
 
@@ -158,6 +158,30 @@ def normalize_client_scope(value: str) -> str:
 	return f"{ip}/128"
 
 
+def resolve_effective_action(domain: str, client_ip: str, rules: list[ParsedRule]) -> RuleAction | None:
+	"""Return the single effective action for (domain, client_ip), or None.
+
+	One precedence rule for every consumer (the Unbound config generator and
+	the ingestion log parser), so the resolver's decision and what the config
+	actually enforces can never disagree:
+
+	  ALLOW wins always. If any ALLOW rule that applies to this client matches
+	  the domain — global or client-scoped — the effective action is ALLOW,
+	  even when a client-scoped BLOCK also matches. Only when no such ALLOW
+	  matches does a matching BLOCK take effect. None means no rule matched.
+	"""
+	matched_block = False
+	for rule in rules:
+		if not rule_applies_to_client(rule, client_ip):
+			continue
+		if not rule.matches(domain):
+			continue
+		if rule.action == RuleAction.ALLOW:
+			return RuleAction.ALLOW
+		matched_block = True
+	return RuleAction.BLOCK if matched_block else None
+
+
 def rule_applies_to_client(rule: ParsedRule, client_ip: str) -> bool:
 	"""Return True when rule scope matches the query client IP.
 
@@ -217,41 +241,52 @@ _ADGUARD_DOMAIN_RE = re.compile(
 # Note: underscores are accepted pragmatically for labels like "_dmarc".
 _VALID_LABEL_RE = re.compile(r"^[a-z0-9](?:[a-z0-9_-]{0,61}[a-z0-9])?$|^[a-z0-9]$")
 
-# Heuristic guard against catastrophic backtracking patterns like /(a+)+b/
-# Trailing quantifier covers both unbounded (+, *) and bounded ({n}, {m,n})
-# repetition — /(a+){25}b/ is just as exponential as /(a+)+b/.
-_TRAILING_QUANTIFIER = r"(?:[+*]|\{\d+(?:,\d*)?\})"
-_NESTED_REGEX_QUANTIFIER_RE = re.compile(r"\((?:[^()\\]|\\.)*[+*](?:[^()\\]|\\.)*\)" + _TRAILING_QUANTIFIER)
+# Structural guard against catastrophic backtracking. A post-hoc wall-clock
+# probe cannot protect anything — Python's re runs compiled.search()
+# synchronously and uncancellably, so a pathological pattern blows the whole
+# time budget *before* the elapsed check ever runs (e.g. /(a{0,10}){10}b/ ran
+# for seconds and had to be killed by an external process timeout, while the
+# internal 0.05s value measured nothing). The only reliable defense in pure
+# stdlib re is to reject the grammar that enables exponential blow-up, so the
+# accepted language is structurally linear-ish and never needs a timeout.
+#
+# A quantifier token covers every repetition form: + * ? and {n} {n,} {n,m}.
+_QUANTIFIER = r"(?:[+*?]|\{\d+(?:,\d*)?\})"
 
-# Complementary heuristic: quantified alternation groups like /(a|a)+b/ or
-# /(a|aa){25}b/ are also classic catastrophic-backtracking patterns, but have
-# no quantifier *inside* the parens, so _NESTED_REGEX_QUANTIFIER_RE alone
-# cannot catch them.
-_QUANTIFIED_ALTERNATION_RE = re.compile(r"\((?:[^()\\]|\\.)*\|(?:[^()\\]|\\.)*\)" + _TRAILING_QUANTIFIER)
+# A group body token: anything but parentheses, or an escaped char. Nested
+# groups are rejected separately below, so the body is single-level here.
+_GROUP_BODY = r"(?:[^()\\]|\\.)*"
 
-# Runtime complexity probe: structural heuristics above are necessarily
-# incomplete (regex catastrophic-backtracking detection is not decidable by
-# simple pattern matching). As a defense-in-depth backstop, every newly
-# parsed regex rule is executed once against an adversarial-ish probe string
-# with a wall-clock budget; patterns that blow the budget are rejected even
-# if no structural heuristic flagged them.
-_REGEX_PROBE_BUDGET_SECONDS = 0.05
-_REGEX_PROBE_STRING = "a" * 40 + "!"  # no match found; forces full backtracking
+# Nested quantification: a quantifier applied to a group whose body ALREADY
+# contains a quantifier — the (x{a,b}){c,d} / (a+)+ family. Catching {n,m}
+# inside the group (not only + and *) is what the old heuristic missed and
+# what the probe was wrongly relied on to backstop.
+_NESTED_REGEX_QUANTIFIER_RE = re.compile(r"\(" + _GROUP_BODY + _QUANTIFIER + _GROUP_BODY + r"\)" + _QUANTIFIER)
+
+# Quantified alternation: /(a|a)+b/, /(a|aa){25}b/ — overlapping alternatives
+# under a group quantifier, exponential even with no quantifier inside the parens.
+_QUANTIFIED_ALTERNATION_RE = re.compile(r"\(" + _GROUP_BODY + r"\|" + _GROUP_BODY + r"\)" + _QUANTIFIER)
+
+# Nested capturing/grouping is itself a prerequisite for most catastrophic
+# patterns and is not needed by domain-matching rules, so a group that
+# contains another group is rejected outright rather than analysed further.
+_NESTED_GROUP_RE = re.compile(r"\((?:[^()\\]|\\.)*\(")
 
 
-def _regex_probe_is_slow(compiled: re.Pattern[str]) -> bool:
-	"""Return True if matching against a fixed probe string is too slow.
+def _regex_structure_is_unsafe(pattern: str) -> str | None:
+	"""Return a rejection reason when *pattern* permits catastrophic backtracking.
 
-	Runs in the same thread/process as parsing (config save, not per-query
-	hot path), so a plain wall-clock check is sufficient here — no signal or
-	thread-based timeout is needed.
+	Grammar reduction, not timing: the checks reject the nesting/overlap shapes
+	that cause exponential matching, so an accepted pattern needs no runtime
+	timeout (which stdlib re cannot provide anyway).
 	"""
-	start = time.monotonic()
-	try:
-		compiled.search(_REGEX_PROBE_STRING)
-	except Exception:
-		return False
-	return (time.monotonic() - start) > _REGEX_PROBE_BUDGET_SECONDS
+	if _NESTED_GROUP_RE.search(pattern):
+		return "Potentially unsafe regex (nested groups)"
+	if _NESTED_REGEX_QUANTIFIER_RE.search(pattern):
+		return "Potentially unsafe regex (nested quantifiers)"
+	if _QUANTIFIED_ALTERNATION_RE.search(pattern):
+		return "Potentially unsafe regex (quantified alternation)"
+	return None
 
 
 def _parse_rule_options(options_raw: str, *, lineno: int, text: str) -> tuple[str | None, ParseError | None]:
@@ -380,30 +415,14 @@ def _parse_single_rule(text: str, lineno: int) -> ParsedRule | ParseError:
 				text=text,
 				error=f"Regex pattern too long (max {MAX_REGEX_PATTERN_LENGTH} chars)",
 			)
-		if _NESTED_REGEX_QUANTIFIER_RE.search(pattern):
-			return ParseError(
-				line=lineno,
-				text=text,
-				error="Potentially unsafe regex (nested quantifiers)",
-			)
-		if _QUANTIFIED_ALTERNATION_RE.search(pattern):
-			return ParseError(
-				line=lineno,
-				text=text,
-				error="Potentially unsafe regex (quantified alternation)",
-			)
+		unsafe_reason = _regex_structure_is_unsafe(pattern)
+		if unsafe_reason is not None:
+			return ParseError(line=lineno, text=text, error=unsafe_reason)
 
 		try:
 			compiled = re.compile(pattern, re.IGNORECASE)
 		except re.error as exc:
 			return ParseError(line=lineno, text=text, error=f"Invalid regex: {exc}")
-
-		if _regex_probe_is_slow(compiled):
-			return ParseError(
-				line=lineno,
-				text=text,
-				error="Potentially unsafe regex (exceeded matching time budget)",
-			)
 
 		return ParsedRule(
 			action=action,

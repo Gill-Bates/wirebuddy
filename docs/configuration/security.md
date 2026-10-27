@@ -17,8 +17,9 @@ The enforced password policy is:
 - no control characters or known common passwords
 - at least three of uppercase, lowercase, number, and special character
 
-The bootstrap administrator receives a random temporary password in the first
-startup log and must replace it at first login. Administrator password resets
+The bootstrap administrator's random temporary password is printed once to the
+console at first startup, never logged and never stored. It must be replaced at
+first login. Administrator password resets
 also force a change at next login and revoke existing sessions.
 
 Password policy parameters are not configurable in the current UI.
@@ -50,6 +51,11 @@ This is a single, all-or-nothing switch (`gui_https_enabled`, also settable via
 serves TLS, and logins and node enrollments reject plain-HTTP transports, so
 session cookies and node secrets are never sent in clear text. There is no
 separate policy toggle. The ACME challenge path is never affected.
+
+To enforce the same plain-HTTP authentication rejection without the built-in
+listener — for example when TLS terminates at a reverse proxy — set
+[`WIREBUDDY_REQUIRE_HTTPS_AUTH`](environment.md#wirebuddy_require_https_auth).
+Loopback peers stay exempt so local HTTP development keeps working.
 
 Which certificate is presented is decided automatically:
 
@@ -115,7 +121,10 @@ WIREBUDDY_ALLOWED_HOSTS=vpn.example.com,localhost
 ```
 
 Leave this unset only when Host-header validation is handled by a trusted
-front-end proxy.
+front-end proxy. With neither `WIREBUDDY_ALLOWED_HOSTS` nor
+`WIREBUDDY_PUBLIC_ORIGIN` set, WireBuddy logs a warning at startup unless the
+listener is bound to loopback only, where it logs an informational message
+instead.
 
 ## CSRF Protection
 
@@ -149,7 +158,7 @@ and local application assets. There is no custom-CSP editor in the UI.
 
 ## Rate Limiting and Login Lockouts
 
-SlowAPI route limits protect login, sensitive writes, expensive operations,
+Route rate limits (an in-memory sliding window per route and client address, IPv6 clients counted per /64, applied before authentication) protect login, sensitive writes, expensive operations,
 and general API traffic. Exceeded route limits return HTTP `429` with
 `Retry-After`.
 
@@ -216,8 +225,10 @@ The default vault PBKDF2 work factor is 480,000. Do not change
 `WIREBUDDY_DEPLOYMENT_ID` after encrypted data exists unless performing a
 supported migration.
 
-Encrypted data includes WireGuard private keys, preshared keys, OTP secrets,
-and ACME account material. Session and recovery tokens are stored as hashes.
+Encrypted data includes WireGuard private keys, preshared keys, and OTP
+secrets. Session and recovery tokens are stored as hashes. ACME account and
+certificate private keys are not vault-encrypted; see
+[Secrets at rest](../security/overview.md#secrets-at-rest).
 The SQLite file itself is not whole-database encrypted; use encrypted storage
 when that threat model requires it.
 

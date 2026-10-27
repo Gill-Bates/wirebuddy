@@ -5,10 +5,11 @@
 
 import fs from 'node:fs';
 
-import { PNG } from 'pngjs';
-
+import { loadDep } from '../../deps.mjs';
 import { sanitize } from '../screenshots/screenshot-normalizer.mjs';
 import { computePixelDiff, loadImageBuffer } from './pixelmatch.mjs';
+
+const { PNG } = await loadDep('pngjs');
 
 export function writeDiffArtifact({ name, diff, screenshotDir }) {
     const diffPath = `${screenshotDir}/${sanitize(name)}-diff.png`;

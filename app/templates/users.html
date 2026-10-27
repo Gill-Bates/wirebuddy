@@ -110,7 +110,7 @@
                                 <div class="users-mobile-meta">
                                     <span class="users-mobile-meta-label">Last Login:</span>
                                     {% if u['last_login_at'] %}
-                                    <span class="users-mobile-meta-value">{{ u['last_login_at'].strftime('%Y-%m-%d %H:%M') }}</span>
+                                    <span class="users-mobile-meta-value"><time datetime="{{ u['last_login_at']|utc_iso }}" data-wb-format="datetime">{{ u['last_login_at'].strftime('%Y-%m-%d %H:%M') }} UTC</time></span>
                                     {% else %}
                                     <span class="users-mobile-meta-value text-muted">Never</span>
                                     {% endif %}
@@ -127,7 +127,7 @@
 
                                 <div class="users-mobile-meta">
                                     <span class="users-mobile-meta-label">Created:</span>
-                                    <span class="users-mobile-meta-value">{{ u['created_at'].strftime('%Y-%m-%d') }}</span>
+                                    <span class="users-mobile-meta-value"><time datetime="{{ u['created_at']|utc_iso }}" data-wb-format="date">{{ u['created_at'].strftime('%Y-%m-%d') }}</time></span>
                                 </div>
                             </div>
                         </td>
@@ -148,7 +148,7 @@
                         <td data-label="Last Login">
                             {% if u['last_login_at'] %}
                             <div class="last-login">
-                                <div class="login-time">{{ u['last_login_at'].strftime('%Y-%m-%d %H:%M') }}</div>
+                                <div class="login-time"><time datetime="{{ u['last_login_at']|utc_iso }}" data-wb-format="datetime">{{ u['last_login_at'].strftime('%Y-%m-%d %H:%M') }} UTC</time></div>
                                 {% if u['last_login_ip'] %}
                                 {{ geo_ip_stack(u['last_login_ip'], u['last_login_country_code'], u['last_login_city'], u['last_login_as_org']) }}
                                 {% endif %}
@@ -157,7 +157,7 @@
                             <span class="text-muted">Never</span>
                             {% endif %}
                         </td>
-                        <td data-label="Created">{{ u['created_at'].strftime('%Y-%m-%d') }}</td>
+                        <td data-label="Created"><time datetime="{{ u['created_at']|utc_iso }}" data-wb-format="date">{{ u['created_at'].strftime('%Y-%m-%d') }}</time></td>
                         <td data-label="Actions" class="user-actions-cell wb-responsive-actions">
                             <div class="d-none d-lg-flex gap-1 justify-content-end users-desktop-actions">
                                 <button type="button" class="btn btn-sm btn-outline-secondary btn-edit-user users-action-btn"

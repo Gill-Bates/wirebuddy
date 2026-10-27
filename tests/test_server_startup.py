@@ -92,3 +92,36 @@ def test_acme_challenge_written_to_disk_is_served_by_the_plaintext_listener(tmp_
 
 	assert sent[0]["status"] == 200
 	assert sent[1]["body"] == f"{token}.keyauth".encode()
+
+
+def test_bootstrap_does_not_start_interface_with_failed_regeneration(monkeypatch, tmp_path: Path):
+	"""Fail closed: an enabled interface whose config regeneration failed must not be started from a stale file."""
+	from types import SimpleNamespace
+
+	from app import main
+	from app.api import wireguard_config
+	from app.db import sqlite_interfaces
+	from app.db.sqlite_runtime import close_connection, connect
+
+	key = "k" * 40
+	monkeypatch.setenv("WIREBUDDY_SECRET_KEY", key)
+	db_path = tmp_path / "wirebuddy.db"
+	conn = connect(db_path)
+	main.init_schema(conn)
+	for name, port in (("wg0", 51820), ("wg1", 51821)):
+		sqlite_interfaces.create_interface(conn, name, "a" * 44, "b" * 44, f"10.{port - 51820 + 10}.0.1/24", listen_port=port)
+	close_connection(conn)
+
+	def _fake_regen(config_path, conn, pepper=""):
+		return wireguard_config.RegenResult(succeeded=["wg1"], failed={"wg0": "disk full"})
+
+	monkeypatch.setattr(wireguard_config, "regenerate_all_configs", _fake_regen)
+	monkeypatch.setattr(main, "_purge_staged_interface_configs", lambda path: None)
+	# The bootstrap also probes hard-coded real DB paths (e.g. /opt/wirebuddy/data) for missing settings.
+	monkeypatch.setattr(main, "recover_missing_global_settings", lambda *_args, **_kwargs: 0)
+	cfg = SimpleNamespace(db_path=db_path, secret_key=key, base_dir=tmp_path)
+
+	interfaces, key_mismatch, _ = main._bootstrap_sync(cfg)
+
+	assert not key_mismatch
+	assert interfaces == ["wg1"]

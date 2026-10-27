@@ -5,8 +5,10 @@
 
 import fs from 'node:fs';
 
-import pixelmatch from 'pixelmatch';
-import { PNG } from 'pngjs';
+import { loadDep } from '../../deps.mjs';
+
+const { default: pixelmatch } = await loadDep('pixelmatch');
+const { PNG } = await loadDep('pngjs');
 
 export function loadImageBuffer(source) {
     if (typeof source === 'string') {

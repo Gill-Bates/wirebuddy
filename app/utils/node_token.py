@@ -18,6 +18,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import hmac
+import ipaddress
 import json
 import re
 import secrets
@@ -28,6 +29,8 @@ from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.x509.oid import ExtendedKeyUsageOID, NameOID
+
+from .key_domains import derive_enrollment_hmac_key
 
 MAX_TOKEN_AGE = timedelta(hours=24)
 _CLOCK_SKEW = timedelta(minutes=5)
@@ -81,6 +84,15 @@ def _normalize_master_url(master_url: str) -> str:
 		raise ValueError("master_url must not contain query or fragment")
 
 	host = parsed.hostname.rstrip(".").lower()
+	try:
+		addr = ipaddress.ip_address(host)
+	except ValueError:
+		pass
+	else:
+		# urlsplit() strips the required brackets from an IPv6 literal; restore
+		# them so the reassembled authority stays a valid IPv6 URL.
+		if addr.version == 6:
+			host = f"[{addr.compressed}]"
 	netloc = host if parsed.port is None else f"{host}:{parsed.port}"
 	return urlunsplit(("https", netloc, parsed.path.rstrip("/"), "", ""))
 
@@ -121,7 +133,7 @@ def _serialize_payload(payload: dict[str, str]) -> str:
 def _sign_payload(payload_json: str, secret_key: str) -> str:
 	"""Return the HMAC-SHA256 hex signature for a serialized payload."""
 	return hmac.new(
-		secret_key.encode("utf-8"),
+		derive_enrollment_hmac_key(secret_key),
 		payload_json.encode("utf-8"),
 		hashlib.sha256,
 	).hexdigest()

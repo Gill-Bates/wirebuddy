@@ -11,19 +11,19 @@ Use WireGuard with ease!
   <br>
   <a href="https://github.com/Gill-Bates/wirebuddy/blob/main/LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="License"></a>
   <a href="#quick-start"><img src="https://img.shields.io/badge/Platform-linux%2Famd64%20|%20linux%2Farm64-lightgrey?logo=linux&logoColor=white" alt="Platform"></a>
+  <a href="https://gill-bates.github.io/wirebuddy/"><img src="https://img.shields.io/badge/Docs-Online-green?logo=readthedocs&logoColor=white" alt="Documentation"></a>
 </p>
 
 <p align="center">
-  <a href="https://gill-bates.github.io/wirebuddy/"><img src="https://img.shields.io/badge/Documentation-2ea44f?style=for-the-badge&logo=readthedocs&logoColor=white" alt="Documentation"></a>
-  <a href="https://gill-bates.github.io/wirebuddy/getting-started/quick-start/"><img src="https://img.shields.io/badge/Quick%20Start-0a7bbb?style=for-the-badge&logo=docker&logoColor=white" alt="Quick Start"></a>
-  <a href="https://gill-bates.github.io/wirebuddy/changelog/"><img src="https://img.shields.io/badge/Changelog-6f42c1?style=for-the-badge&logo=keepachangelog&logoColor=white" alt="Changelog"></a>
-  <a href="https://github.com/Gill-Bates/wirebuddy"><img src="https://img.shields.io/badge/GitHub-24292f?style=for-the-badge&logo=github&logoColor=white" alt="GitHub"></a>
+  <a href="https://gill-bates.github.io/wirebuddy/">Documentation</a> •
+  <a href="https://gill-bates.github.io/wirebuddy/getting-started/quick-start/">Quick Start</a> •
+  <a href="https://github.com/Gill-Bates/wirebuddy">GitHub</a>
 </p>
 
 ---
 
 A complete self-hosted VPN solution with web-based management, integrated Unbound DNS resolver, ad-blocking, real-time traffic analytics, and GeoIP visualization.
-
+<br>
 <p align="center">
   <img src="https://raw.githubusercontent.com/Gill-Bates/wirebuddy/main/.github/img/screen_2.jpeg" alt="WireBuddy dashboard: nodes, connections, traffic, bandwidth, peer locations map, and speedtest history" width="800"><br>
   <em>Dashboard — network status, peer locations, and speedtest history at a glance.</em>
@@ -65,172 +65,34 @@ A complete self-hosted VPN solution with web-based management, integrated Unboun
 | **GeoIP** | MaxMind GeoLite2 integration, interactive heatmap, country flags & ASN badges |
 | **HTTPS & Certificates** | Built-in HTTPS with self-signed or Let's Encrypt certificates, HTTP-01 validation, and certificate management |
 | **User Management** | Multi-user roles, Passkeys (WebAuthn) & MFA (TOTP), login tracking |
-| **Web UI** | Responsive Bootstrap 5, dark/light/auto theme, Material Icons |
+| **Web UI** | Customizable drag-and-drop dashboard, responsive Bootstrap 5, dark/light/auto theme, Material Icons |
 
 ---
 
-## Quick Start
+## Getting Started
 
 ```bash
-docker run -d \
-  --name wirebuddy \
-  --network host \
-  --cap-drop ALL \
-  --cap-add NET_ADMIN \
-  --cap-add NET_BIND_SERVICE \
-  --cap-add SETUID \
-  --cap-add SETGID \
-  --cap-add CHOWN \
-  --cap-add DAC_OVERRIDE \
-  --security-opt no-new-privileges:true \
-  --stop-timeout 40 \
-  --device /dev/net/tun:/dev/net/tun \
-  -e TZ=Etc/UTC \
-  -e WIREBUDDY_SECRET_KEY="$(head -c 32 /dev/urandom | base64)" \
-  -v wirebuddy-data:/app/data \
-  giiibates/wirebuddy:latest
+docker pull giiibates/wirebuddy:latest
 ```
 
-Then open `http://<your-server-ip>:8000` in your browser.
+WireBuddy expects Linux with `network_mode: host`, a `/dev/net/tun` device and
+WireGuard support in the host kernel. Set `WIREBUDDY_SECRET_KEY` (required) and
+open `http://<your-server-ip>:8000`. The temporary `admin` password is printed
+once to the container log (`docker logs wirebuddy`).
 
-This quick start serves the GUI over HTTP. To use WireBuddy's built-in HTTPS,
+The default setup serves the GUI over HTTP. To use WireBuddy's built-in HTTPS,
 enable **Settings → General → Serve GUI over HTTPS**, then restart the
-container: the listener only changes on restart. WireBuddy uses a self-signed
-certificate until you obtain a Let's Encrypt certificate in **Settings → Let's
-Encrypt**. If no certificate can be prepared, the container refuses to start
-instead of falling back to plain HTTP. Behind a reverse proxy that terminates
-HTTPS, leave the setting off.
+container. It uses a self-signed certificate until you obtain a Let's Encrypt
+certificate in **Settings → Let's Encrypt**.
 
-> **Warning:** Until HTTPS is enabled, the first sign-in (including the
-> bootstrap password) travels in clear text. Do it from the host itself, over an
-> SSH tunnel (`ssh -L 8000:127.0.0.1:8000 <server>`) or from a trusted network,
-> not across an untrusted LAN or the internet.
-
-WireBuddy trusts forwarded headers (`X-Forwarded-*`) from loopback
-(`127.0.0.1`, `::1`) by default, so a reverse proxy on the same host (Caddy,
-nginx) works out of the box for HTTPS origin checks. If your proxy connects
-from a different IP or container network, set `WIREBUDDY_TRUSTED_PROXIES` to
-that proxy's IP(s) or CIDR(s).
-
-On first boot of a new database, WireBuddy automatically creates a bootstrap `admin` user with a randomly generated temporary password. The password is printed to the container log — check `docker logs wirebuddy` after the first start to retrieve it. You will be prompted to set a permanent password on the first login.
-
----
-
-## Docker Compose
-
-```yaml
-services:
-  wirebuddy:
-    image: giiibates/wirebuddy:latest
-    container_name: wirebuddy
-    restart: always
-    stop_grace_period: 40s
-    network_mode: host
-    cap_drop:
-      - ALL
-    cap_add:
-      - NET_ADMIN          # WireGuard interfaces, iptables/nft rules
-      - NET_BIND_SERVICE   # Unbound binds the privileged DNS port 53
-      - SETUID             # Unbound drops privileges to the 'unbound' user
-      - SETGID
-      - CHOWN              # hands the DNS query log to that user
-      - DAC_OVERRIDE       # root writes into the unbound-owned log directory
-    devices:
-      - /dev/net/tun:/dev/net/tun
-    environment:
-      LOG_LEVEL: INFO
-      TZ: Etc/UTC
-      # Generate once with `head -c 32 /dev/urandom | base64`, store it in .env and keep it
-      WIREBUDDY_SECRET_KEY: "${WIREBUDDY_SECRET_KEY:?Set WIREBUDDY_SECRET_KEY in .env}"
-      WIREBUDDY_PORT: "8000"
-      # Trusted reverse-proxy IPs/CIDRs. Defaults to loopback; extend if your
-      # proxy is not on 127.0.0.1 (e.g. a separate container network).
-      WIREBUDDY_TRUSTED_PROXIES: "127.0.0.1,::1"
-      WIREBUDDY_DATA_DIR: /app/data
-    volumes:
-      - ./data:/app/data
-    logging:
-      driver: json-file
-      options:
-        max-size: "50m"
-        max-file: "5"
-    security_opt:
-      - no-new-privileges:true
-```
-
----
-
-## Environment Variables
-
-| Variable | Required | Default | Description |
-|----------|----------|---------|-------------|
-| `WIREBUDDY_SECRET_KEY` | **Yes** | — | Encryption key for database secrets. Generate with: `head -c 32 /dev/urandom \| base64` |
-| `LOG_LEVEL` | No | `INFO` | Log verbosity: `DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL` |
-| `WIREBUDDY_PORT` | No | `8000` | HTTP port for the web UI |
-| `WIREBUDDY_PUBLIC_ORIGIN` | No | — | Canonical public URL (e.g. `https://vpn.example.com`). Derives CSRF origins, passkey origin, Host-header allowlist and secure cookies/HSTS for `https://` |
-| `WIREBUDDY_TRUSTED_PROXIES` | No | `127.0.0.1,::1` | Comma-separated proxy IPs or CIDRs trusted for both uvicorn's forwarded headers and app-level proxy-trust checks (CSRF/origin, client-IP resolution) |
-| `TZ` | No | Container default | Time zone used for logs and scheduled tasks |
-| `WIREBUDDY_DATA_DIR` | No | `/app/data` | Base directory for persistent application data inside the container |
-
-> Important: Keep `WIREBUDDY_SECRET_KEY` secure and consistent across container recreations. Losing this key means losing access to encrypted WireGuard private keys.
-
----
-
-## Volumes
-
-| Path | Description |
-|------|-------------|
-| `/app/data` | Persistent data (SQLite database, certificates, DNS configs, TSDB) |
-
----
-
-## Requirements
-
-- **Host network mode** (`--network host`) — Required for WireGuard to manage network interfaces
-- **Capabilities** — `NET_ADMIN` for WireGuard interfaces and iptables rules. With `--cap-drop ALL` the DNS resolver additionally needs `NET_BIND_SERVICE`, `SETUID`, `SETGID`, `CHOWN`, and `DAC_OVERRIDE`; without a full drop, Docker's default set already covers those
-- **TUN device** (`/dev/net/tun`) — Required for VPN tunnels
-- Linux host with kernel 5.6+ (WireGuard built in) or a compatible WireGuard kernel module installed on the host
-
-### GUI port and health check
-
-`WIREBUDDY_PORT` always wins over the GUI port stored in **Settings → General**
-(`gui_port`). The supplied Compose file always sets it (default `8000`), so under
-Compose a port changed only in the Settings has no effect: change
-`WIREBUDDY_PORT` instead. Without `WIREBUDDY_PORT` (plain `docker run`), the
-entrypoint binds to the stored `gui_port`.
-
-The image health check calls `/ready` on the scheme and port the container
-actually started with, so it follows the port and **Serve GUI over HTTPS**
-without extra configuration. `/ready` also fails when the database, the
-scheduler or the DNS log ingestion is not working, not just when the process is
-gone.
-
-### WireGuard source policy
-
-The image builds `wg` and `wg-quick` from the current `master` branch of the official
-[`wireguard-tools`](https://git.zx2c4.com/wireguard-tools/) repository whenever the image is built.
-The Debian `wireguard`, `wireguard-tools`, and `wireguard-dkms` packages are pinned with APT priority `-1`
-and cannot be installed into the image.
-
-Containers share the host kernel, so an upstream Linux kernel module cannot be baked into a portable image.
-The host must provide the WireGuard implementation. Rebuild the image to pick up newer upstream
-`wireguard-tools` revisions.
-
----
-
-## Documentation
-
-For complete installation guides, configuration options, API reference, and troubleshooting:
-
-**[gill-bates.github.io/wirebuddy](https://gill-bates.github.io/wirebuddy/)**
+For the Compose file, `docker run` command, environment variables, and security
+setup, see the **[Documentation](https://gill-bates.github.io/wirebuddy/getting-started/docker/)**.
 
 ---
 
 ## License
 
-**MIT License** — see [LICENSE](https://github.com/Gill-Bates/wirebuddy/blob/main/LICENSE) for details.
-
----
+Released under the [MIT License](https://github.com/Gill-Bates/wirebuddy/blob/main/LICENSE).
 
 <p align="center">
   Maintained by <a href="https://github.com/Gill-Bates">Gill-Bates</a>

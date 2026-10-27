@@ -14,7 +14,7 @@ Container packaging for WireBuddy: a multi-stage Dockerfile (Python 3.13-slim, w
 | `docker-compose.yml` | Master deployment: host networking, `cap_drop: ALL` plus NET_ADMIN/NET_BIND_SERVICE/SETUID/SETGID/CHOWN/DAC_OVERRIDE, `/dev/net/tun`, `./data:/app/data`, no healthcheck override (uses the image's); requires `WIREBUDDY_SECRET_KEY` from `.env` (`${VAR:?}`) |
 | `docker-compose.node.yml` | Cluster node deployment: `SERVER_MODE=node`, only NET_ADMIN, requires `WIREBUDDY_ENROLLMENT_TOKEN` and `WIREBUDDY_ENROLLMENT_VERIFY_KEY`, healthcheck disabled, smaller log rotation |
 | `apt-no-distro-wireguard.pref` | APT pin (priority -1) that blocks Debian `wireguard`, `wireguard-tools`, `wireguard-dkms`; the Dockerfile asserts the pin is effective |
-| `README_Docker.md` | Docker Hub description: features, quick start, compose, env vars, volumes, requirements, WireGuard source policy |
+| `README_Docker.md` | Docker Hub description, as short as the root `README.md`: header, screenshots, features, getting started, link to the docs, license. Compose, env vars, volumes and requirements live only in `docs/getting-started/docker.md` and `docs/configuration/environment.md` |
 
 ## For AI Agents
 
@@ -24,7 +24,7 @@ Container packaging for WireBuddy: a multi-stage Dockerfile (Python 3.13-slim, w
 - Never install Debian WireGuard packages; keep the APT pin and the assertion loop in the Dockerfile.
 - Compose files use `${VAR:?message}` for required secrets; never put real secret values in them or in `README_Docker.md`.
 - Keep the capability set minimal; node mode intentionally has fewer capabilities than master.
-- Changes to env vars, ports or volumes must be mirrored in `README_Docker.md` and `docs/getting-started/docker.md`, `docs/configuration/environment.md`.
+- Changes to env vars, ports or volumes must be mirrored in `docs/getting-started/docker.md` and `docs/configuration/environment.md`. Keep `README_Docker.md` short and do not copy them back into it.
 
 ### Testing Requirements
 - CI (`.github/workflows/docker-build.yml`) builds per architecture and smoke-tests master and node mode, then records the installed toolchain versions and runs a Trivy scan; reproduce locally with `docker build -f docker/Dockerfile .` and `docker compose -f docker/docker-compose.yml config`.

@@ -8,6 +8,7 @@
 
 from __future__ import annotations
 
+import calendar
 from datetime import UTC, datetime
 
 
@@ -87,3 +88,49 @@ def parse_db_timestamp(value: object) -> datetime | None:
 	if isinstance(value, str):
 		return parse_utc(value)
 	return None
+
+
+def to_utc_iso(value: object) -> str:
+	"""Render a timestamp as ISO-8601 UTC with a ``Z`` suffix, or ``""`` if unusable.
+
+	Single wire format for server-rendered ``<time datetime>`` values; the browser
+	does the localisation. A naive datetime is read as UTC (storage contract).
+	"""
+	dt = parse_db_timestamp(value)
+	if dt is None:
+		return ""
+	return dt.strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
+
+
+def subtract_months(dt: datetime, months: int) -> datetime:
+	"""Subtract calendar months from an aware datetime, clamping the day to the target month."""
+	if not _is_aware(dt):
+		raise ValueError("Naive datetime not allowed - must be timezone-aware")
+	index = dt.year * 12 + (dt.month - 1) - months
+	year, month = divmod(index, 12)
+	month += 1
+	day = min(dt.day, calendar.monthrange(year, month)[1])
+	return dt.replace(year=year, month=month, day=day)
+
+
+def is_peer_stale(last_seen: object, stale_months: int, now: datetime | None = None) -> bool:
+	"""Return True when *last_seen* is at least *stale_months* calendar months before *now*.
+
+	*last_seen* is epoch seconds (``peers.last_handshake_at``) or a datetime;
+	missing or non-positive values are never stale.
+	"""
+	if isinstance(last_seen, bool):
+		return False
+	if isinstance(last_seen, (int, float)):
+		if last_seen <= 0:
+			return False
+		try:
+			seen = datetime.fromtimestamp(last_seen, UTC)
+		except (OverflowError, OSError, ValueError):
+			return False
+	else:
+		seen = parse_db_timestamp(last_seen)
+		if seen is None:
+			return False
+	current = ensure_utc(now) if now is not None else utcnow()
+	return seen <= subtract_months(current, stale_months)

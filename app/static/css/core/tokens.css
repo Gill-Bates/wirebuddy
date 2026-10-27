@@ -21,6 +21,9 @@
    * ============================================ */
   --wb-viewport-h: 100dvh;
 
+  /* Fixed footer: single definition for every page (the .wb-footer min-height uses it too). */
+  --wb-footer-height: calc(48px + env(safe-area-inset-bottom, 0px));
+
   /* ============================================
    * Spacing Scale (4px base)
    * ============================================ */

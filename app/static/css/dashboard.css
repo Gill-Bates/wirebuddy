@@ -3,24 +3,17 @@
         color: #fff;
     }
 
-    .dashboard-header {
-        display: flex;
-        justify-content: space-between;
-        align-items: center;
-        flex-wrap: wrap;
-        gap: 0.75rem;
+    /* Height comes from the layer that places the map: the GridStack tile (css/pages/dashboard.css)
+       or the stacked phone/tablet layout there. */
+    #peer-map {
+        position: relative;
+        z-index: 0;
+        isolation: isolate;
+        border-radius: 0.5rem;
     }
 
     .map-kpis {
         flex-wrap: wrap;
-    }
-
-    #peer-map {
-        height: clamp(400px, 50vh, 650px);
-        border-radius: 0.5rem;
-        position: relative;
-        z-index: 0;
-        isolation: isolate;
     }
 
     .map-kpi {
@@ -44,74 +37,10 @@
         width: auto;
     }
 
-    :where(.dashboard-traffic-metric .dashboard-metric-unit) {
-        margin-left: 0;
-    }
-
-    .dashboard-kpi-subtext {
-        display: block;
-        font-size: 0.7rem;
-    }
-
-    .dashboard-bandwidth-main {
-        line-height: 1.1;
-        white-space: nowrap;
-    }
-
-    .dashboard-bandwidth-sub {
-        line-height: 1.2;
-        white-space: nowrap;
-    }
-
-    .dashboard-stats-row .wb-kpi-card {
-        min-height: 85px;
-        overflow: hidden;
-    }
-
-    .dashboard-stats-row .wb-kpi-card .card-body {
-        display: flex;
-        overflow: hidden;
-    }
-
     /* Allow cards to shrink inside grid/flex layouts */
     .card,
     :where(.card-body) {
         min-width: 0;
-    }
-
-    .dashboard-stats-row .wb-kpi-card .card-body>.d-flex {
-        width: 100%;
-        min-height: 100%;
-    }
-
-    .dashboard-stats-row .flex-shrink-0 {
-        display: flex;
-        align-items: center;
-    }
-
-    .dashboard-stats-row .wb-kpi-icon {
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        line-height: 1;
-        color: var(--bs-secondary-color);
-    }
-
-    .dashboard-traffic-summary {
-        display: flex;
-        flex-direction: column;
-        gap: 0.2rem;
-    }
-
-    .dashboard-traffic-summary .dashboard-traffic-metric {
-        display: inline-flex;
-        align-items: baseline;
-        gap: 0.35rem;
-        flex-wrap: wrap;
-    }
-
-    :where(.dashboard-traffic-summary .dashboard-metric-prefix) {
-        font-weight: 600;
     }
 
     :where(.dashboard-metric-prefix),
@@ -149,155 +78,10 @@
     .speedtest-chart-wrap {
         position: relative;
         height: 100%;
-        min-height: 180px;
     }
 
     .speedtest-last-icon {
         font-size: 14px;
-    }
-
-    /* Mobile-first Grid Layout */
-    .dashboard-main-grid {
-        display: grid;
-        grid-template-columns: 1fr;
-        gap: var(--wb-space-3);
-        margin-bottom: var(--wb-space-3);
-    }
-
-    /* Prevent grid children from overflowing horizontally */
-    .dashboard-main-grid>* {
-        min-width: 0;
-    }
-
-    @media (width >= 1200px) {
-        /* Dashboard page fills viewport — no scroll on desktop */
-        .dashboard-page {
-            display: flex;
-            flex-direction: column;
-            height: 100%;
-            overflow: hidden;
-        }
-
-        /* Header stays at natural height, unaffected by scale */
-        .dashboard-page>.wb-page-header {
-            flex-shrink: 0;
-        }
-
-        /* Scaled body fills remaining space */
-        .dashboard-page-body {
-            flex: 1 1 0;
-            min-height: 0;
-            display: flex;
-            flex-direction: column;
-        }
-
-        /* KPI row stays at natural height */
-        .dashboard-page-body>.row:first-of-type {
-            flex-shrink: 0;
-        }
-
-        /* Main grid fills all remaining viewport space */
-        .dashboard-main-grid {
-            flex: 1 1 0;
-            min-height: 0;
-            margin-bottom: 0;
-            gap: var(--wb-space-3);
-            grid-template-columns: minmax(600px, 2fr) minmax(340px, 1fr);
-
-            /* 3 Zeilen: Speedtest (260px), Map + Recent bekommen je +1 Einheit */
-            grid-template-rows: 260px 1fr 1fr;
-        }
-
-        /* Map column spans full grid height */
-        .dashboard-map-col {
-            grid-column: 1;
-            grid-row: 1 / 4;
-
-            /* spannt alle 3 Zeilen */
-            min-height: 0;
-        }
-
-        .dashboard-map-col,
-        .dashboard-map-col .card,
-        .dashboard-speedtest-col,
-        .dashboard-speedtest-col .card,
-        .dashboard-recent-peers-col,
-        .dashboard-recent-peers-col .card {
-            display: flex;
-            flex-direction: column;
-        }
-
-        .dashboard-map-col .card {
-            flex: 1 1 0;
-            min-height: 0;
-        }
-
-        .dashboard-map-col .card-body {
-            flex: 1 1 0;
-            min-height: 0;
-        }
-
-        #peer-map {
-            height: 100%;
-            min-height: 500px;
-
-            /* Increase map height for better visibility */
-        }
-
-        /* Speedtest: compact, fixed height */
-        .dashboard-speedtest-col {
-            grid-column: 2;
-            grid-row: 1;
-            min-height: 0;
-            display: flex;
-        }
-
-        .dashboard-speedtest-col .card {
-            flex: 1 1 auto;
-            min-height: 260px;
-
-            /* Increase speedtest card height */
-        }
-
-        .dashboard-speedtest-col .speedtest-chart-wrap {
-            height: 100%;
-            min-height: 140px;
-        }
-
-        .dashboard-speedtest-col .card-body {
-            padding-bottom: 0.5rem;
-            display: flex;
-            flex-direction: column;
-            height: 100%;
-            overflow: hidden;
-        }
-
-        /* Recent Peer Activity: fills remaining height, scrolls */
-        .dashboard-recent-peers-col {
-            grid-column: 2;
-            grid-row: 2 / 4;
-
-            /* spannt Zeile 2 + 3 */
-            min-height: 0;
-            display: flex;
-        }
-
-        .dashboard-recent-peers-col .card {
-            flex: 1 1 auto;
-            min-height: 0;
-        }
-
-        .dashboard-recent-peers-col .card-body {
-            flex: 1 1 0;
-            min-height: 0;
-            overflow-y: auto;
-            display: flex;
-            flex-direction: column;
-        }
-
-        .dashboard-stats-row {
-            margin-bottom: var(--wb-space-3) !important;
-        }
     }
 
     .recent-peer-subline {
@@ -325,14 +109,19 @@
         white-space: nowrap;
     }
 
-    :where(.recent-peers-card .card-body) {
+    /* Not :where(): zero specificity lost to .card-body's 1rem padding, so body and row padding added up. */
+    .recent-peers-card>.card-body {
         min-height: 0;
         overflow: hidden auto;
         padding: 0;
         display: flex;
     }
 
+    /* Row padding plus this block padding equals the 1rem tile inset, so all four sides match. */
     #recent-peers {
+        --peer-row-pad-y: 0.55rem;
+
+        padding-block: calc(1rem - var(--peer-row-pad-y));
         display: flex;
         flex-direction: column;
         align-items: stretch;
@@ -367,7 +156,7 @@
         width: 100%;
         box-sizing: border-box;
         min-width: 0;
-        padding: 0.55rem 1rem;
+        padding: var(--peer-row-pad-y) 1rem;
         border-radius: 0.5rem;
     }
 
@@ -408,44 +197,9 @@
         background-color: var(--bs-tertiary-bg, rgb(0 0 0 / 4%));
     }
 
-
-    @media (width <= 1199.98px) {
-        .dashboard-map-col .card {
-            height: auto;
-        }
-
-        .recent-peers-card .card-body {
-            max-height: none;
-            overflow: visible;
-        }
-    }
-
     @media (width <= 991.98px) {
-        #peer-map {
-            height: clamp(360px, 45vh, 500px);
-        }
-
         .map-kpis {
             font-size: 0.8rem;
-        }
-
-        .recent-peers-card {
-            flex: none;
-            min-height: 200px;
-        }
-    }
-
-    @media (width <= 767.98px) {
-        #peer-map {
-            height: 300px;
-        }
-
-        .dashboard-traffic-metric .dashboard-metric-unit {
-            display: inline;
-            margin-left: 0;
-            font-size: 0.875rem;
-            color: var(--bs-secondary-color);
-            white-space: nowrap;
         }
 
         .recent-peers-card .card-body {
@@ -457,66 +211,11 @@
             overflow-y: visible;
             flex: none;
         }
-
-        .speedtest-card {
-            min-height: 180px;
-        }
     }
 
     @media (width <= 575.98px) {
-        #peer-map {
-            height: 260px;
-        }
-
-        .dashboard-kpi-grid {
-            gap: 0.55rem;
-        }
-
-        .dashboard-kpi-tile {
-            min-width: 0;
-        }
-
-        .dashboard-stats-row .wb-kpi-card {
-            min-height: 90px;
-        }
-
-        .dashboard-stats-row .wb-kpi-card .card-body {
-            padding: 0.75rem;
-        }
-
-        .dashboard-stats-row .wb-kpi-card .wb-kpi-value,
-        .dashboard-stats-row .wb-kpi-card .h3.wb-kpi-value {
-            font-size: 1.2rem !important;
-            line-height: 1.15;
-        }
-
-        .dashboard-bandwidth {
-            display: flex;
-            flex-direction: column;
-            gap: 0.15rem;
-        }
-
-        .dashboard-bandwidth-main.wb-kpi-value {
-            font-size: 1.2rem !important;
-        }
-
-        .dashboard-bandwidth-sub {
-            font-size: 0.78rem !important;
-        }
-
-        .dashboard-header {
-            flex-direction: column;
-            align-items: stretch;
-            gap: 0.5rem;
-        }
-
-        .dashboard-page-title {
-            font-size: 1.1rem;
-        }
-
-        #recent-peers .peer-row-clickable {
-            padding-top: 0.75rem;
-            padding-bottom: 0.75rem;
+        #recent-peers {
+            --peer-row-pad-y: 0.75rem;
         }
 
         .network-gauges-grid {
@@ -550,7 +249,6 @@
         .network-pagination {
             display: flex !important;
         }
-
     }
 
     #peer-map.leaflet-container {
@@ -682,13 +380,6 @@
         .network-item-rates {
             flex-wrap: nowrap;
             gap: 0.5rem;
-        }
-    }
-
-    /* Keep KPI tiles readable while the stats row is stacked below xl. */
-    @media (width >= 768px) and (width < 1200px) {
-        .dashboard-kpi-grid {
-            grid-template-columns: repeat(4, minmax(0, 1fr));
         }
     }
 
@@ -834,132 +525,4 @@
         background: var(--wb-primary, #88171a);
         opacity: 1;
         transform: scale(1.18);
-    }
-
-    /* ─── KPI row spacing only (fix uneven vertical gaps) ─────────── */
-    .dashboard-stats-row {
-        --bs-gutter-x: var(--wb-space-3);
-        --bs-gutter-y: var(--wb-space-3);
-
-        margin-bottom: var(--wb-space-3) !important;
-    }
-
-    /* ─── Dashboard KPI Tiles: stable 2x2 mobile grid ───────────── */
-
-    .dashboard-kpi-grid {
-        display: grid;
-        grid-template-columns: repeat(2, minmax(0, 1fr));
-        gap: 0.75rem;
-        width: 100%;
-        min-width: 0;
-    }
-
-    .dashboard-kpi-tile {
-        min-width: 0;
-    }
-
-    .dashboard-kpi-tile .wb-kpi-card {
-        height: 100%;
-        min-width: 0;
-        overflow: hidden;
-    }
-
-    .dashboard-kpi-tile .wb-kpi-card .card-body {
-        min-width: 0;
-    }
-
-    :where(.dashboard-kpi-tile .wb-kpi-card .card-body>.d-flex) {
-        min-width: 0;
-    }
-
-    .dashboard-kpi-tile .flex-grow-1,
-    .dashboard-kpi-tile .wb-kpi-custom-content,
-    .dashboard-kpi-tile .dashboard-bandwidth {
-        min-width: 0;
-        max-width: 100%;
-    }
-
-    .dashboard-kpi-tile .wb-kpi-label {
-        white-space: nowrap;
-        overflow: hidden;
-        text-overflow: ellipsis;
-    }
-
-    .dashboard-kpi-tile .wb-kpi-value,
-    .dashboard-kpi-tile .h3.wb-kpi-value {
-        max-width: 100%;
-        min-width: 0;
-        white-space: nowrap;
-        overflow: hidden;
-        text-overflow: ellipsis;
-        font-variant-numeric: tabular-nums;
-    }
-
-    .dashboard-kpi-tile .dashboard-bandwidth-main,
-    .dashboard-kpi-tile .dashboard-bandwidth-sub,
-    .dashboard-kpi-tile .dashboard-traffic-metric {
-        min-width: 0;
-        max-width: 100%;
-        display: flex;
-        align-items: baseline;
-        gap: 0.25rem;
-        white-space: nowrap;
-        overflow: hidden;
-    }
-
-    .dashboard-kpi-tile .dashboard-metric-prefix {
-        flex: 0 0 auto;
-        font-weight: 700;
-    }
-
-    .dashboard-kpi-tile .dashboard-metric-value {
-        min-width: 0;
-        overflow: hidden;
-        text-overflow: ellipsis;
-        font-variant-numeric: tabular-nums;
-    }
-
-    .dashboard-kpi-tile .dashboard-metric-unit {
-        flex: 0 0 auto;
-        font-size: 0.72em;
-        color: var(--bs-secondary-color);
-    }
-
-    @media (width <= 575.98px) {
-        .dashboard-kpi-grid {
-            grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
-            gap: 0.55rem;
-        }
-
-        .dashboard-kpi-tile .wb-kpi-card {
-            min-height: 7.2rem;
-            border-radius: 1rem;
-        }
-
-        .dashboard-kpi-tile .wb-kpi-card .card-body {
-            padding: 0.7rem;
-        }
-
-        .dashboard-kpi-tile .wb-kpi-card .card-body>.d-flex {
-            gap: 0.55rem !important;
-        }
-
-        .dashboard-kpi-tile .wb-kpi-icon {
-            font-size: 1.35rem;
-        }
-
-        .dashboard-kpi-tile .wb-kpi-label {
-            font-size: 0.68rem;
-            line-height: 1.1;
-        }
-
-        .dashboard-kpi-tile .wb-kpi-value,
-        .dashboard-kpi-tile .h3.wb-kpi-value {
-            font-size: clamp(1rem, 5vw, 1.35rem) !important;
-            line-height: 1.05;
-        }
-
-        .dashboard-kpi-tile .dashboard-bandwidth-sub {
-            font-size: 0.76rem !important;
-        }
     }

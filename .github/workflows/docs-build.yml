@@ -44,10 +44,12 @@ on:
 permissions:
   contents: read
 
-# Allow one concurrent deployment
+# The weekly scan runs on the default branch like a deployment does, so it gets
+# its own group: sharing one would let a starting scan cancel a running deploy.
+# Only PR runs are cancellable; a deploy already underway is left to finish.
 concurrency:
-  group: docs-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  group: docs-${{ github.workflow }}-${{ github.event_name == 'schedule' && 'scan' || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   build:
@@ -94,6 +96,34 @@ jobs:
           cat requirements-docs.txt
           pip install --upgrade pip
           pip install -r requirements-docs.txt
+
+      # The docs extra lists direct dependencies without versions, so what got
+      # resolved is only known here. Scanning this very environment, in the job
+      # that builds the site, keeps scan and build on one dependency set.
+      # Trivy reports on what a manifest names, and the extra names only the
+      # direct dependencies; the frozen list adds the transitive ones. The file
+      # name has to contain "requirement" or Trivy's pip analyzer skips it.
+      - name: Freeze the resolved docs environment
+        run: pip freeze --all > docs-requirements-frozen.txt
+
+      - name: Trivy scan docs dependencies
+        # Pinned to an immutable commit SHA, see GHSA-69fq-xp46-6x23.
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          cache: 'false'
+          scan-type: 'fs'
+          scan-ref: 'docs-requirements-frozen.txt'
+          # Trivy floats to the newest release on purpose; the action stays SHA-pinned.
+          version: 'latest'
+          format: 'table'
+          exit-code: '1'
+          ignore-unfixed: true
+          # Dependency list only. No gate owns secret/misconfig scanning yet
+          # (open gap, would be a Trivy fs job in ci.yml).
+          scanners: 'vuln'
+          severity: 'CRITICAL,HIGH'
+          timeout: '5m'
+          trivyignores: '.trivyignore'
 
       - name: Copy root files to docs
         run: |
@@ -146,7 +176,6 @@ jobs:
       )
     needs:
       - build
-      - security-scan
     runs-on: ubuntu-26.04
     timeout-minutes: 10
     permissions:
@@ -159,64 +188,3 @@ jobs:
       - name: Deploy to GitHub Pages
         id: deployment
         uses: actions/deploy-pages@v5
-
-  security-scan:
-    runs-on: ubuntu-26.04
-    timeout-minutes: 10
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v5
-        with:
-          # The same commit the build job resolves, or the scan would report
-          # against a different dependency set than the one being deployed.
-          ref: ${{ github.event.workflow_run.head_sha }}
-
-      # Same interpreter the build job uses, so the resolution below is the one
-      # that actually builds the docs.
-      - name: Set up Python
-        uses: actions/setup-python@v6
-        with:
-          python-version: '3.13'
-
-      # Trivy reports on what a manifest names, and the docs extra names its
-      # seven direct dependencies only: mkdocs-material alone pulls in jinja2,
-      # markupsafe, babel, requests, urllib3 and pygments, none of which appear
-      # in pyproject.toml. Scanning the extra by itself therefore left the
-      # majority of the installed code unscanned. Installing it and freezing the
-      # result gives the scanner the environment mkdocs is built in, transitive
-      # set included.
-      #
-      # The frozen file is a scan inventory, not an installation pin: the build
-      # job resolves the extra itself, and every direct dependency is pinned in
-      # pyproject.toml, so the two environments agree on everything a pinned
-      # dependency determines.
-      - name: Materialise the docs environment for scanning
-        run: |
-          set -euo pipefail
-          python3 tools/pyproject-deps.py docs > requirements-docs.txt
-          python3 -m venv .docs-scan
-          .docs-scan/bin/python -m pip install --quiet --upgrade pip
-          .docs-scan/bin/python -m pip install --quiet -r requirements-docs.txt
-          # The name has to contain "requirement" or Trivy's pip analyzer does
-          # not pick the file up at all.
-          .docs-scan/bin/python -m pip freeze --all > docs-requirements-frozen.txt
-          echo "Scanning $(grep -c '==' docs-requirements-frozen.txt) resolved packages:"
-          cat docs-requirements-frozen.txt
-
-      - name: Trivy scan docs dependencies
-        # Pinned to an immutable commit SHA — see GHSA-69fq-xp46-6x23.
-        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
-        with:
-          # As in docker-build.yml: the action's default scanner version trails
-          # its own releases, and the database it reads is downloaded fresh on
-          # every run regardless.
-          version: 'latest'
-          cache: 'false'
-          scan-type: 'fs'
-          # The frozen environment, not the manifest: see the step above.
-          scan-ref: 'docs-requirements-frozen.txt'
-          format: 'table'
-          exit-code: '1'
-          ignore-unfixed: true
-          severity: 'CRITICAL,HIGH'
-          timeout: '5m'

@@ -95,9 +95,11 @@
    ----------------------------------------------------------------------------- */
 body {
     font-family: 'Roboto Flex', system-ui, -apple-system, 'Segoe UI', sans-serif;
-    min-height: var(--wb-viewport-h, 100vh);
+    min-height: var(--wb-viewport-h);
     display: flex;
     flex-direction: column;
+    padding-left: env(safe-area-inset-left, 0px);
+    padding-right: env(safe-area-inset-right, 0px);
     background-color: var(--bs-body-bg);
     overflow: hidden auto;
 }
@@ -201,8 +203,8 @@ html.login-page body {
     align-items: center;
     justify-content: center;
     width: 100%;
-    height: var(--wb-viewport-h, 100vh);
-    min-height: var(--wb-viewport-h, 100vh);
+    height: var(--wb-viewport-h);
+    min-height: var(--wb-viewport-h);
     padding: calc(1rem + env(safe-area-inset-top)) calc(1rem + env(safe-area-inset-right)) calc(1rem + env(safe-area-inset-bottom)) calc(1rem + env(safe-area-inset-left));
     overflow-y: auto;
 }
@@ -232,7 +234,7 @@ html.login-page main {
     margin: 0 auto;
 
     /* Ensure card is scrollable within viewport on mobile */
-    max-height: calc(var(--wb-viewport-h, 100vh) - 2rem - env(safe-area-inset-top) - env(safe-area-inset-bottom));
+    max-height: calc(var(--wb-viewport-h) - 2rem - env(safe-area-inset-top) - env(safe-area-inset-bottom));
     overflow-y: auto;
 }
 
@@ -778,6 +780,9 @@ html.login-page[data-bs-theme="dark"] .login-card {
 .navbar {
     background: linear-gradient(135deg, var(--wb-primary) 0%, #b73639 100%);
     flex-shrink: 0;
+
+    /* viewport-fit=cover: keep the gradient to the screen edge, move the content below the cutout. */
+    padding-top: calc(var(--bs-navbar-padding-y) + env(safe-area-inset-top, 0px));
 }
 
 .navbar-brand {
@@ -913,6 +918,7 @@ html.login-page[data-bs-theme="dark"] .login-card {
     position: sticky;
     top: 0;
     height: calc(100vh - var(--wb-footer-height, 48px));
+    height: calc(var(--wb-viewport-h) - var(--wb-footer-height, 48px));
     overflow-y: auto;
 }
 
@@ -972,6 +978,7 @@ html.login-page[data-bs-theme="dark"] .login-card {
     html:not(.login-page),
     html:not(.login-page) body {
         height: 100vh;
+        height: var(--wb-viewport-h);
         overflow: hidden;
     }
 
@@ -1002,12 +1009,27 @@ html.login-page[data-bs-theme="dark"] .login-card {
 
     /* Prevent flex overflow bugs */
     padding: var(--wb-space-3);
-    padding-bottom: calc(var(--wb-space-3) + var(--wb-footer-height));
 
     /* Sole scroll owner: html/body and .wb-shell are overflow:hidden on
        desktop (see below), so content taller than the viewport must scroll
        here or the bottom of the page becomes unreachable. */
     overflow: hidden auto;
+}
+
+/* The page wrapper (.wb-page) already starts and ends in --wb-space-3, so on desktop the scroll owner
+   adds no vertical padding: the shell reserves the footer, the page the top and bottom spacing, each
+   exactly once. A doubled top inset made the dashboard overflow by a few pixels (ghost scroll). */
+@media (width >=992px) {
+    .main-content {
+        padding-block: 0;
+    }
+}
+
+/* Below the desktop shell the shell reserves no footer, so the scroll owner does (exactly once). */
+@media (width <=991.98px) {
+    .main-content {
+        padding-bottom: calc(var(--wb-space-3) + var(--wb-footer-height));
+    }
 }
 
 /* -----------------------------------------------------------------------------
@@ -1044,8 +1066,10 @@ html.login-page[data-bs-theme="dark"] .login-card {
     bottom: 0;
     left: 0;
     right: 0;
-    padding: 0.75rem 1.5rem;
+    padding: 0.75rem calc(1.5rem + env(safe-area-inset-right, 0px)) calc(0.75rem + env(safe-area-inset-bottom, 0px)) calc(1.5rem + env(safe-area-inset-left, 0px));
     display: flex;
+    box-sizing: border-box;
+    min-height: var(--wb-footer-height);
     align-items: center;
     justify-content: center;
     text-align: center;

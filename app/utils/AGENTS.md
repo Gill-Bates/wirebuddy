@@ -1,5 +1,5 @@
 <!-- Parent: ../AGENTS.md -->
-<!-- Generated: 2026-09-21 | Updated: 2026-09-21 -->
+<!-- Generated: 2026-09-21 | Updated: 2026-10-27 -->
 # utils
 
 ## Purpose
@@ -10,6 +10,7 @@ Cross-cutting helpers shared by the API, DB, DNS, node and task layers: configur
 |------|-------------|
 | `config.py` | `Config`, `load_dotenv`, `load_config`, `get_config`: environment-driven settings and defaults |
 | `deps.py` | FastAPI dependency helpers (`AppState`, `get_conn`, `get_tsdb_dir`, `get_dns_dir`, `get_config`) |
+| `key_domains.py` | Key-domain separation for `WIREBUDDY_SECRET_KEY`: derives the backup-HMAC and enrollment-token-HMAC keys from distinct contexts (`derive_backup_hmac_key`, `derive_enrollment_hmac_key`) plus the legacy WebAuthn user-handle derivation kept for one-time migration |
 | `vault.py` | Fernet encryption of secrets at rest (private/preshared keys), pepper handling |
 | `crypto.py` | Password hashing/verification, session token generation, hashing and expiry |
 | `otp.py` | TOTP secrets, provisioning URIs, verification, recovery codes |
@@ -25,9 +26,9 @@ Cross-cutting helpers shared by the API, DB, DNS, node and task layers: configur
 | `binaries.py` | `first_executable(candidates)`: first executable regular file from a fixed candidate list, used to resolve `wg`/`ip`/`iptables` without PATH lookup |
 | `subprocess.py` | `run_command` with timeout, output limits and graceful shutdown; `ProcResult` |
 | `speedtest_window.py` | Night-window timing shared by master and nodes |
-| `rate_limit.py` | slowapi limiter configuration and key function |
+| `rate_limit.py` | In-memory sliding-window rate limiter: `rate_limit(limit)` route dependency, `SlidingWindow`, 429 exception |
 | `request_id.py` | Request ID middleware |
-| `network.py` | IP parsing and allowed-IPs with DNS routes |
+| `network.py` | IP parsing and allowed-IPs with DNS routes; `resolve_client_ip(request)` returns the client IP, trusting `X-Forwarded-For`/`X-Real-IP` only when the socket peer is a configured trusted proxy (shared by `rate_limit.py` and `api/auth`) |
 | `qrimage.py` | QR PNG generation with optional logo and peer label |
 | `version.py` | Version/build info and update check |
 | `time.py`, `coerce.py`, `formatting.py`, `async_utils.py`, `tsdb_helpers.py` | Small helpers: UTC time parsing, DB boolean coercion, bandwidth formatting, interruptible sleep/task cancel, latest-by-node TSDB mapping |
@@ -56,6 +57,6 @@ Cross-cutting helpers shared by the API, DB, DNS, node and task layers: configur
 - `app/db/` (`sqlite_runtime`, `sqlite_passkeys`), `app/api/acme`; most modules depend only on each other (`config`, `geoip`, `backup_lock`).
 
 ### External
-- `cryptography`, `webauthn`, `fastapi`, `slowapi`, `qrcode`/`Pillow`, MaxMind GeoLite2, `conntrack` kernel table, stdlib `sqlite3`, `fcntl`, `hmac`.
+- `cryptography`, `webauthn`, `fastapi`, `qrcode`/`Pillow`, MaxMind GeoLite2, `conntrack` kernel table, stdlib `sqlite3`, `fcntl`, `hmac`.
 
 <!-- MANUAL: Any manually added notes below this line are preserved on regeneration -->

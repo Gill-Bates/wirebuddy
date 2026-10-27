@@ -1,5 +1,5 @@
 <!-- Parent: ../AGENTS.md -->
-<!-- Generated: 2026-09-21 | Updated: 2026-09-21 -->
+<!-- Generated: 2026-09-21 | Updated: 2026-10-27 -->
 # overflow
 
 ## Purpose
@@ -10,7 +10,7 @@ Spec for the horizontal-overflow rule on mobile fixtures.
 
 | File | Description |
 |---|---|
-| `mobile-overflow.spec.js` | Peers, nodes and dashboard stay in viewport; local scrollers acceptable (largest spec, ~250 lines) |
+| `mobile-overflow.spec.js` | Peers, nodes and dashboard stay in viewport; local scrollers acceptable (largest spec, ~280 lines) |
 
 ## For AI Agents
 

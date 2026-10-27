@@ -26,6 +26,7 @@ import re
 import sqlite3
 import time
 from collections.abc import Callable
+from datetime import datetime
 from pathlib import Path
 from typing import Any, TypeVar
 from urllib.parse import urlsplit
@@ -35,7 +36,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field, JsonValue
 from starlette.concurrency import run_in_threadpool
 
-from ..api.auth import _is_https
+from ..api.auth import _is_https, _is_loopback_peer
 from ..api.response import ok_response
 from ..api.speedtest import SPEEDTEST_TSDB_KEY, SPEEDTEST_TSDB_METRIC
 from ..api.sse import format_sse_close, format_sse_event, format_sse_keepalive
@@ -67,13 +68,13 @@ from ..db.sqlite_runtime import thread_connection, transaction
 from ..db.sqlite_settings import get_gui_https_enabled, set_node_speedtest_last_result
 from ..node import notifier as node_notifier
 from ..node.events import NodeCommandPayload, NodeCommandType, SpeedtestProgressPayload
-from ..utils.config import get_config
+from ..utils.config import get_config, parse_proxy_cidrs
 from ..utils.crypto import hash_token, new_token
 from ..utils.deps import get_conn, get_tsdb_dir
 from ..utils.network import parse_ip_str
 from ..utils.node_token import get_cert_fingerprint, verify_enrollment_token
-from ..utils.rate_limit import limiter
-from ..utils.time import utcnow
+from ..utils.rate_limit import rate_limit
+from ..utils.time import parse_utc, utcnow
 
 _log = logging.getLogger(__name__)
 
@@ -109,15 +110,7 @@ def _load_node_mtls_proxy_networks() -> tuple[ipaddress.IPv4Network | ipaddress.
 	raw = str(os.environ.get(_NODE_MTLS_PROXY_CIDRS_ENV, "")).strip()
 	if not raw:
 		return ()
-	networks: list[ipaddress.IPv4Network | ipaddress.IPv6Network] = []
-	for item in (part.strip() for part in raw.split(",")):
-		if not item:
-			continue
-		try:
-			networks.append(ipaddress.ip_network(item, strict=False))
-		except ValueError:
-			_log.warning("Ignoring invalid %s entry: %r", _NODE_MTLS_PROXY_CIDRS_ENV, item)
-	return tuple(networks)
+	return parse_proxy_cidrs(raw, _NODE_MTLS_PROXY_CIDRS_ENV)
 
 
 _node_mtls_proxy_networks_cache: tuple[ipaddress.IPv4Network | ipaddress.IPv6Network, ...] | None = None
@@ -253,6 +246,14 @@ def _resolve_country_from_url(server_url: str) -> str | None:
 	return None
 
 
+def node_session_is_current(conn: sqlite3.Connection, node_id: str, session_hash: str) -> bool:
+	"""Return True while the node still holds the session secret it connected with."""
+	row = get_node(conn, node_id)
+	if row is None or row["status"] == "pending":
+		return False
+	return hmac.compare_digest(str(row["api_secret_hash"] or ""), str(session_hash or ""))
+
+
 async def _run_with_short_lived_conn[T](
 	db_path: Path,
 	fn: Callable[..., T],
@@ -332,15 +333,21 @@ def _enforce_enrollment_transport(
 ) -> None:
 	"""Guard delivery of the long-lived node session_secret.
 
-	When the GUI is configured for HTTPS the enrollment is rejected rather than
-	handing the secret to a plaintext transport. Otherwise the historical
+	When the GUI is configured for HTTPS, or the opt-in
+	``WIREBUDDY_REQUIRE_HTTPS_AUTH`` flag is set, enrollment is rejected rather
+	than handing the secret to a plaintext transport. A loopback peer is the
+	single implicit exception for local development. Otherwise the historical
 	behaviour (log loudly, continue) is preserved so LAN deployments keep
 	working.
 	"""
 	if _is_https_best_effort(request):
 		return
 
-	if get_gui_https_enabled(conn):
+	if _is_loopback_peer(request):
+		_log.error("%s delivered session_secret over loopback HTTP for node=%s", context, node_id)
+		return
+
+	if get_gui_https_enabled(conn) or get_config().require_https_auth:
 		_log.warning(
 			"%s rejected: HTTPS required for session_secret delivery node=%s",
 			context,
@@ -370,26 +377,26 @@ class PeerHandshakeMetricData(BaseModel):
 	endpoint: str | None = Field(None, max_length=256)
 
 
-def _write_peer_traffic_metric(tsdb_dir: Path, data: dict[str, Any]) -> int:
-	"""Write peer traffic metrics. Returns number of written points."""
+def _write_peer_traffic_metric(tsdb_dir: Path, data: dict[str, Any], at: datetime) -> int:
+	"""Write peer traffic metrics at the node-supplied time. Returns points written."""
 	parsed = PeerTrafficMetricData.model_validate(data)
 	if parsed.rx_bytes <= 0 and parsed.tx_bytes <= 0:
 		return 0
-	tsdb.append_point(tsdb_dir, peer_key=parsed.public_key, metric="rx_bytes", value=parsed.rx_bytes)
-	tsdb.append_point(tsdb_dir, peer_key=parsed.public_key, metric="tx_bytes", value=parsed.tx_bytes)
+	tsdb.append_point(tsdb_dir, peer_key=parsed.public_key, metric="rx_bytes", value=parsed.rx_bytes, at=at)
+	tsdb.append_point(tsdb_dir, peer_key=parsed.public_key, metric="tx_bytes", value=parsed.tx_bytes, at=at)
 	return 2
 
 
-def _write_peer_handshake_metric(tsdb_dir: Path, data: dict[str, Any]) -> int:
-	"""Write peer handshake metric. Returns number of written points."""
+def _write_peer_handshake_metric(tsdb_dir: Path, data: dict[str, Any], at: datetime) -> int:
+	"""Write peer handshake metric at the node-supplied time. Returns points written."""
 	parsed = PeerHandshakeMetricData.model_validate(data)
 	if not parsed.latest_handshake:
 		return 0
-	tsdb.append_point(tsdb_dir, peer_key=parsed.public_key, metric="latest_handshake", value=parsed.latest_handshake)
+	tsdb.append_point(tsdb_dir, peer_key=parsed.public_key, metric="latest_handshake", value=parsed.latest_handshake, at=at)
 	return 1
 
 
-_METRIC_WRITERS: dict[str, Callable[[Path, dict[str, Any]], int]] = {
+_METRIC_WRITERS: dict[str, Callable[[Path, dict[str, Any], datetime], int]] = {
 	"peer_traffic": _write_peer_traffic_metric,
 	"peer_handshake": _write_peer_handshake_metric,
 }
@@ -510,6 +517,13 @@ def get_current_node(
 	if scheme.lower() != "bearer" or not token:
 		raise HTTPException(status_code=401, detail="Invalid authorization header")
 
+	# Opt-in: never accept the node bearer secret over proven plaintext when
+	# WIREBUDDY_REQUIRE_HTTPS_AUTH is set, except on loopback for local dev.
+	# Rejected before the secret is used, so a MITM gains nothing.
+	if get_config().require_https_auth and not _is_https_best_effort(request) and not _is_loopback_peer(request):
+		_log.warning("Node auth rejected: HTTPS required for bearer authentication")
+		raise HTTPException(status_code=400, detail="This server requires HTTPS for node authentication.")
+
 	api_secret = token
 	secret_hash = hash_token(api_secret)
 	node = get_node_by_api_secret(conn, secret_hash)
@@ -594,8 +608,7 @@ class HeartbeatRequest(BaseModel):
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-@router.post("/enroll")
-@limiter.limit("10/minute")
+@router.post("/enroll", dependencies=[Depends(rate_limit("10/minute"))])
 async def enroll_node_endpoint(
 	request: Request,
 	body: EnrollRequest,
@@ -787,19 +800,60 @@ def _process_heartbeat(
 				last_seq,
 			)
 
+		# Validate the node-declared batch envelope against the full batch it
+		# sent on the wire (including already-acked sequences it may resend),
+		# not just the new tail. seq_from/seq_to are the true bounds of the
+		# node's queue window; a mismatch means a malformed or reordered batch
+		# that must not advance the checkpoint silently.
+		all_seqs = [m.seq for m in batch.metrics]
+		if batch.seq_from is not None and batch.seq_from != all_seqs[0]:
+			_log.warning("Node %s metric batch seq_from=%s != first seq=%s", node_id, batch.seq_from, all_seqs[0])
+			return {"acked_seq": None, "failed": True}
+		if batch.seq_to is not None and batch.seq_to != all_seqs[-1]:
+			_log.warning("Node %s metric batch seq_to=%s != last seq=%s", node_id, batch.seq_to, all_seqs[-1])
+			return {"acked_seq": None, "failed": True}
+		# The whole batch must be a gap-free run. Compare adjacent values
+		# instead of materialising the full range: seq is attacker-influenced
+		# and unbounded, so list(range(a, b)) would allocate arbitrarily much
+		# memory for a two-element batch.
+		if any(current != previous + 1 for previous, current in itertools.pairwise(all_seqs)):
+			_log.warning("Node %s submitted non-contiguous metric sequence: %s", node_id, all_seqs)
+			return {"acked_seq": None, "failed": True}
+
 		if new_metrics:
-			# Compare adjacent values instead of materialising the full range:
-			# seq is attacker-influenced and unbounded, so list(range(a, b))
-			# would allocate arbitrarily much memory for a two-element batch.
 			seqs = [m.seq for m in new_metrics]
-			is_contiguous = all(current == previous + 1 for previous, current in itertools.pairwise(seqs))
-			if not is_contiguous:
-				_log.warning(
-					"Node %s submitted non-contiguous metric sequence: %s",
-					node_id,
-					seqs,
-				)
-				return {"acked_seq": None, "failed": True}
+
+			# Boundary gap handling (P2.2). The first new sequence must be
+			# last_seq + 1, otherwise seq last_seq+1 .. seqs[0]-1 would be
+			# skipped and the checkpoint advanced past them, losing them for
+			# good. Two cases:
+			#   * The node still holds the expected next sequence, i.e. its
+			#     queue starts at or before it (seq_from <= last_seq + 1 or
+			#     absent): this is a transient/reordered batch, so reject and
+			#     let the node resend from the true next sequence.
+			#   * The node already dropped the missing sequences on queue
+			#     overflow and its queue now starts after the expected next
+			#     sequence (seq_from > last_seq + 1 and seq_from == seqs[0]):
+			#     the data is gone and can never be resent. Rejecting forever
+			#     would deadlock all future delivery, so re-anchor by accepting
+			#     this batch and advancing the checkpoint.
+			if last_seq is not None and seqs[0] != last_seq + 1:
+				node_dropped_gap = batch.seq_from is not None and batch.seq_from == seqs[0] and batch.seq_from > last_seq + 1
+				if node_dropped_gap:
+					_log.warning(
+						"METRIC_SEQUENCE_GAP node=%s re-anchoring: expected seq %d but node queue starts at %d (overflow drop); gap is unrecoverable",
+						node_id,
+						last_seq + 1,
+						seqs[0],
+					)
+				else:
+					_log.warning(
+						"Node %s metric batch starts at %d, expected %d (transient gap); rejecting for resend",
+						node_id,
+						seqs[0],
+						last_seq + 1,
+					)
+					return {"acked_seq": None, "failed": True}
 
 			unsupported = [m.type for m in new_metrics if m.type not in _METRIC_WRITERS]
 			if unsupported:
@@ -810,32 +864,48 @@ def _process_heartbeat(
 				)
 				return {"acked_seq": None, "failed": True}
 
-		if new_metrics:
-			try:
-				points_written = 0
-				highest_written_seq: int | None = None
-				for m in new_metrics:
-					writer = _METRIC_WRITERS[m.type]
-					points_written += writer(tsdb_dir, m.data)
-					highest_written_seq = m.seq
+			# Parse and validate every observation timestamp before any write,
+			# so a malformed ts fails the whole batch cleanly (node retries)
+			# rather than leaving a partially written, partially checkpointed
+			# batch behind.
+			observation_times: list[datetime] = []
+			for m in new_metrics:
+				parsed_ts = parse_utc(m.ts)
+				if parsed_ts is None:
+					_log.warning("Node %s metric seq=%d has invalid timestamp %r; rejecting batch", node_id, m.seq, m.ts)
+					return {"acked_seq": None, "failed": True}
+				observation_times.append(parsed_ts)
 
-				_log.debug(
-					"Node %s: wrote %d TSDB points from %d metrics (seq %s-%s)",
-					node_id,
-					points_written,
-					len(new_metrics),
-					new_metrics[0].seq,
-					new_metrics[-1].seq,
-				)
+			# Idempotent ingestion (P2.3): checkpoint after each metric so a
+			# retry after a mid-batch failure re-sends only the unconfirmed
+			# tail. The node ACK-deletes the confirmed prefix via acked_seq.
+			# Residual duplicate window: a crash strictly between the two
+			# append_point() calls of one peer_traffic metric can re-write that
+			# single metric's points on retry; the JSONL TSDB has no dedup key
+			# and adding one is out of scope for this fix.
+			points_written = 0
+			try:
+				for m, at in zip(new_metrics, observation_times, strict=True):
+					writer = _METRIC_WRITERS[m.type]
+					points_written += writer(tsdb_dir, m.data, at)
+					set_node_last_metric_seq(conn, node_id, m.seq)
+					acked_seq = m.seq
 			except Exception:
 				_log.warning("Failed to write TSDB metrics from node %s", node_id, exc_info=True)
 				# Heartbeat metadata and peer stats are idempotent, so a node retry is
-				# safe even though those writes already happened above.
-				# Do NOT ack — node will retry on next heartbeat.
-				return {"acked_seq": None, "failed": True}
-			if highest_written_seq is not None:
-				set_node_last_metric_seq(conn, node_id, highest_written_seq)
-				acked_seq = highest_written_seq
+				# safe even though those writes already happened above. acked_seq holds
+				# the last fully-checkpointed sequence (None if none), so the node
+				# ACK-deletes only the confirmed prefix and retries the rest.
+				return {"acked_seq": acked_seq, "failed": True}
+
+			_log.debug(
+				"Node %s: wrote %d TSDB points from %d metrics (seq %s-%s)",
+				node_id,
+				points_written,
+				len(new_metrics),
+				new_metrics[0].seq,
+				new_metrics[-1].seq,
+			)
 
 		elif batch.seq_to is not None and last_seq is not None and batch.seq_to <= last_seq:
 			acked_seq = batch.seq_to
@@ -843,8 +913,7 @@ def _process_heartbeat(
 	return {"acked_seq": acked_seq, "failed": False}
 
 
-@router.post("/heartbeat")
-@limiter.limit(_NODE_RATE_LIMIT_POLL)
+@router.post("/heartbeat", dependencies=[Depends(rate_limit(_NODE_RATE_LIMIT_POLL))])
 async def heartbeat(
 	request: Request,
 	body: HeartbeatRequest,
@@ -866,9 +935,13 @@ async def heartbeat(
 	result = await run_in_threadpool(_process_heartbeat, conn, tsdb_dir, node, body)
 
 	if result["failed"]:
+		# acked_seq carries the prefix that was durably checkpointed before the
+		# failure (None if nothing was). The node deletes only that confirmed
+		# prefix and retries the unconfirmed tail, so retries don't re-send
+		# already-persisted metrics (P2.3).
 		return ok_response(
-			data={"acked_seq": None},
-			message="Heartbeat received (metrics write failed)",
+			data={"acked_seq": result["acked_seq"]},
+			message="Heartbeat received (metrics write partially failed)",
 		)
 	return ok_response(
 		data={"acked_seq": result["acked_seq"]},
@@ -881,8 +954,7 @@ async def heartbeat(
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-@router.get("/config")
-@limiter.limit(_NODE_RATE_LIMIT_POLL)
+@router.get("/config", dependencies=[Depends(rate_limit(_NODE_RATE_LIMIT_POLL))])
 def get_config_endpoint(
 	request: Request,
 	version: str | None = None,
@@ -914,8 +986,7 @@ def get_config_endpoint(
 	return ok_response(data=config)
 
 
-@router.get("/events")
-@limiter.limit(_NODE_RATE_LIMIT_EVENTS)
+@router.get("/events", dependencies=[Depends(rate_limit(_NODE_RATE_LIMIT_EVENTS))])
 async def node_events(
 	request: Request,
 	node: sqlite3.Row = Depends(get_current_node),
@@ -935,6 +1006,11 @@ async def node_events(
 	db_path = request.app.state.db_path
 	shutdown_event = getattr(request.app.state, "shutdown_signal_event", None)
 	_log.info("Node %s connected to SSE event stream", node_id)
+
+	session_hash = node["api_secret_hash"]
+
+	async def session_still_valid() -> bool:
+		return await _run_with_short_lived_conn(db_path, node_session_is_current, node_id, session_hash)
 
 	async def mark_sse_connected() -> None:
 		await _run_with_short_lived_conn(db_path, update_node_sse_connected, node_id)
@@ -964,6 +1040,12 @@ async def node_events(
 					break
 				# On keepalive events, also check DB for pending commands
 				if event.startswith((":", "event: ping\n")):
+					# Token regeneration/re-enrollment must end the old session; the
+					# stream authenticated only once, so re-check on every keepalive.
+					if not await session_still_valid():
+						_log.info("SSE session for node %s is no longer valid; closing", node_id)
+						yield close_event
+						break
 					now_monotonic = time.monotonic()
 					if now_monotonic - last_sse_connected_write >= _SSE_CONNECTED_DB_UPDATE_INTERVAL_S:
 						await mark_sse_connected()
@@ -977,7 +1059,9 @@ async def node_events(
 		finally:
 			# Clear SSE connection status on disconnect (short-lived connection)
 			try:
-				await clear_sse_connected()
+				# A superseded session must not clear the new session's status.
+				if await session_still_valid():
+					await clear_sse_connected()
 			except Exception as exc:
 				_log.debug("Failed to clear SSE status for node %s: %s", node_id, exc)
 
@@ -1006,8 +1090,7 @@ class SpeedtestProgressEvent(BaseModel):
 	detail: JsonValue | None = Field(None, description="Optional detail payload")
 
 
-@router.post("/speedtest/progress")
-@limiter.limit(_NODE_RATE_LIMIT_PROGRESS)
+@router.post("/speedtest/progress", dependencies=[Depends(rate_limit(_NODE_RATE_LIMIT_PROGRESS))])
 async def submit_node_speedtest_progress(
 	request: Request,
 	body: SpeedtestProgressEvent,
@@ -1027,8 +1110,7 @@ async def submit_node_speedtest_progress(
 	return ok_response(message="Progress update received")
 
 
-@router.post("/commands/{command_id}/ack")
-@limiter.limit(_NODE_RATE_LIMIT_POLL)
+@router.post("/commands/{command_id}/ack", dependencies=[Depends(rate_limit(_NODE_RATE_LIMIT_POLL))])
 async def ack_node_command_endpoint(
 	command_id: int,
 	request: Request,
@@ -1062,8 +1144,7 @@ class SpeedtestSubmission(BaseModel):
 	reason: str | None = Field(None, max_length=512, description="Error reason if status=error")
 
 
-@router.post("/speedtest")
-@limiter.limit(_NODE_RATE_LIMIT_POLL)
+@router.post("/speedtest", dependencies=[Depends(rate_limit(_NODE_RATE_LIMIT_POLL))])
 def submit_node_speedtest(
 	request: Request,
 	body: SpeedtestSubmission,

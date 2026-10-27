@@ -35,6 +35,7 @@ from starlette.middleware.trustedhost import TrustedHostMiddleware
 from .api import acme as acme_api
 from .api import auth as auth_api
 from .api import backup as backup_api
+from .api import dashboard_layout as dashboard_layout_api
 from .api import dns as dns_api
 from .api import frontend_shared as frontend_ui
 from .api import network_stats as network_stats_api
@@ -87,8 +88,9 @@ from .tasks.db_inputs import (
 from .utils import migration
 from .utils.banner import print_banner_once
 from .utils.binaries import first_executable
+from .utils.coerce import BOOL_TRUE_VALUES
 from .utils.config import WG_CONFIG_PATH, Config, load_config
-from .utils.rate_limit import limiter
+from .utils.rate_limit import RateLimitExceededError, rate_limit
 from .utils.request_id import RequestIDMiddleware
 from .utils.scheduler import Scheduler
 from .utils.subprocess import run_command
@@ -96,7 +98,6 @@ from .utils.version import VERSION
 
 _log = logging.getLogger(__name__)
 _SWAGGER_ENABLE_KEY = "enable_swagger"
-_SWAGGER_TRUTHY = {"1", "true", "yes", "on"}
 
 
 class StartupFatalError(RuntimeError):
@@ -247,6 +248,17 @@ def _env_flag(name: str) -> bool:
 	visible; reading these at import time would ignore that file.
 	"""
 	return os.getenv(name, "").strip().lower() in {"1", "true", "yes"}
+
+
+def _bind_is_loopback(raw_host: str | None) -> bool:
+	"""True only when the listener is known to be bound to a loopback address."""
+	host = (raw_host or "").strip().strip("[]")
+	if host == "localhost":
+		return True
+	try:
+		return ipaddress.ip_address(host).is_loopback
+	except ValueError:
+		return False
 
 
 def _resolve_allowed_hosts(raw_allowed_hosts: str, public_origin_hostname: str | None) -> tuple[list[str], bool]:
@@ -511,7 +523,7 @@ def _load_managed_interface_names_sync(db_path: Path) -> set[str]:
 	"""Return the set of WireGuard interface names known to the WireBuddy DB."""
 
 	def _load(conn) -> set[str]:
-		return {str(iface["name"]) for iface in list_interfaces(conn) if _IFACE_NAME_RE.match(str(iface["name"]))}
+		return {str(iface["name"]) for iface in list_interfaces(conn) if _IFACE_NAME_RE.fullmatch(str(iface["name"]))}
 
 	return db_call(db_path, _load)
 
@@ -551,7 +563,7 @@ async def _cleanup_stale_interfaces(ctx: LifespanContext) -> list[str]:
 
 		for iface_name in active_interfaces:
 			# Validate interface name
-			if not _IFACE_NAME_RE.match(iface_name):
+			if not _IFACE_NAME_RE.fullmatch(iface_name):
 				_log.warning("Skipping stale interface with invalid name: %r", iface_name)
 				continue
 
@@ -762,7 +774,10 @@ def _bootstrap_sync(cfg: Config) -> tuple[list[str], bool, bool]:
 		for iface in list_interfaces(conn):
 			if iface["is_enabled"]:
 				name = iface["name"]
-				if _IFACE_NAME_RE.match(name):
+				if name in regen_result.failed:
+					# Fail closed: a stale on-disk config may still hold removed peers.
+					_log.error("Not starting interface %s: config regeneration failed, stale config on disk is not trusted", name)
+				elif _IFACE_NAME_RE.fullmatch(name):
 					interfaces_to_start.append(name)
 				else:
 					_log.warning("Skipping interface with invalid name: %r", name)
@@ -1239,14 +1254,19 @@ async def _phase_dns_ingestion(ctx: LifespanContext) -> None:
 	retry_count = 0
 	dns_retention_days_cache = DEFAULT_DNS_LOG_RETENTION_DAYS
 
-	# Defined once, outside the loop, although it reads a value the loop
-	# reassigns. That late binding is the point - run_dns_ingestion() holds this
-	# callback for the lifetime of one ingestion run and must see the retention
-	# setting as of the most recent restart, not the value at definition time.
-	# Defining it inside the loop expressed the same thing but rebuilt the
-	# closure on every iteration for no reason, and read as an accidental
-	# late-binding capture rather than a deliberate one.
+	# The writer polls this callback every few seconds on its worker thread, so
+	# it must read the live setting for the retention hot-reload to work:
+	# returning a value only refreshed per ingestion restart let a 7->0 change
+	# keep writing under the old policy until a full restart. The read is a
+	# short-lived sync SQLite call, acceptable off the event loop; on error we
+	# fall back to the last known value so the callback never throws across the
+	# writer boundary.
 	def _current_dns_retention_days() -> int:
+		nonlocal dns_retention_days_cache
+		try:
+			dns_retention_days_cache = read_dns_retention_days_sync(ctx.cfg.db_path)
+		except Exception:
+			_log.warning("DNS_INGESTION retention read failed; using last known value", exc_info=True)
 		return dns_retention_days_cache
 
 	while True:
@@ -1327,7 +1347,7 @@ async def _lifespan(app: FastAPI):
 			async with startup_lock:
 				if not getattr(app.state, "bootstrap_gate_active", False):
 					return
-				_log.warning("BOOTSTRAP_GATE released: admin password changed; resuming startup.")
+				_log.info("BOOTSTRAP_GATE released: admin password changed; resuming startup.")
 				try:
 					await _continue_operational_startup(ctx)
 				except Exception:
@@ -1364,7 +1384,7 @@ async def _lifespan(app: FastAPI):
 			ctx.dns_task = None
 			app.state.dns_task = None
 			app.state.started_interfaces = ctx.started_interfaces
-			_log.warning("WireBuddy HTTP bootstrap gate is open for login/password change only.")
+			_log.info("First-boot mode: only login and password change are available until the bootstrap password is changed.")
 		else:
 			await _continue_operational_startup(ctx)
 			_log.info("WireBuddy started successfully (pid=%d)", os.getpid())
@@ -1459,6 +1479,8 @@ def create_app() -> FastAPI:
 		)
 	if allowed_hosts:
 		app.add_middleware(TrustedHostMiddleware, allowed_hosts=allowed_hosts)
+	elif _bind_is_loopback(os.getenv("WIREBUDDY_BIND_HOST")):
+		_log.info("Host header is not validated (loopback-only listener, no WIREBUDDY_ALLOWED_HOSTS or WIREBUDDY_PUBLIC_ORIGIN)")
 	else:
 		_log.warning(
 			"WIREBUDDY_ALLOWED_HOSTS is unset and no WIREBUDDY_PUBLIC_ORIGIN is "
@@ -1516,23 +1538,15 @@ def create_app() -> FastAPI:
 			response.headers.setdefault("Strict-Transport-Security", "max-age=63072000; includeSubDomains")
 		return response
 
-	app.state.limiter = limiter
-
-	from slowapi.errors import RateLimitExceeded
-
-	async def rate_limit_handler(request: Request, exc: RateLimitExceeded) -> JSONResponse:
-		"""Custom rate limit handler that uses 'detail' for API consistency."""
-		response = JSONResponse(
+	async def rate_limit_handler(_request: Request, exc: RateLimitExceededError) -> JSONResponse:
+		"""Rate limit handler that uses 'detail' for API consistency."""
+		return JSONResponse(
 			status_code=429,
 			content={"detail": "Too many requests. Please try again later."},
+			headers={"Retry-After": str(exc.retry_after), "X-RateLimit-Limit": exc.limit},
 		)
-		response.headers["Retry-After"] = str(getattr(exc, "retry_after", 60))
-		limit = getattr(exc, "limit", None)
-		if limit is not None:
-			response.headers["X-RateLimit-Limit"] = str(limit)
-		return response
 
-	app.add_exception_handler(RateLimitExceeded, rate_limit_handler)
+	app.add_exception_handler(RateLimitExceededError, rate_limit_handler)
 	app.add_exception_handler(frontend_ui.RedirectTo, frontend_ui.redirect_to_handler)
 
 	@app.get("/health", include_in_schema=False)
@@ -1638,9 +1652,17 @@ def create_app() -> FastAPI:
 	# ─── STATIC FILES ────────────────────────────────────────
 	from fastapi.staticfiles import StaticFiles
 
+	class _RevalidatingStaticFiles(StaticFiles):
+		"""Serve assets with ``no-cache`` so edited CSS/JS is revalidated (ETag/304), never reused stale."""
+
+		async def get_response(self, path, scope):
+			response = await super().get_response(path, scope)
+			response.headers["Cache-Control"] = "no-cache"
+			return response
+
 	static_path = Path(__file__).parent / "static"
 	if static_path.exists():
-		app.mount("/static", StaticFiles(directory=str(static_path)), name="static")
+		app.mount("/static", _RevalidatingStaticFiles(directory=str(static_path)), name="static")
 	else:
 		_log.warning("Static files directory not found: %s", static_path)
 
@@ -1650,6 +1672,7 @@ def create_app() -> FastAPI:
 	app.include_router(users_api.router, prefix="/api/users")
 	app.include_router(wireguard_api.router, prefix="/api/wireguard")
 	app.include_router(dns_api.router, prefix="/api/dns")
+	app.include_router(dashboard_layout_api.router, prefix="/api/dashboard")
 	app.include_router(acme_api.router, prefix="/api/acme")
 	app.include_router(speedtest_api.router, prefix="/api/wireguard")
 	app.include_router(network_stats_api.router, prefix="/api")
@@ -1673,23 +1696,21 @@ def _register_swagger_routes(app: FastAPI) -> None:
 	def _is_swagger_enabled(conn: sqlite3.Connection) -> bool:
 		"""Return whether Swagger UI is enabled."""
 		value = get_setting(conn, _SWAGGER_ENABLE_KEY, "0")
-		return str(value or "").strip().lower() in _SWAGGER_TRUTHY
+		return str(value or "").strip().lower() in BOOL_TRUE_VALUES
 
 	def _is_swagger_enabled_sync(db_path: Path) -> bool:
 		"""Read the Swagger-enabled setting off the event loop."""
 		return db_call(db_path, _is_swagger_enabled)
 
-	@app.get("/swagger/openapi.json", include_in_schema=False)
-	@limiter.limit("60/minute")
-	async def swagger_openapi_json(request: Request, _=Depends(require_admin)):
+	@app.get("/swagger/openapi.json", include_in_schema=False, dependencies=[Depends(rate_limit("60/minute"))])
+	async def swagger_openapi_json(_=Depends(require_admin)):
 		"""Serve OpenAPI schema (admin only, when enabled)."""
 		if not await asyncio.to_thread(_is_swagger_enabled_sync, app.state.cfg.db_path):
 			raise HTTPException(status_code=404, detail="Swagger API disabled")
 		return JSONResponse(content=app.openapi())
 
-	@app.get("/swagger", include_in_schema=False)
-	@limiter.limit("60/minute")
-	async def swagger_ui(request: Request, _=Depends(require_admin)):
+	@app.get("/swagger", include_in_schema=False, dependencies=[Depends(rate_limit("60/minute"))])
+	async def swagger_ui(_=Depends(require_admin)):
 		"""Serve Swagger UI (admin only, when enabled)."""
 		if not await asyncio.to_thread(_is_swagger_enabled_sync, app.state.cfg.db_path):
 			raise HTTPException(status_code=404, detail="Swagger API disabled")

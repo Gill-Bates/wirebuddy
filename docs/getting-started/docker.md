@@ -46,14 +46,18 @@ Start WireBuddy from the repository root:
 docker compose --env-file .env -f docker/docker-compose.yml up -d
 ```
 
-View the bootstrap password and startup status:
+View the startup output, which contains the bootstrap password:
 
 ```bash
 docker compose --env-file .env -f docker/docker-compose.yml logs -f wirebuddy
 ```
 
-Open `http://<server-ip>:8000` and sign in as `admin` with the generated
-temporary password from the log. The first login requires a password change.
+WireBuddy prints the generated temporary password once to the console, outside
+the normal log handlers, and never stores it. Find it in the output above.
+
+
+Open `http://<server-ip>:8000` and sign in as `admin` with that temporary
+password. The first login requires a password change.
 
 !!! warning "First sign-in is plain HTTP"
     Until HTTPS is enabled, the bootstrap password and session travel in clear

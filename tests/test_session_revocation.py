@@ -71,7 +71,7 @@ def test_self_otp_confirm_revokes_pre_mfa_sessions_and_reissues_one(conn, monkey
 	monkeypatch.setattr(auth_api, "_is_https", lambda request: False)
 
 	response = Response()
-	auth_api.confirm_my_otp_setup.__wrapped__(
+	auth_api.confirm_my_otp_setup(
 		_request("/api/me/otp/confirm"),
 		response,
 		OTPConfirmRequest(code=pyotp.TOTP(secret).now()),
@@ -97,7 +97,7 @@ def test_self_otp_confirm_keeps_sessions_when_the_code_is_wrong(conn, monkeypatc
 	wrong_code = "000000" if pyotp.TOTP(secret).now() != "000000" else "111111"
 
 	with pytest.raises(HTTPException) as excinfo:
-		auth_api.confirm_my_otp_setup.__wrapped__(
+		auth_api.confirm_my_otp_setup(
 			_request("/api/me/otp/confirm"),
 			Response(),
 			OTPConfirmRequest(code=wrong_code),
@@ -132,7 +132,7 @@ def test_admin_passkey_reset_revokes_target_sessions(conn):
 	user_id = _passkey_user(conn, "carol")
 	admin = {"username": "root"}
 
-	passkeys_api.reset_user_passkeys.__wrapped__(_request("/api/passkeys/reset"), user_id, admin, conn)
+	passkeys_api.reset_user_passkeys(user_id, admin, conn)
 
 	assert _token_count(conn) == 0
 	assert conn.execute("SELECT COUNT(*) FROM passkeys WHERE user_id = ?", (user_id,)).fetchone()[0] == 0
@@ -142,7 +142,7 @@ def test_admin_passkey_disable_revokes_target_sessions(conn):
 	user_id = _passkey_user(conn, "dave")
 	admin = {"username": "root"}
 
-	passkeys_api.disable_user_passkey.__wrapped__(_request("/api/passkeys/disable"), user_id, admin, conn)
+	passkeys_api.disable_user_passkey(user_id, admin, conn)
 
 	assert _token_count(conn) == 0
 

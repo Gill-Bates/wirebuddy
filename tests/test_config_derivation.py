@@ -18,7 +18,7 @@ from pathlib import Path
 
 import pytest
 
-from app.main import _resolve_allowed_hosts
+from app.main import _bind_is_loopback, _resolve_allowed_hosts
 from app.utils.config import load_config
 
 
@@ -105,3 +105,23 @@ def test_allowed_hosts_empty_when_neither_configured():
 	hosts, derived = _resolve_allowed_hosts("", None)
 	assert hosts == []
 	assert derived is False
+
+
+@pytest.mark.parametrize(
+	("raw", "expected"),
+	[
+		("127.0.0.1", True),
+		("::1", True),
+		("[::1]", True),
+		("localhost", True),
+		("0.0.0.0", False),  # noqa: S104 - wildcard bind under test
+		("::", False),
+		("192.168.1.10", False),
+		("", False),
+		(None, False),
+		("not-a-host", False),
+	],
+)
+def test_bind_is_loopback_only_for_known_loopback_hosts(raw, expected):
+	"""An unknown or wildcard bind must keep the missing-Host-validation warning."""
+	assert _bind_is_loopback(raw) is expected

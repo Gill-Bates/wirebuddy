@@ -101,29 +101,48 @@ const nodeMarkup = `
 
 const dashboardMarkup = `
 <section class="dashboard-page">
-    <div class="dashboard-header">
-        <div class="map-kpis">
-            <span class="map-kpi"><span class="material-icons">A</span> Active</span>
-            <span class="map-kpi"><span class="material-icons">B</span> Busy</span>
+    <div class="grid-stack wb-dashboard-grid" id="wb-dashboard-grid">
+        <div class="grid-stack-item" data-widget-id="kpi-nodes">
+            <div class="grid-stack-item-content"><div class="card dashboard-kpi-card"><div class="card-body">
+                <div class="dashboard-kpi-header"><span class="dashboard-kpi-icon">N</span><span class="dashboard-kpi-title">Nodes</span></div>
+                <div class="dashboard-kpi-primary"><span class="dashboard-kpi-value">2/3</span></div>
+                <div class="dashboard-kpi-caption">Online</div>
+            </div></div></div>
         </div>
-    </div>
-    <div class="dashboard-main-grid">
-        <div class="dashboard-map-col card">
-            <div class="card-body">
-                <div id="peer-map"></div>
-            </div>
+        <div class="grid-stack-item" data-widget-id="kpi-connections">
+            <div class="grid-stack-item-content"><div class="card dashboard-kpi-card"><div class="card-body">
+                <div class="dashboard-kpi-header"><span class="dashboard-kpi-icon">C</span><span class="dashboard-kpi-title">Connections</span></div>
+                <div class="dashboard-kpi-primary"><span class="dashboard-kpi-value">4/6</span></div>
+                <div class="dashboard-kpi-caption">Peers Online</div>
+            </div></div></div>
         </div>
-        <div class="dashboard-speedtest-col card">
-            <div class="card-body">
+        <div class="grid-stack-item" data-widget-id="kpi-traffic">
+            <div class="grid-stack-item-content"><div class="card dashboard-kpi-card"><div class="card-body">
+                <div class="dashboard-kpi-title">Traffic</div><div class="dashboard-kpi-value">12.4 GB</div>
+            </div></div></div>
+        </div>
+        <div class="grid-stack-item" data-widget-id="kpi-bandwidth">
+            <div class="grid-stack-item-content"><div class="card dashboard-kpi-card"><div class="card-body">
+                <div class="dashboard-kpi-title">Bandwidth</div><div class="dashboard-kpi-value">860 Mbit/s</div>
+            </div></div></div>
+        </div>
+        <div class="grid-stack-item" data-widget-id="recent-peers">
+            <div class="grid-stack-item-content"><div class="card recent-peers-card"><div class="card-body">
+                <div id="recent-peers" class="overflow-auto" style="max-height: 180px;"><div style="height: 420px;"></div></div>
+            </div></div></div>
+        </div>
+        <div class="grid-stack-item" data-widget-id="speedtest-chart">
+            <div class="grid-stack-item-content"><div class="card speedtest-card"><div class="card-body">
                 <div class="speedtest-chart-wrap"></div>
-            </div>
+            </div></div></div>
         </div>
-        <div class="dashboard-recent-peers-col card">
-            <div class="card-body">
-                <div class="recent-peers-card overflow-auto" style="max-height: 180px;">
-                    <div style="height: 420px;"></div>
-                </div>
-            </div>
+        <div class="grid-stack-item" data-widget-id="peer-map">
+            <div class="grid-stack-item-content"><div class="card"><div class="card-body">
+                <div id="peer-map"></div>
+            </div></div></div>
+        </div>
+        <div class="grid-stack-item" data-widget-id="network-gauges" hidden>
+            <div class="grid-stack-item-content"><div class="card">Hidden widget</div></div>
         </div>
     </div>
 </section>
@@ -173,27 +192,36 @@ test('mobile nodes keep the entity row within the viewport', async ({ page }) =>
     expect(metrics.scrollWidth).toBeLessThanOrEqual(metrics.innerWidth);
 });
 
-test('mobile dashboard layout does not create horizontal overflow', async ({ page }) => {
-    await mountContractPage(page, {
-        width: 390,
-        height: 844,
-        stylesheetPaths: [
-            'app/static/css/core/tokens.css',
-            'app/static/css/dashboard.css',
-        ],
-        body: dashboardMarkup,
+for (const width of [390, 790]) {
+    test(`dashboard widgets stay inside the viewport at ${width}px`, async ({ page }) => {
+        await mountContractPage(page, {
+            width,
+            height: 844,
+            stylesheetPaths: [
+                'app/static/css/core/tokens.css',
+                'app/static/css/dashboard.css',
+                'app/static/css/pages/dashboard.css',
+            ],
+            body: dashboardMarkup,
+        });
+
+        const findings = await overflowRule.run({ page });
+        expect(findings).toEqual([]);
+
+        const metrics = await page.evaluate(() => ({
+            scrollWidth: document.documentElement.scrollWidth,
+            innerWidth: window.innerWidth,
+        }));
+
+        expect(metrics.scrollWidth).toBeLessThanOrEqual(metrics.innerWidth);
+        expect(await page.locator('#wb-dashboard-grid > .grid-stack-item:visible').count()).toBe(7);
+        if (width === 790) {
+            const nodes = await page.locator('[data-widget-id="kpi-nodes"]').boundingBox();
+            const connections = await page.locator('[data-widget-id="kpi-connections"]').boundingBox();
+            expect(nodes.width).toBeLessThan(connections.width);
+        }
     });
-
-    const findings = await overflowRule.run({ page });
-    expect(findings).toEqual([]);
-
-    const metrics = await page.evaluate(() => ({
-        scrollWidth: document.documentElement.scrollWidth,
-        innerWidth: window.innerWidth,
-    }));
-
-    expect(metrics.scrollWidth).toBeLessThanOrEqual(metrics.innerWidth);
-});
+}
 
 test('local scroll containers are treated as acceptable overflow', async ({ page }) => {
     await mountContractPage(page, {

@@ -1,5 +1,5 @@
 <!-- Parent: ../AGENTS.md -->
-<!-- Generated: 2026-09-21 | Updated: 2026-09-21 -->
+<!-- Generated: 2026-09-21 | Updated: 2026-10-27 -->
 # pages
 
 ## Purpose
@@ -8,7 +8,7 @@ One stylesheet per page, linked from that template's `extra_css` block after the
 ## Key Files
 | File | Description |
 |------|-------------|
-| `dashboard.css` | Dashboard KPI fragments; imports `components/kpi-card.css` and `../dashboard.css` |
+| `dashboard.css` | Dashboard page: GridStack grid tokens (`--wb-dash-gap`, kept in sync with `GRID_MARGIN` in `js/dashboard_grid.js`), loading/edit-mode states and tile chrome; imports `components/kpi-card.css` and `../dashboard.css` |
 | `dns.css`, `peers.css`, `traffic.css`, `users.css`, `login.css` | Wrappers: only `@import` lines (kpi-card / responsive-table / wb-state plus `../<page>.css`) |
 | `nodes.css` | Nodes page: flag sizing vars, dropdowns escaping table clipping, FQDN layout |
 | `settings.css` | Settings tabs (large); all settings styles live here (the `templates/settings/` partials carry no `<style>`) |

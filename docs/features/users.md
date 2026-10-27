@@ -44,8 +44,8 @@ Passwords must:
   - number
   - supported special character
 
-The initial `admin` password is generated on first startup and written once to
-the application log. First login requires replacing it.
+The initial `admin` password is generated on first startup and printed once to the
+console, never logged or stored. First login requires replacing it.
 
 An administrator reset also invalidates the user's sessions and requires the
 user to choose a different password at next login. A user changing their own

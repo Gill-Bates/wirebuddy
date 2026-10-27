@@ -3,6 +3,7 @@
 # docker/healthcheck.sh
 # Copyright (C) 2026 Gill-Bates http://github.com/Gill-Bates
 #
+
 # Probes /ready on exactly the transport this container start serves, as
 # recorded by app.server in /run/wirebuddy/listener.env. It never reads the
 # database: HTTPS switched on in the UI only takes effect after a restart, and

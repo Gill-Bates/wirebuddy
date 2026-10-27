@@ -61,7 +61,7 @@ from ..utils.otp import (
 	serialize_recovery_codes,
 	verify_otp_step,
 )
-from ..utils.rate_limit import RATE_LIMIT_AUTH, limiter
+from ..utils.rate_limit import RATE_LIMIT_AUTH, rate_limit
 from .auth import get_current_user, require_admin, store_recovery_download
 from .response import ok_response
 
@@ -174,10 +174,8 @@ def _update_password_and_revoke_tokens(
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-@router.get("")
-@limiter.limit(RATE_LIMIT_AUTH)
+@router.get("", dependencies=[Depends(rate_limit(RATE_LIMIT_AUTH))])
 def list_users(
-	request: Request,
 	conn: sqlite3.Connection = Depends(get_conn),
 	_: sqlite3.Row = Depends(require_admin),
 ):
@@ -187,10 +185,8 @@ def list_users(
 	return ok_response(data=data)
 
 
-@router.post("", status_code=201)
-@limiter.limit(RATE_LIMIT_AUTH)
+@router.post("", status_code=201, dependencies=[Depends(rate_limit(RATE_LIMIT_AUTH))])
 def create_user(
-	request: Request,
 	payload: UserCreate,
 	conn: sqlite3.Connection = Depends(get_conn),
 	current_user: sqlite3.Row = Depends(require_admin),
@@ -232,10 +228,8 @@ def get_user(
 	return ok_response(data=_row_to_public(user))
 
 
-@router.patch("/{user_id}")
-@limiter.limit(RATE_LIMIT_AUTH)
+@router.patch("/{user_id}", dependencies=[Depends(rate_limit(RATE_LIMIT_AUTH))])
 def update_user(
-	request: Request,
 	user_id: int,
 	payload: UserUpdate,
 	conn: sqlite3.Connection = Depends(get_conn),
@@ -281,10 +275,8 @@ def update_user(
 	return ok_response(data=_row_to_public(updated))
 
 
-@router.delete("/{user_id}", status_code=204, response_class=Response)
-@limiter.limit(RATE_LIMIT_AUTH)
+@router.delete("/{user_id}", status_code=204, response_class=Response, dependencies=[Depends(rate_limit(RATE_LIMIT_AUTH))])
 def delete_user(
-	request: Request,
 	user_id: int,
 	conn: sqlite3.Connection = Depends(get_conn),
 	current_user: sqlite3.Row = Depends(require_admin),
@@ -311,8 +303,7 @@ def delete_user(
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-@router.post("/{user_id}/change-password")
-@limiter.limit(RATE_LIMIT_AUTH)
+@router.post("/{user_id}/change-password", dependencies=[Depends(rate_limit(RATE_LIMIT_AUTH))])
 def change_password(
 	request: Request,
 	user_id: int,
@@ -353,8 +344,7 @@ def change_password(
 	return ok_response(message="Password changed successfully")
 
 
-@router.post("/me/complete-required-change")
-@limiter.limit(RATE_LIMIT_AUTH)
+@router.post("/me/complete-required-change", dependencies=[Depends(rate_limit(RATE_LIMIT_AUTH))])
 def complete_required_password_change(
 	request: Request,
 	payload: RequiredPasswordChangeRequest,
@@ -404,10 +394,8 @@ def complete_required_password_change(
 	return ok_response(message="Password changed successfully")
 
 
-@router.post("/{user_id}/reset-password")
-@limiter.limit(RATE_LIMIT_AUTH)
+@router.post("/{user_id}/reset-password", dependencies=[Depends(rate_limit(RATE_LIMIT_AUTH))])
 def reset_password(
-	request: Request,
 	user_id: int,
 	payload: AdminPasswordResetRequest,
 	conn: sqlite3.Connection = Depends(get_conn),
@@ -440,10 +428,8 @@ def reset_password(
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-@router.post("/{user_id}/otp/enable")
-@limiter.limit(RATE_LIMIT_AUTH)
+@router.post("/{user_id}/otp/enable", dependencies=[Depends(rate_limit(RATE_LIMIT_AUTH))])
 def enable_user_otp(
-	request: Request,
 	user_id: int,
 	conn: sqlite3.Connection = Depends(get_conn),
 	current_user: sqlite3.Row = Depends(require_self_or_admin),
@@ -480,10 +466,8 @@ def enable_user_otp(
 	)
 
 
-@router.post("/{user_id}/otp/confirm")
-@limiter.limit(RATE_LIMIT_AUTH)
+@router.post("/{user_id}/otp/confirm", dependencies=[Depends(rate_limit(RATE_LIMIT_AUTH))])
 def confirm_user_otp_setup(
-	request: Request,
 	user_id: int,
 	payload: OTPConfirmRequest,
 	conn: sqlite3.Connection = Depends(get_conn),
@@ -524,10 +508,8 @@ def confirm_user_otp_setup(
 	)
 
 
-@router.post("/{user_id}/otp/disable")
-@limiter.limit(RATE_LIMIT_AUTH)
+@router.post("/{user_id}/otp/disable", dependencies=[Depends(rate_limit(RATE_LIMIT_AUTH))])
 def disable_user_otp_setup(
-	request: Request,
 	user_id: int,
 	payload: OTPDisableRequest,
 	conn: sqlite3.Connection = Depends(get_conn),

@@ -7,9 +7,11 @@ WireBuddy supports passwordless authentication using Passkeys (WebAuthn/FIDO2).
 Passkeys provide:
 
 - **Passwordless Login:** No password required
-- **Phishing Resistant:** Cannot be stolen or phished
+- **Origin-Bound:** Each passkey is bound to the site (relying party ID) it was
+  registered for, so a lookalike site cannot request a valid signature
 - **Fast Authentication:** Touch ID, Face ID, or security key
-- **Public Key Cryptography:** No shared secrets
+- **Public Key Cryptography:** The server stores only the public key; the private
+  key stays on the authenticator
 
 ## How Passkeys Work
 
@@ -78,7 +80,8 @@ The user is then prompted on next login to register a passkey.
 
 ### Fallback Behavior
 
-Passkeys are optional in the current implementation. Password login remains available unless your deployment enforces additional policies outside of the passkey module.
+Passkeys are optional; password login stays available. See
+[Authentication](authentication.md#authentication-methods).
 
 ## Managing Passkeys
 
@@ -109,20 +112,10 @@ For non-localhost deployments, the expected origin comes from
 `WIREBUDDY_PUBLIC_ORIGIN`. The value must exactly match the browser-visible
 scheme, host, and port.
 
-## API Endpoints (Current)
+## API Endpoints
 
-- `POST /api/passkeys/register/start`
-- `POST /api/passkeys/register/finish`
-- `POST /api/passkeys/login/start`
-- `POST /api/passkeys/login/finish`
-- `GET /api/passkeys`
-- `DELETE /api/passkeys/{passkey_id}`
-- `GET /api/passkeys/check`
-- `GET /api/passkeys/available`
-- `POST /api/passkeys/reset/{user_id}` (admin)
-- `GET /api/passkeys/user/{user_id}` (admin)
-- `POST /api/passkeys/enable/{user_id}` (admin)
-- `POST /api/passkeys/disable/{user_id}` (admin)
+The passkey routes under `/api/passkeys` are listed in the
+[endpoint reference](../api/endpoints.md#passkeys).
 
 ## Troubleshooting
 
@@ -193,15 +186,11 @@ always one of:
 
 ## Comparison: Passkeys vs Other Methods
 
-The practical difference is phishing resistance. A passkey signature is bound to
-the origin, so a lookalike site cannot obtain anything replayable; a TOTP code can
-be relayed by an attacker-controlled proxy, and a password alone offers neither
-protection. Passkeys also remove the password-reset path as an attack surface, at
-the cost of requiring a registered device — which is why the
-[best practice](#for-users) is to register a second authenticator.
-
-See [Authentication](authentication.md#authentication-methods) for how the three
-methods map onto WireBuddy's login flow.
+A passkey signature is bound to the origin, so a lookalike site cannot obtain
+anything replayable; a TOTP code can be relayed by an attacker-controlled proxy.
+Passkeys require a registered device, so register a second authenticator (see
+[For Users](#for-users)). How the methods map onto the login flow is described in
+[Authentication](authentication.md#authentication-methods).
 
 ## Resources
 

@@ -10,7 +10,7 @@ Explains WireBuddy's security model and how operators should harden a deployment
 |------|-------------|
 | `overview.md` | Security overview: authz, sessions and browser protection, secrets at rest, proxy/host trust, rate limiting, container/network boundary, operational controls |
 | `authentication.md` | Authentication methods, core login flow, password security, MFA, passkeys, session model, API notes, CSRF |
-| `passkeys.md` | WebAuthn passkeys: how they work, supported authenticators and browsers, setup, management, configuration, current API endpoints |
+| `passkeys.md` | WebAuthn passkeys: how they work, supported authenticators and browsers, setup, management, configuration; API routes are linked from `../api/endpoints.md` |
 | `rate-limiting.md` | Goals, effective limits, lockout behaviour, response semantics, operational guidance, automation example |
 | `best-practices.md` | Hardening checklist: protect the secret key, replace bootstrap password, strong auth, HTTPS, network exposure, host networking, WireGuard and DNS hardening |
 

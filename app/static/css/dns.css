@@ -192,7 +192,7 @@
 }
 
 .log-table td {
-    vertical-align: top;
+    vertical-align: middle;
     padding: 0.4rem 0.65rem;
 }
 
@@ -495,7 +495,7 @@
 
     .log-table th,
     .log-table td {
-        vertical-align: top;
+        vertical-align: middle;
     }
 
     /* Only the placeholder row is stretched to fill the scroll area, so the

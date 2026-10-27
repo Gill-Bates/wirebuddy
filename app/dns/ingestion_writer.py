@@ -325,10 +325,14 @@ class DnsTsdbWriter:
 			for date_str, points in by_day.items():
 				self._write_day_file(date_str, points)
 
-			# Persist offset AFTER fsync (crash-safe ordering)
+			# Persist offset AFTER fsync (crash-safe ordering). A forced save
+			# that fails is treated as a flush failure: advancing past data
+			# whose durable offset was not written risks re-reading it after a
+			# crash, so retain the batch and retry instead of silently clearing.
 			if self._pending_commit is not None:
 				self.tracker.commit(self._pending_commit.inode, self._pending_commit.end_offset)
-			self.tracker.save_if_needed(force=True)
+			if not self.tracker.save_if_needed(force=True):
+				raise OSError("DNS writer failed to persist offset after flush")
 
 			# Flush aggregated minute buckets to TSDB for fast trend queries
 			self._flush_tsdb_aggregates()
@@ -367,49 +371,78 @@ class DnsTsdbWriter:
 		- No precision issues
 		- UI computes blockrate from raw counters
 
-		Best-effort: failures are logged but don't fail the main flush.
-		TSDB provides read optimization; JSONL remains the primary durability layer.
+		Crash/partial-failure safety: the two append_point() calls per bucket
+		are independent, and the TSDB trend query SUMS all points in a minute
+		bucket. A naive append-and-clear therefore corrupts aggregates
+		permanently when only one counter is written: the offset is already
+		committed, raw JSONL has _event_id dedup but TSDB does not, and
+		/api/dns/trend only falls back to JSONL when NO TSDB counters exist, so
+		the skewed window is never auto-repaired.
+
+		To stay consistent across a partial failure this flush is
+		remainder-safe, not best-effort: each counter that is durably written
+		is zeroed in its bucket, so a retry on the next flush re-adds 0 (a
+		no-op under the summing read) for the part already stored. A bucket is
+		removed only once BOTH counters are written; a bucket with an unwritten
+		remainder is retained for the next flush instead of being dropped.
 		"""
 		if not self._minute_buckets or not self._tsdb_dir:
 			self._minute_buckets.clear()
 			return
 
-		bucket_count = len(self._minute_buckets)
-		try:
-			for minute_bucket, counts in self._minute_buckets.items():
-				# Parse minute bucket to datetime for TSDB
-				# Format: "2026-04-01T12:05" -> datetime
-				try:
-					bucket_dt = datetime.fromisoformat(minute_bucket + ":00+00:00")
-				except ValueError:
-					continue
+		written_buckets: list[str] = []
+		failed = False
 
-				# Write total counter
-				tsdb.append_point(
-					self._tsdb_dir,
-					peer_key=DNS_STATS_PEER_KEY,
-					metric=DNS_METRIC_TOTAL,
-					value=counts["total"],
-					retention_days=self._log_retention_days,
-					at=bucket_dt,
-					sync=False,
-				)
-				# Write blocked counter
-				tsdb.append_point(
-					self._tsdb_dir,
-					peer_key=DNS_STATS_PEER_KEY,
-					metric=DNS_METRIC_BLOCKED,
-					value=counts["blocked"],
-					retention_days=self._log_retention_days,
-					at=bucket_dt,
-					sync=False,
-				)
-			_log.debug("DNS_WRITER flushed %d minute buckets to TSDB", bucket_count)
-		except Exception as e:
-			# Best-effort: log warning but don't fail the main flush
-			_log.warning("DNS_WRITER failed to flush TSDB aggregates: %s", e)
-		finally:
-			self._minute_buckets.clear()
+		for minute_bucket, counts in self._minute_buckets.items():
+			# Parse minute bucket to datetime for TSDB.
+			# Format: "2026-04-01T12:05" -> datetime. An unparseable bucket can
+			# never be stored, so drop it rather than retain it forever.
+			try:
+				bucket_dt = datetime.fromisoformat(minute_bucket + ":00+00:00")
+			except ValueError:
+				written_buckets.append(minute_bucket)
+				continue
+
+			try:
+				if counts["total"] != 0:
+					tsdb.append_point(
+						self._tsdb_dir,
+						peer_key=DNS_STATS_PEER_KEY,
+						metric=DNS_METRIC_TOTAL,
+						value=counts["total"],
+						retention_days=self._log_retention_days,
+						at=bucket_dt,
+						sync=False,
+					)
+					# Zero only after a durable write, so a later retry of this
+					# same bucket (blocked counter failed below) re-adds nothing.
+					counts["total"] = 0
+				if counts["blocked"] != 0:
+					tsdb.append_point(
+						self._tsdb_dir,
+						peer_key=DNS_STATS_PEER_KEY,
+						metric=DNS_METRIC_BLOCKED,
+						value=counts["blocked"],
+						retention_days=self._log_retention_days,
+						at=bucket_dt,
+						sync=False,
+					)
+					counts["blocked"] = 0
+				written_buckets.append(minute_bucket)
+			except Exception as e:
+				# Stop on first failure: keep this bucket (with the already-
+				# written counter zeroed) and every later bucket for the next
+				# flush. The TSDB stays internally consistent; no counter is
+				# double-added and none is silently dropped.
+				failed = True
+				_log.warning("DNS_WRITER failed to flush TSDB aggregate for bucket %s: %s", minute_bucket, e)
+				break
+
+		for minute_bucket in written_buckets:
+			del self._minute_buckets[minute_bucket]
+
+		if not failed:
+			_log.debug("DNS_WRITER flushed %d minute buckets to TSDB", len(written_buckets))
 
 	def _write_day_file(self, date_str: str, points: list[dict]) -> None:
 		"""Append points to day-specific JSONL file with fsync.

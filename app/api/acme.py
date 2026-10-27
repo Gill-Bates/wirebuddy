@@ -31,14 +31,14 @@ from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec, rsa
 from cryptography.x509.oid import NameOID
-from fastapi import APIRouter, Depends, HTTPException, Path, Request
+from fastapi import APIRouter, Depends, HTTPException, Path
 from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel, ConfigDict, EmailStr, Field
 
 from ..api.auth import get_current_user, require_admin
 from ..utils.async_utils import spawn_tracked_task
 from ..utils.config import Config, get_config
-from ..utils.rate_limit import RATE_LIMIT_HEAVY, limiter
+from ..utils.rate_limit import RATE_LIMIT_HEAVY, rate_limit
 from .response import OkResponse
 
 _log = logging.getLogger(__name__)
@@ -934,10 +934,8 @@ def _list_certificates_internal(certs_dir: PathLib) -> list[CertificateInfo]:
 	return certificates
 
 
-@router.post("/certificates/request", response_model=OkResponse[CertificateIssueData])
-@limiter.limit(RATE_LIMIT_HEAVY)
+@router.post("/certificates/request", response_model=OkResponse[CertificateIssueData], dependencies=[Depends(rate_limit(RATE_LIMIT_HEAVY))])
 async def request_certificate(
-	request: Request,
 	req: CertificateRequest,
 	certs_dir: PathLib = Depends(_get_certs_dir_dep),
 	_: sqlite3.Row = Depends(require_admin),
@@ -1060,10 +1058,8 @@ async def request_certificate(
 		await asyncio.to_thread(_release_domain_lock, lock_fd)
 
 
-@router.delete("/certificates/{domain}", response_model=OkResponse[CertificateDeleteData])
-@limiter.limit(RATE_LIMIT_HEAVY)
+@router.delete("/certificates/{domain}", response_model=OkResponse[CertificateDeleteData], dependencies=[Depends(rate_limit(RATE_LIMIT_HEAVY))])
 async def delete_certificate(
-	request: Request,
 	domain: str = Path(..., min_length=1, max_length=253, pattern=_DOMAIN_PATTERN),
 	staging: bool = False,
 	certs_dir: PathLib = Depends(_get_certs_dir_dep),

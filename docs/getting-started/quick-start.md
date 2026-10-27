@@ -119,7 +119,7 @@ http://YOUR_SERVER_IP:8000
 
 !!! success "Bootstrap Credentials"
     - **Username:** `admin`
-    - **Password:** check the server log — run `docker logs wirebuddy` and look for the generated temporary password
+    - **Password:** printed once to the console at first startup (not logged, not stored). Read it with `docker logs wirebuddy`
 
 WireBuddy will redirect you to a password change screen on first login. Set a secure password to continue.
 

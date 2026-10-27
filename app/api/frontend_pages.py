@@ -38,6 +38,7 @@ from ..db.sqlite_settings import (
 	get_bool_setting,
 	get_dns_blocklist_enabled,
 	get_node_speedtest_last_results,
+	get_peer_stale_months,
 	get_setting,
 	get_speedtest_enabled,
 )
@@ -45,7 +46,8 @@ from ..db.sqlite_users import get_all_users
 from ..dns import unbound
 from ..utils.config import get_config
 from ..utils.onboarding import ONBOARDING_STEPS
-from ..utils.rate_limit import RATE_LIMIT_DEFAULT, RATE_LIMIT_UI_HEAVY, limiter
+from ..utils.rate_limit import RATE_LIMIT_DEFAULT, RATE_LIMIT_UI_HEAVY, rate_limit
+from ..utils.time import is_peer_stale, utcnow
 from ..utils.tls import describe_gui_certificate
 from ..utils.tsdb_helpers import build_latest_by_node
 from ..utils.version import BUILD_INFO, VERSION
@@ -239,7 +241,6 @@ _KEY_PACKAGES = [
 	"pydantic-settings",
 	"python-multipart",
 	"qrcode",
-	"slowapi",
 	"uvicorn",
 	"nh3",
 ]
@@ -515,8 +516,7 @@ def _is_loopback_request(request: Request) -> bool:
 		return False
 
 
-@router.get("/api/system/status", response_model=SystemStatusResponse)
-@limiter.limit(RATE_LIMIT_DEFAULT)
+@router.get("/api/system/status", response_model=SystemStatusResponse, dependencies=[Depends(rate_limit(RATE_LIMIT_DEFAULT))])
 async def get_system_status(request: Request) -> SystemStatusResponse:
 	"""Get system key-mismatch status for internal health checks.
 
@@ -534,7 +534,6 @@ async def get_system_status(request: Request) -> SystemStatusResponse:
 
 @router.get("/", response_class=RedirectResponse)
 def index(
-	request: Request,
 	user: sqlite3.Row | None = Depends(get_current_user_optional),
 ) -> RedirectResponse:
 	"""Root redirect to dashboard or login."""
@@ -543,8 +542,7 @@ def index(
 	return RedirectResponse(url="/login", status_code=303)
 
 
-@router.get("/login", response_class=Response)
-@limiter.limit(RATE_LIMIT_DEFAULT)
+@router.get("/login", response_class=Response, dependencies=[Depends(rate_limit(RATE_LIMIT_DEFAULT))])
 def login_page(
 	request: Request,
 	user: sqlite3.Row | None = Depends(get_current_user_optional),
@@ -562,8 +560,7 @@ def login_page(
 	)
 
 
-@router.get("/ui/change-password", response_class=Response)
-@limiter.limit(RATE_LIMIT_DEFAULT)
+@router.get("/ui/change-password", response_class=Response, dependencies=[Depends(rate_limit(RATE_LIMIT_DEFAULT))])
 def change_password_page(
 	request: Request,
 	user: sqlite3.Row = Depends(require_user_or_redirect),
@@ -582,8 +579,7 @@ def change_password_page(
 	)
 
 
-@router.get("/ui/otp-setup", response_class=Response)
-@limiter.limit(RATE_LIMIT_DEFAULT)
+@router.get("/ui/otp-setup", response_class=Response, dependencies=[Depends(rate_limit(RATE_LIMIT_DEFAULT))])
 def otp_setup_page(
 	request: Request,
 	user: sqlite3.Row = Depends(require_user_or_redirect),
@@ -604,8 +600,7 @@ def otp_setup_page(
 	)
 
 
-@router.get("/ui/passkey-setup", response_class=Response)
-@limiter.limit(RATE_LIMIT_DEFAULT)
+@router.get("/ui/passkey-setup", response_class=Response, dependencies=[Depends(rate_limit(RATE_LIMIT_DEFAULT))])
 def passkey_setup_page(
 	request: Request,
 	user: sqlite3.Row = Depends(require_user_or_redirect),
@@ -627,8 +622,7 @@ def passkey_setup_page(
 	)
 
 
-@router.get("/ui/dashboard", response_class=HTMLResponse)
-@limiter.limit(RATE_LIMIT_DEFAULT)
+@router.get("/ui/dashboard", response_class=HTMLResponse, dependencies=[Depends(rate_limit(RATE_LIMIT_DEFAULT))])
 def dashboard(
 	request: Request,
 	user: sqlite3.Row = Depends(require_user_or_redirect),
@@ -641,8 +635,8 @@ def dashboard(
 	)
 
 
-@router.get("/ui/peers", response_class=HTMLResponse)
-@limiter.limit(RATE_LIMIT_UI_HEAVY)  # Expensive UI page: tolerate lint burst traffic
+# Expensive UI page: tolerate lint burst traffic
+@router.get("/ui/peers", response_class=HTMLResponse, dependencies=[Depends(rate_limit(RATE_LIMIT_UI_HEAVY))])
 async def peers_page(
 	request: Request,
 	user: sqlite3.Row = Depends(require_user_or_redirect),
@@ -655,7 +649,7 @@ async def peers_page(
 	"""
 	db_path = request.app.state.db_path
 
-	def _load_peers_data() -> tuple[list[sqlite3.Row], set[int], dict[str, str], list[dict], str | None]:
+	def _load_peers_data() -> tuple[list[sqlite3.Row], set[int], dict[str, str], list[dict], str | None, int]:
 		"""Load peer rows plus admin node metadata with a single connection."""
 		with thread_connection(db_path) as conn:
 			peers = get_all_peers(conn)
@@ -663,12 +657,13 @@ async def peers_page(
 			nodes = [dict(node) for node in get_all_nodes(conn)]
 			node_map = {n["id"]: n["name"] for n in nodes}
 			local_fqdn = (get_setting(conn, "wg_fqdn") or "").strip() or None
-			return peers, tunnel_ids, node_map, nodes, local_fqdn
+			return peers, tunnel_ids, node_map, nodes, local_fqdn, get_peer_stale_months(conn)
 
-	peer_rows, tunnel_peer_ids, node_id_to_name, node_rows, local_fqdn = await asyncio.to_thread(_load_peers_data)
+	peer_rows, tunnel_peer_ids, node_id_to_name, node_rows, local_fqdn, stale_months = await asyncio.to_thread(_load_peers_data)
 	total_peers = len(peer_rows)
 	peers: list[dict] = []
 	now_epoch = int(time.time())
+	now_dt = utcnow()
 	unique_client_ips = list({ip for row in peer_rows if (ip := str(row["last_client_ip"] or "").strip())})
 	geoip_cache = await _batch_geoip_lookup(unique_client_ips)
 
@@ -679,6 +674,7 @@ async def peers_page(
 		peer["last_seen_text"] = last_seen.text
 		peer["last_seen_class"] = last_seen.css_class
 		peer["last_seen_active"] = last_seen.is_active
+		peer["is_stale"] = is_peer_stale(handshake_epoch, stale_months, now_dt)
 		peer["last_client_ip_display"] = str(peer.get("last_client_ip") or "").strip()
 		peer["last_client_country_code"] = None
 		peer["last_client_city"] = None
@@ -745,8 +741,7 @@ async def peers_page(
 	)
 
 
-@router.get("/ui/users", response_class=HTMLResponse)
-@limiter.limit(RATE_LIMIT_DEFAULT)
+@router.get("/ui/users", response_class=HTMLResponse, dependencies=[Depends(rate_limit(RATE_LIMIT_DEFAULT))])
 async def users_page(
 	request: Request,
 	user: sqlite3.Row = Depends(require_admin_or_redirect),
@@ -786,8 +781,7 @@ async def users_page(
 	)
 
 
-@router.get("/ui/nodes", response_class=HTMLResponse)
-@limiter.limit(RATE_LIMIT_DEFAULT)
+@router.get("/ui/nodes", response_class=HTMLResponse, dependencies=[Depends(rate_limit(RATE_LIMIT_DEFAULT))])
 async def nodes_page(
 	request: Request,
 	user: sqlite3.Row = Depends(require_admin_or_redirect),
@@ -876,8 +870,7 @@ async def nodes_page(
 	)
 
 
-@router.get("/ui/dns", response_class=HTMLResponse)
-@limiter.limit(RATE_LIMIT_DEFAULT)
+@router.get("/ui/dns", response_class=HTMLResponse, dependencies=[Depends(rate_limit(RATE_LIMIT_DEFAULT))])
 async def dns_page(
 	request: Request,
 	user: sqlite3.Row = Depends(require_user_or_redirect),
@@ -907,8 +900,7 @@ async def dns_page(
 	)
 
 
-@router.get("/ui/traffic", response_class=HTMLResponse)
-@limiter.limit(RATE_LIMIT_DEFAULT)
+@router.get("/ui/traffic", response_class=HTMLResponse, dependencies=[Depends(rate_limit(RATE_LIMIT_DEFAULT))])
 async def traffic_page(
 	request: Request,
 	user: sqlite3.Row = Depends(require_user_or_redirect),
@@ -935,8 +927,7 @@ async def traffic_page(
 	)
 
 
-@router.get("/ui/about", response_class=HTMLResponse)
-@limiter.limit(RATE_LIMIT_DEFAULT)
+@router.get("/ui/about", response_class=HTMLResponse, dependencies=[Depends(rate_limit(RATE_LIMIT_DEFAULT))])
 async def about_page(
 	request: Request,
 	user: sqlite3.Row = Depends(require_user_or_redirect),
@@ -958,8 +949,7 @@ async def about_page(
 	)
 
 
-@router.get("/ui/settings", response_class=HTMLResponse)
-@limiter.limit(RATE_LIMIT_DEFAULT)
+@router.get("/ui/settings", response_class=HTMLResponse, dependencies=[Depends(rate_limit(RATE_LIMIT_DEFAULT))])
 async def settings_page(
 	request: Request,
 	user: sqlite3.Row = Depends(require_user_or_redirect),
@@ -1018,8 +1008,7 @@ async def settings_page(
 	)
 
 
-@router.get("/ui/fragments/onboarding", response_class=HTMLResponse)
-@limiter.limit(RATE_LIMIT_DEFAULT)
+@router.get("/ui/fragments/onboarding", response_class=HTMLResponse, dependencies=[Depends(rate_limit(RATE_LIMIT_DEFAULT))])
 def onboarding_modal_fragment(
 	request: Request,
 	user: sqlite3.Row = Depends(require_user_or_redirect),
@@ -1043,9 +1032,8 @@ def onboarding_modal_fragment(
 	)
 
 
-@router.get("/.well-known/acme-challenge/{token}", response_class=PlainTextResponse)
-@limiter.limit(RATE_LIMIT_DEFAULT)
-def acme_challenge(request: Request, token: str) -> PlainTextResponse:
+@router.get("/.well-known/acme-challenge/{token}", response_class=PlainTextResponse, dependencies=[Depends(rate_limit(RATE_LIMIT_DEFAULT))])
+def acme_challenge(token: str) -> PlainTextResponse:
 	"""Serve ACME HTTP-01 challenge response for Let's Encrypt.
 
 	Intentionally synchronous so FastAPI dispatches it through the thread pool.

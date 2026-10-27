@@ -34,19 +34,23 @@ tools/ui-lint/ui-lint-output/
 tools/ui-lint/test-results/
 tools/ui-lint/ui-lint-summary.json
 ui-lint-summary.latest.json
+# Throwaway browser probes (underscore prefix); permanent drivers have no prefix
+tests/e2e/_*.mjs
 *.log
 .*tmp*.*
 
 
 # IDE
+.agents/*
 .idea/
 .vscode/*
 !.vscode/settings.json
 !.vscode/extensions.json
 
-# Runtime tool state (Claude Code / oh-my-claudecode)
+# Runtime tool state (Claude Code / oh-my-claudecode / Kiro)
 .omc/
 .omx/
+.kiro/
 .claude/settings.local.json
 
 # OS

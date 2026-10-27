@@ -29,7 +29,7 @@ from fastapi.templating import Jinja2Templates
 
 from ..utils.formatting import format_bandwidth_mbit
 from ..utils.geoip import lookup_ip
-from ..utils.time import parse_utc
+from ..utils.time import parse_utc, to_utc_iso
 from ..utils.version import BUILD_INFO, VERSION
 from .auth import (
 	coerce_db_bool,
@@ -101,6 +101,7 @@ def _truncate_ip(value: str | None, length: int = 24) -> str:
 _jinja_templates.env.filters["wbr_ip"] = _wbr_ip
 _jinja_templates.env.filters["truncate_ip"] = _truncate_ip
 _jinja_templates.env.filters["format_bandwidth_mbit"] = format_bandwidth_mbit
+_jinja_templates.env.filters["utc_iso"] = to_utc_iso
 
 __all__ = [
 	"CONNECTED_THRESHOLD_S",

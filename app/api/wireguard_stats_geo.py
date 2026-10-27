@@ -36,12 +36,14 @@ from ..db.sqlite_peers import (
 from ..db.sqlite_runtime import close_connection, connect
 from ..db.sqlite_settings import (
 	TSDB_RETENTION_OPTIONS,
+	get_peer_stale_months,
 	get_tsdb_retention_days,
 	set_tsdb_retention_days,
 )
 from ..utils.deps import get_conn, get_tsdb_dir
 from ..utils.geoip import lookup_ip
-from ..utils.rate_limit import RATE_LIMIT_CRITICAL, RATE_LIMIT_HEAVY, limiter
+from ..utils.rate_limit import RATE_LIMIT_CRITICAL, RATE_LIMIT_HEAVY, rate_limit
+from ..utils.time import is_peer_stale, utcnow
 from .auth import get_current_user, require_admin
 from .frontend_shared import CONNECTED_THRESHOLD_S
 from .response import ok_response
@@ -215,17 +217,29 @@ async def _lookup_geo_cached(ip: str) -> tuple[str, dict | None]:
 		async with _geo_lookup_sem:
 			try:
 				info = await run_in_threadpool(lookup_ip, ip)
-				future.set_result(info)
+				if not future.done():
+					future.set_result(info)
+			except asyncio.CancelledError:
+				# CancelledError is a BaseException, not caught below; without this
+				# the future stays pending and shielded waiters hang forever.
+				if not future.done():
+					future.cancel()
+				async with _geo_cache_lock:
+					_geo_inflight.pop(ip, None)
+				raise
 			except Exception as exc:
-				future.set_exception(exc)
+				if not future.done():
+					future.set_exception(exc)
 				async with _geo_cache_lock:
 					_geo_inflight.pop(ip, None)
 				raise
 			finally:
-				if not future.cancelled() and future.exception() is None:
+				# Only inspect future state once resolved: future.exception() on a
+				# pending future raises InvalidStateError.
+				if future.done() and not future.cancelled() and future.exception() is None:
 					async with _geo_cache_lock:
 						_geo_inflight.pop(ip, None)
-						_geo_cache[ip] = (time.monotonic(), info)
+						_geo_cache[ip] = (time.monotonic(), future.result())
 						_geo_cache.move_to_end(ip)
 						# LRU eviction
 						while len(_geo_cache) > _GEO_CACHE_MAX_SIZE:
@@ -514,6 +528,12 @@ async def _build_peers_enriched(conn: sqlite3.Connection) -> list[dict]:
 	if missing_geo_lookups:
 		_log.debug("PEERS_ENRICHED geo lookup missing for %d endpoint(s)", missing_geo_lookups)
 
+	# Derived at build time from last_seen + threshold; never persisted.
+	stale_months = await run_in_threadpool(get_peer_stale_months, conn)
+	now_dt = utcnow()
+	for peer in peers_by_key.values():
+		peer["is_stale"] = is_peer_stale(_peer_handshake_ts(peer), stale_months, now_dt)
+
 	return sorted(
 		peers_by_key.values(),
 		key=lambda p: (not p["connected"], -_peer_handshake_ts(p)),
@@ -555,33 +575,29 @@ async def get_tsdb_stats(
 ):
 	"""Get TSDB storage statistics."""
 	data = await run_in_threadpool(tsdb.get_db_stats, tsdb_dir)
-	data["retention_days"] = get_tsdb_retention_days(conn)
+	data["retention_days"] = await run_in_threadpool(get_tsdb_retention_days, conn)
 	data["retention_options"] = list(TSDB_RETENTION_OPTIONS)
 	data["path"] = str(tsdb_dir)
 	return ok_response(data=data)
 
 
-@router.patch("/stats/tsdb/retention")
-@limiter.limit(RATE_LIMIT_CRITICAL)
+@router.patch("/stats/tsdb/retention", dependencies=[Depends(rate_limit(RATE_LIMIT_CRITICAL))])
 async def update_tsdb_retention(
-	request: Request,
 	request_body: TsdbRetentionUpdate,
 	conn: sqlite3.Connection = Depends(get_conn),
 	_: sqlite3.Row = Depends(require_admin),
 ):
 	"""Update TSDB retention period (admin only)."""
 	days = int(request_body.retention_days)
-	set_tsdb_retention_days(conn, days)
+	await run_in_threadpool(set_tsdb_retention_days, conn, days)
 	return ok_response(
 		message=f"TSDB retention set to {days} days",
 		data={"retention_days": days},
 	)
 
 
-@router.delete("/stats/tsdb")
-@limiter.limit(RATE_LIMIT_CRITICAL)
+@router.delete("/stats/tsdb", dependencies=[Depends(rate_limit(RATE_LIMIT_CRITICAL))])
 async def reset_tsdb(
-	request: Request,
 	tsdb_dir: Path = Depends(get_tsdb_dir),
 	_: sqlite3.Row = Depends(require_admin),
 ):
@@ -593,10 +609,8 @@ async def reset_tsdb(
 	)
 
 
-@router.post("/stats/tsdb/maintenance")
-@limiter.limit(RATE_LIMIT_HEAVY)
+@router.post("/stats/tsdb/maintenance", dependencies=[Depends(rate_limit(RATE_LIMIT_HEAVY))])
 async def run_tsdb_maintenance(
-	request: Request,
 	tsdb_dir: Path = Depends(get_tsdb_dir),
 	_: sqlite3.Row = Depends(require_admin),
 ):
@@ -623,10 +637,8 @@ async def get_peer_metrics_stats(
 	return ok_response(data=data)
 
 
-@router.delete("/stats/peer-logs")
-@limiter.limit(RATE_LIMIT_CRITICAL)
+@router.delete("/stats/peer-logs", dependencies=[Depends(rate_limit(RATE_LIMIT_CRITICAL))])
 async def delete_peer_logs(
-	request: Request,
 	conn: sqlite3.Connection = Depends(get_conn),
 	_: sqlite3.Row = Depends(require_admin),
 ):

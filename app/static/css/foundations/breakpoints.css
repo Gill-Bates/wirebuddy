@@ -232,5 +232,6 @@
 @media (width <= 767.98px) {
     .wb-map-container {
         height: clamp(300px, 40vh, 400px);
+        height: clamp(300px, 40svh, 400px);
     }
 }

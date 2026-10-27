@@ -12,7 +12,7 @@ import asyncio
 import logging
 import sqlite3
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
 from ..db.sqlite_interfaces import (
@@ -23,7 +23,7 @@ from ..db.sqlite_interfaces import (
 )
 from ..utils.config import WG_CONFIG_PATH
 from ..utils.deps import get_conn
-from ..utils.rate_limit import RATE_LIMIT_HEAVY, limiter
+from ..utils.rate_limit import RATE_LIMIT_HEAVY, rate_limit
 from .auth import get_current_user, require_admin
 from .response import OkResponse
 from .wireguard_isolation import apply_client_isolation_runtime, cleanup_client_isolation
@@ -223,10 +223,8 @@ async def get_interface(
 	return OkResponse[InterfaceDetailPayload](data=InterfaceDetailPayload.model_validate(result))
 
 
-@router.post("/interfaces/{name}/up", response_model=OkResponse[None])
-@limiter.limit(RATE_LIMIT_HEAVY)
+@router.post("/interfaces/{name}/up", response_model=OkResponse[None], dependencies=[Depends(rate_limit(RATE_LIMIT_HEAVY))])
 async def interface_up(
-	request: Request,
 	name: str,
 	conn: sqlite3.Connection = Depends(get_conn),
 	_: sqlite3.Row = Depends(require_admin),
@@ -262,10 +260,8 @@ async def interface_up(
 	return OkResponse[None](message=f"Interface {name} is up")
 
 
-@router.post("/interfaces/{name}/down", response_model=OkResponse[None])
-@limiter.limit(RATE_LIMIT_HEAVY)
+@router.post("/interfaces/{name}/down", response_model=OkResponse[None], dependencies=[Depends(rate_limit(RATE_LIMIT_HEAVY))])
 async def interface_down(
-	request: Request,
 	name: str,
 	# Taken for the dependency's side effect, not for queries: get_conn answers
 	# 503 while a backup restore is in progress, and bringing an interface down
@@ -315,10 +311,8 @@ async def interface_down(
 	return OkResponse[None](message=f"Interface {name} is down")
 
 
-@router.post("/interfaces/{name}/restart", response_model=OkResponse[None])
-@limiter.limit(RATE_LIMIT_HEAVY)
+@router.post("/interfaces/{name}/restart", response_model=OkResponse[None], dependencies=[Depends(rate_limit(RATE_LIMIT_HEAVY))])
 async def interface_restart(
-	request: Request,
 	name: str,
 	conn: sqlite3.Connection = Depends(get_conn),
 	_: sqlite3.Row = Depends(require_admin),

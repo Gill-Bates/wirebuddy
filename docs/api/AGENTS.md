@@ -9,8 +9,8 @@ Reference documentation for the WireBuddy REST API: base URL and endpoint famili
 | File | Description |
 |------|-------------|
 | `overview.md` | Base URL, authentication summary, endpoint families, OpenAPI docs location, example call, rate limiting |
-| `authentication.md` | Authentication modes, obtaining an auth token, node sync authentication, error semantics, security recommendations, examples |
-| `endpoints.md` | Authentication model and endpoints grouped by resource, plus notes |
+| `authentication.md` | Authentication modes, obtaining an auth token, node sync authentication (enrollment token, Bearer secret, optional trusted-proxy certificate fingerprint), error semantics, security recommendations, examples |
+| `endpoints.md` | Authentication model and endpoints grouped by resource (generated from the OpenAPI schema; `include_in_schema=False` routes are not listed), plus notes |
 
 ## For AI Agents
 

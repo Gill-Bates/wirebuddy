@@ -22,6 +22,8 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from ipaddress import IPv4Address, IPv6Address, ip_address, ip_interface
 
+from starlette.concurrency import run_in_threadpool
+
 from ..db.sqlite_interfaces import (
 	get_interface,
 )
@@ -53,6 +55,21 @@ _FW_CONFIG = {
 # Maximum stale rules to remove in one pass (prevents infinite loops)
 MAX_STALE_RULES = 50
 
+# iptables stderr phrases that are benign for a given operation. A rule-install
+# operation (-I/-A) has no benign failure: a missing DROP rule is a policy bypass.
+_CHAIN_GONE = ("No chain/target/match", "No such file or directory")
+_BENIGN_BY_OP: dict[str, tuple[str, ...]] = {
+	"-N": ("Chain already exists",),
+	"-F": _CHAIN_GONE,
+	"-X": _CHAIN_GONE,
+	"-D": (*_CHAIN_GONE, "does a matching rule exist"),
+}
+
+
+def _benign_phrases_for_op(op: str) -> tuple[str, ...]:
+	"""Return the iptables stderr phrases tolerated for one operation flag."""
+	return _BENIGN_BY_OP.get(op, ())
+
 
 @dataclass
 class IsolationResult:
@@ -70,7 +87,7 @@ def _validate_ip_or_subnet(value: str, label: str) -> str:
 	Raises:
 	    ValueError: If value contains unsafe characters.
 	"""
-	if not _IP_SUBNET_RE.match(value):
+	if not _IP_SUBNET_RE.fullmatch(value):
 		raise ValueError(f"Refusing to embed unsafe {label} in iptables rule: {value!r}")
 	return value
 
@@ -241,43 +258,22 @@ def build_client_isolation_post_rules(
 	return all_up, all_down
 
 
-async def apply_client_isolation_runtime(
-	interface_name: str,
+def _load_isolation_inputs(
 	conn: sqlite3.Connection,
-	run_wg_command: Callable[..., Awaitable[tuple[int, str, str]]] | None = None,
-) -> IsolationResult:
-	"""Apply per-peer client-isolation rules to a running interface.
+	interface_name: str,
+) -> tuple[str | None, str | None, list[str], list[str]] | None:
+	"""Load interface subnets and isolated-peer IPs (synchronous SQLite I/O).
 
-	Returns:
-	    IsolationResult with counts of successful/failed rule applications.
+	Returns ``None`` when the interface does not exist. Run via
+	``run_in_threadpool`` so the blocking SQLite access stays off the event loop.
 	"""
-	result = IsolationResult()
-
-	# Validate interface name to prevent iptables argument injection
-	if not _IFACE_RE.match(interface_name):
-		_log.error("CLIENT_ISO: refusing invalid interface name: %r", interface_name)
-		result.errors.append(f"Invalid interface name: {interface_name}")
-		return result
-
-	# Import default run_wg_command if not provided
-	if run_wg_command is None:
-		from .wireguard_utils import run_wg_command as _run_wg_command
-
-		run_wg_command = _run_wg_command
-
 	iface = get_interface(conn, interface_name)
 	if not iface:
-		return result
-
-	# Skip when interface is down
-	code, _, _ = await run_wg_command("wg", "show", interface_name)
-	if code != 0:
-		return result
+		return None
 
 	v4_subnet = _parse_subnet(iface["address"])
 	v6_subnet = _parse_subnet(iface["address6"])
 
-	# Fetch isolated peers
 	cur = conn.execute(
 		"""
         SELECT peer_address
@@ -295,23 +291,69 @@ async def apply_client_isolation_runtime(
 		if ipv6:
 			isolated_v6.append(ipv6)
 
+	return v4_subnet, v6_subnet, isolated_v4, isolated_v6
+
+
+async def apply_client_isolation_runtime(
+	interface_name: str,
+	conn: sqlite3.Connection,
+	run_wg_command: Callable[..., Awaitable[tuple[int, str, str]]] | None = None,
+) -> IsolationResult:
+	"""Apply per-peer client-isolation rules to a running interface.
+
+	Returns:
+	    IsolationResult with counts of successful/failed rule applications.
+	"""
+	result = IsolationResult()
+
+	# Validate interface name to prevent iptables argument injection
+	if not _IFACE_RE.fullmatch(interface_name):
+		_log.error("CLIENT_ISO: refusing invalid interface name: %r", interface_name)
+		result.errors.append(f"Invalid interface name: {interface_name}")
+		return result
+
+	# Import default run_wg_command if not provided
+	if run_wg_command is None:
+		from .wireguard_utils import run_wg_command as _run_wg_command
+
+		run_wg_command = _run_wg_command
+
+	# SQLite I/O is synchronous; offload it so the event loop is not blocked.
+	# The connection is check_same_thread=False and has a single logical owner
+	# here, so a threadpool hop is safe (see sqlite_runtime connection contract).
+	loaded = await run_in_threadpool(_load_isolation_inputs, conn, interface_name)
+	if loaded is None:
+		return result
+	v4_subnet, v6_subnet, isolated_v4, isolated_v6 = loaded
+
+	# Skip when interface is down
+	code, _, _ = await run_wg_command("wg", "show", interface_name)
+	if code != 0:
+		return result
+
 	async def _run_ignore(*args: str) -> int:
-		"""Execute command, log failures, return exit code."""
+		"""Execute an iptables command, classifying failures per operation.
+
+		Benign (tolerated) stderr depends on the iptables operation: a missing
+		chain/rule is expected for cleanup (``-F``/``-X``/``-D``) and a
+		pre-existing chain for creation (``-N``). A failed ``-I``/``-A`` that
+		installs a DROP or FORWARD-jump rule is never benign — treating it so
+		would let client isolation fail open.
+		"""
 		cmd_name = args[0] if args else ""
+		op = args[1] if len(args) > 1 else ""
 		code_inner, _, stderr_inner = await run_wg_command(*args)
 		if code_inner == 0:
 			result.rules_ok += 1
-		else:
-			# These are expected/benign errors - don't count as failures
-			benign = (
-				"No chain/target/match",
-				"Chain already exists",
-				"No such file or directory",
-				"does a matching rule exist",
-			)
-			if stderr_inner and not any(msg in stderr_inner for msg in benign):
-				_log.debug("CLIENT_ISO runtime cmd failed (%s): %s", cmd_name, stderr_inner.strip())
-				result.rules_failed += 1
+			return code_inner
+
+		benign = _benign_phrases_for_op(op)
+		if stderr_inner and benign and any(msg in stderr_inner for msg in benign):
+			return code_inner
+
+		_log.debug("CLIENT_ISO runtime cmd failed (%s %s): %s", cmd_name, op, stderr_inner.strip() if stderr_inner else "")
+		result.rules_failed += 1
+		result.errors.append(f"{cmd_name} {op} failed: {stderr_inner.strip() if stderr_inner else 'non-zero exit'}")
 		return code_inner
 
 	async def _apply_for_version(
@@ -380,7 +422,7 @@ async def cleanup_client_isolation(
 	happens even if the interface state is inconsistent.
 	"""
 	# Validate interface name to prevent iptables argument injection
-	if not _IFACE_RE.match(interface_name):
+	if not _IFACE_RE.fullmatch(interface_name):
 		_log.error("CLIENT_ISO cleanup: refusing invalid interface name: %r", interface_name)
 		return
 

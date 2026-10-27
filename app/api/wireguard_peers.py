@@ -63,12 +63,12 @@ from ..dns.custom_rules import (
 from ..models.peers import PeerCreate, PeerPublic, PeerUpdate
 from ..utils.config import WG_CONFIG_PATH
 from ..utils.deps import get_config, get_conn, get_tsdb_dir
-from ..utils.rate_limit import RATE_LIMIT_HEAVY, limiter
+from ..utils.rate_limit import RATE_LIMIT_HEAVY, rate_limit
 from ..utils.vault import decrypt as vault_decrypt
 from ..utils.vault import encrypt as vault_encrypt
 from .auth import get_current_user, require_admin
 from .response import OkResponse
-from .wireguard_config import sync_interface_config
+from .wireguard_config import ConfigWriteError, sync_interface_config
 from .wireguard_isolation import apply_client_isolation_runtime
 from .wireguard_stats_geo import invalidate_peers_enriched_cache
 from .wireguard_utils import (
@@ -191,7 +191,8 @@ async def _wg_add_peer_runtime(
 	"""Add a peer to WireGuard runtime, handling PSK decryption if needed.
 
 	Raises:
-		HTTPException(503): If PSK decryption fails (key mismatch).
+		HTTPException(503): If PSK decryption fails (key mismatch) or the
+			``wg set`` command returns a non-zero exit code.
 	"""
 	if encrypted_psk:
 		try:
@@ -207,6 +208,10 @@ async def _wg_add_peer_runtime(
 		code, _, stderr = await run_wg_command(WG_BIN, "set", interface, "peer", public_key, "allowed-ips", peer_address)
 	if code != 0:
 		_log.warning("WG_PEER_ADD_FAILED peer=%s iface=%s: %s", public_key[:8], interface, stderr.strip())
+		raise HTTPException(
+			status_code=503,
+			detail="Failed to update peer in WireGuard runtime",
+		)
 
 
 async def _sync_tunnel_peer_allowed_ips(conn: sqlite3.Connection, node_id: str) -> None:
@@ -387,8 +392,7 @@ async def list_peers(
 	return OkResponse[list[PeerPublic]](data=data)
 
 
-@router.post("/peers", status_code=201, response_model=OkResponse[PeerPublic])
-@limiter.limit(RATE_LIMIT_HEAVY)
+@router.post("/peers", status_code=201, response_model=OkResponse[PeerPublic], dependencies=[Depends(rate_limit(RATE_LIMIT_HEAVY))])
 async def create_peer(
 	request: Request,
 	payload: PeerCreate,
@@ -580,7 +584,11 @@ async def create_peer(
 				conn,
 				pepper=cfg.secret_key,
 			)
-			await apply_client_isolation_runtime(payload.interface, conn)
+			isolation = await apply_client_isolation_runtime(payload.interface, conn)
+			if not isolation.applied or isolation.rules_failed or isolation.errors:
+				# Fail closed: raise inside the try so the rollback below removes
+				# the half-created peer from WG and the DB.
+				raise RuntimeError("Client isolation could not be applied")
 
 			# Seed TSDB series so peer directories exist immediately after creation.
 			try:
@@ -592,7 +600,7 @@ async def create_peer(
 			# Keep non-fatal: peer creation succeeds even if tag regeneration fails.
 			await _safe_regenerate_peer_tags(conn)
 
-		except (sqlite3.Error, OSError, ValueError, RuntimeError) as exc:
+		except (sqlite3.Error, OSError, ValueError, RuntimeError, ConfigWriteError) as exc:
 			# Rollback: remove from WG and DB
 			_log.error("Post-create sync failed; rolling back peer %s: %s", public_key[:8], exc)
 			await run_wg_command(WG_BIN, "set", payload.interface, "peer", public_key, "remove")
@@ -625,8 +633,7 @@ async def get_peer(
 	return OkResponse[PeerPublic](data=_row_to_public(peer, enabled_blocklist_ids))
 
 
-@router.patch("/peers/{peer_id}", response_model=OkResponse[PeerPublic])
-@limiter.limit(RATE_LIMIT_HEAVY)
+@router.patch("/peers/{peer_id}", response_model=OkResponse[PeerPublic], dependencies=[Depends(rate_limit(RATE_LIMIT_HEAVY))])
 async def update_peer(
 	request: Request,
 	peer_id: Annotated[int, FastAPIPath(gt=0)],
@@ -649,6 +656,7 @@ async def update_peer(
 	enabled_blocklist_ids = await run_in_threadpool(get_enabled_blocklist_ids, conn)
 	old_node_id = safe_row_get(peer, "node_id")
 	old_is_remote = bool(old_node_id)
+	old_is_enabled = bool(peer["is_enabled"])
 	old_allow_all_nodes = bool(safe_row_get(peer, "allow_all_nodes", False))
 
 	def _val_or_unset(field: str):
@@ -690,17 +698,44 @@ async def update_peer(
 	peer_enabled = bool(updated["is_enabled"])
 	peer_address = updated["peer_address"]
 
-	# Runtime enable/disable and local/remote migration support
+	async def _restore_runtime_fields() -> None:
+		"""Roll back the runtime-coupled DB columns to their pre-update values.
+
+		Keeps DB and WireGuard runtime consistent when a required ``wg set``
+		mutation fails after the row was already written.
+		"""
+		restore_node_id = old_node_id if "node_id" in fields_set else UNSET
+		restore_is_enabled = old_is_enabled if "is_enabled" in fields_set else UNSET
+		if restore_node_id is UNSET and restore_is_enabled is UNSET:
+			return
+		try:
+			await run_in_threadpool(
+				db_update_peer,
+				conn,
+				peer_id,
+				node_id=restore_node_id,
+				is_enabled=restore_is_enabled,
+			)
+		except Exception:
+			_log.exception("PEER_UPDATE_DB_ROLLBACK_FAILED peer=%s", public_key[:8])
+
+	# Runtime enable/disable and local/remote migration support. A failed runtime
+	# mutation must not leave the DB reporting a state the interface never reached,
+	# so these branches roll the DB row back and fail with 503.
 	if old_is_remote and not new_is_remote:
 		# Peer migrated FROM remote TO local — add to local WireGuard
 		if peer_enabled and peer_address:
-			await _wg_add_peer_runtime(
-				interface_name,
-				public_key,
-				peer_address,
-				safe_row_get(updated, "preshared_key"),
-				cfg.secret_key,
-			)
+			try:
+				await _wg_add_peer_runtime(
+					interface_name,
+					public_key,
+					peer_address,
+					safe_row_get(updated, "preshared_key"),
+					cfg.secret_key,
+				)
+			except HTTPException:
+				await _restore_runtime_fields()
+				raise
 	elif not old_is_remote and new_is_remote:
 		# Peer migrated FROM local TO remote — remove from local WireGuard
 		code, _, stderr = await run_wg_command(
@@ -713,6 +748,11 @@ async def update_peer(
 		)
 		if code != 0:
 			_log.warning("WG_PEER_REMOVE_FAILED (migration to remote) peer=%s: %s", public_key[:8], stderr.strip())
+			await _restore_runtime_fields()
+			raise HTTPException(
+				status_code=503,
+				detail="Failed to update peer in WireGuard runtime",
+			)
 	elif not new_is_remote:
 		# Peer remains local — handle enable/disable toggle
 		if "is_enabled" in fields_set:
@@ -727,14 +767,23 @@ async def update_peer(
 				)
 				if code != 0:
 					_log.warning("WG_PEER_REMOVE_FAILED (disabled) peer=%s: %s", public_key[:8], stderr.strip())
+					await _restore_runtime_fields()
+					raise HTTPException(
+						status_code=503,
+						detail="Failed to update peer in WireGuard runtime",
+					)
 			elif peer_address:
-				await _wg_add_peer_runtime(
-					interface_name,
-					public_key,
-					peer_address,
-					safe_row_get(updated, "preshared_key"),
-					cfg.secret_key,
-				)
+				try:
+					await _wg_add_peer_runtime(
+						interface_name,
+						public_key,
+						peer_address,
+						safe_row_get(updated, "preshared_key"),
+						cfg.secret_key,
+					)
+				except HTTPException:
+					await _restore_runtime_fields()
+					raise
 		elif "allowed_ips" in fields_set and payload.allowed_ips is not None:
 			# Keep server-side cryptokey routing strict: always peer_address on server.
 			# payload.allowed_ips is client-side policy and must not be pushed to server.
@@ -764,7 +813,11 @@ async def update_peer(
 			conn,
 			pepper=cfg.secret_key,
 		)
-		await apply_client_isolation_runtime(interface_name, conn)
+		isolation = await apply_client_isolation_runtime(interface_name, conn)
+		if not isolation.applied or isolation.rules_failed or isolation.errors:
+			# Fail closed: a client-isolation policy recorded in the DB must be
+			# enforced in the firewall before the update is reported as success.
+			raise HTTPException(status_code=503, detail="Client isolation could not be applied")
 
 	if "node_id" in fields_set or ("is_enabled" in fields_set and (old_is_remote or new_is_remote)):
 		nodes_to_notify = {old_node_id, new_node_id} - {None}
@@ -800,8 +853,7 @@ async def update_peer(
 	return OkResponse[PeerPublic](data=updated_data)
 
 
-@router.delete("/peers/{peer_id}", status_code=204)
-@limiter.limit(RATE_LIMIT_HEAVY)
+@router.delete("/peers/{peer_id}", status_code=204, dependencies=[Depends(rate_limit(RATE_LIMIT_HEAVY))])
 async def delete_peer(
 	request: Request,
 	peer_id: Annotated[int, FastAPIPath(gt=0)],
@@ -909,7 +961,7 @@ async def delete_peer(
 		conn,
 		pepper=cfg.secret_key,
 	)
-	await apply_client_isolation_runtime(interface_name, conn)
+	isolation = await apply_client_isolation_runtime(interface_name, conn)
 
 	# Delete TSDB data (peer already removed, safe to force deletion)
 	await run_in_threadpool(tsdb.delete_peer_data, tsdb_dir, public_key, force=True)
@@ -918,3 +970,9 @@ async def delete_peer(
 
 	_log.info("PEER_DELETED id=%d public_key=%s...", peer_id, public_key[:8])
 	invalidate_peers_enriched_cache()
+
+	# The peer is already removed; cleanup above completed. If re-applying
+	# isolation for the remaining peers failed, surface it rather than claiming a
+	# clean 204 — the firewall may no longer match the DB policy.
+	if not isolation.applied or isolation.rules_failed or isolation.errors:
+		raise HTTPException(status_code=503, detail="Client isolation could not be re-applied after peer deletion")

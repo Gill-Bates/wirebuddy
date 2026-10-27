@@ -90,7 +90,7 @@
                                 Certificate:
                                 {%- if settings.tls_certificate.source == 'letsencrypt' %}
                                 <span class="text-success">Let&rsquo;s Encrypt</span>
-                                {%- if settings.tls_certificate.expires_at %}, expires {{ settings.tls_certificate.expires_at[:10] }}{% endif %}.
+                                {%- if settings.tls_certificate.expires_at %}, expires <time datetime="{{ settings.tls_certificate.expires_at|utc_iso }}" data-wb-format="date">{{ settings.tls_certificate.expires_at[:10] }}</time>{% endif %}.
                                 {%- else %}
                                 <span class="text-warning">self-signed</span>.
                                 {%- endif %}

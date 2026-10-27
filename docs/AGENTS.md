@@ -8,8 +8,8 @@ Sources of the WireBuddy documentation site, built with MkDocs Material and depl
 ## Key Files
 | File | Description |
 |------|-------------|
-| `mkdocs.yml` | MkDocs Material config: site metadata, light/dark palette (indigo), navigation features, plugins and the nav tree; built with `--strict` in CI |
-| `index.md` | Landing page: what WireBuddy is, key features, quick start snippet, screenshots, security-first summary, community links |
+| `mkdocs.yml` | MkDocs Material config: site metadata, light/dark palette (indigo, follows `prefers-color-scheme`), `exclude_docs` for `AGENTS.md`, navigation features, plugins and the nav tree; built with `--strict` in CI |
+| `index.md` | Landing page: what WireBuddy is, key features, quick start snippet, screenshots, short security section linking to the Security Overview, community links |
 | `troubleshooting.md` | Symptom-driven fixes: container start, web UI/reverse proxy, built-in HTTPS, peer handshake, no internet through tunnel, DNS resolution/blocking, empty traffic/GeoIP analytics |
 | `stylesheets/extra.css` | Custom theme tweaks (`--wb-primary`/`--wb-accent`, dark-mode background colours matching the app) |
 | `assets/favicon.png` | Site favicon (only file in `assets/`) |

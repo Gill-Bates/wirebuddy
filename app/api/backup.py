@@ -19,7 +19,7 @@ Backup archive layout (format v2):
     data/tsdb/...          # optional, only when include_tsdb_metrics is set
 
 Configuration tables included in data.sql:
-    schema_version, users, passkeys, settings, interfaces, peers, nodes,
+    schema_version, users, dashboard_layouts, passkeys, settings, interfaces, peers, nodes,
     node_interfaces
 
 Excluded (ephemeral): auth_tokens, passkey_challenges, login_attempts,
@@ -64,7 +64,8 @@ from ..utils.backup_lock import (
 	acquire_restore_guard,
 )
 from ..utils.crypto import verify_password
-from ..utils.rate_limit import RATE_LIMIT_CRITICAL, limiter
+from ..utils.key_domains import derive_backup_hmac_key
+from ..utils.rate_limit import RATE_LIMIT_CRITICAL, rate_limit
 from ..utils.time import utcnow
 from .auth import require_admin
 from .response import OkResponse
@@ -124,6 +125,7 @@ _ALLOWED_DATA_STATEMENT_PREFIXES = ("INSERT INTO ",)
 _BACKUP_DATA_TABLES: tuple[str, ...] = (
 	"schema_version",
 	"users",
+	"dashboard_layouts",
 	"settings",
 	"interfaces",
 	"nodes",
@@ -156,7 +158,7 @@ _BACKUP_HMAC_TIMEOUT_SECONDS = 60.0
 # abandon the await - the mutation continues while the caller releases the
 # backup operation lock. Bounding them safely needs a cancellable subprocess.
 _DB_INTEGRITY_CHECK_TIMEOUT_SECONDS = 30.0
-_BACKUP_HMAC_CONTEXT = b"wirebuddy-backup-hmac\0"
+_BACKUP_HMAC_HEX_LENGTH = 32  # 128 bits of HMAC-SHA256, carried in the filename
 MAX_BACKUP_EXTRACTED_BYTES = 10 * 1024 * 1024 * 1024  # 10 GB
 # Allowed top-level archive members for format v2. TSDB is matched by prefix.
 _ALLOWED_BACKUP_FILES_V2 = frozenset(
@@ -277,40 +279,19 @@ def _iter_backup_files(backup_dir: Path) -> Iterator[Path]:
 	yield from backup_dir.glob("wirebuddy_backup_*.tar.gz")
 
 
-def _get_legacy_backup_hmac_secret(conn: sqlite3.Connection) -> str | None:
-	"""Return the pre-v1.5 per-database backup HMAC secret, if present."""
-	return get_setting(conn, SETTING_BACKUP_HMAC_SECRET)
-
-
 def _derive_backup_hmac_secret(secret_key: str) -> bytes:
-	"""Derive a stable backup HMAC key from WIREBUDDY_SECRET_KEY.
+	"""Derive the backup HMAC key from WIREBUDDY_SECRET_KEY (domain-separated).
 
 	This keeps backups restorable on replacement instances configured with the
-	same application secret key while separating the backup HMAC domain from
-	other secret-key uses.
+	same application secret key. It is the only accepted signing key: the legacy
+	``settings.backup_hmac_secret`` is neither trusted nor exported, because the
+	settings table is part of every backup and a key stored inside the archive it
+	authenticates would let anyone holding a backup forge another one.
 	"""
-	secret = str(secret_key or "")
-	if not secret:
-		raise RuntimeError("WIREBUDDY_SECRET_KEY is required for backup integrity checks")
-	return hashlib.sha256(_BACKUP_HMAC_CONTEXT + secret.encode("utf-8")).digest()
-
-
-def _get_backup_hmac_secrets(conn: sqlite3.Connection, secret_key: str) -> tuple[bytes, ...]:
-	"""Return active backup HMAC keys, newest first.
-
-	The first key is the stable key derived from WIREBUDDY_SECRET_KEY. A legacy
-	database-scoped secret is included when present so old backups remain valid
-	on the original installation.
-	"""
-	derived_secret = _derive_backup_hmac_secret(secret_key)
-	legacy_secret = _get_legacy_backup_hmac_secret(conn)
-	if not legacy_secret:
-		return (derived_secret,)
-
-	legacy_bytes = legacy_secret.encode("utf-8")
-	if hmac.compare_digest(legacy_bytes, derived_secret):
-		return (derived_secret,)
-	return (derived_secret, legacy_bytes)
+	try:
+		return derive_backup_hmac_key(secret_key)
+	except RuntimeError as exc:
+		raise RuntimeError("WIREBUDDY_SECRET_KEY is required for backup integrity checks") from exc
 
 
 def _compute_backup_hmac(filepath: Path, secret: bytes | str) -> str:
@@ -320,17 +301,9 @@ def _compute_backup_hmac(filepath: Path, secret: bytes | str) -> str:
 	with filepath.open("rb") as f:
 		for chunk in iter(lambda: f.read(1024 * 1024), b""):
 			h.update(chunk)
-	return h.hexdigest()[:32]
-
-
-def _compute_backup_hmac_candidates(filepath: Path, secrets: tuple[bytes, ...]) -> tuple[str, ...]:
-	"""Compute candidate backup HMACs for the provided secrets in one file pass."""
-	hmacs = [hmac.new(secret, digestmod=hashlib.sha256) for secret in secrets]
-	with filepath.open("rb") as f:
-		for chunk in iter(lambda: f.read(1024 * 1024), b""):
-			for digest in hmacs:
-				digest.update(chunk)
-	return tuple(digest.hexdigest()[:32] for digest in hmacs)
+	# Truncated to 128 bits (32 hex chars) to fit the filename; that is still far
+	# beyond brute-force reach for an online-unverifiable tag.
+	return h.hexdigest()[:_BACKUP_HMAC_HEX_LENGTH]
 
 
 def _is_allowed_backup_member(member_name: str) -> bool:
@@ -439,7 +412,6 @@ def _get_backup_dir(data_dir: Path) -> Path:
 
 async def _receive_and_verify_upload(
 	file: UploadFile,
-	conn: sqlite3.Connection,
 	secret_key: str,
 	*,
 	max_bytes: int = MAX_BACKUP_UPLOAD_BYTES,
@@ -494,14 +466,14 @@ async def _receive_and_verify_upload(
 		if total == 0:
 			raise HTTPException(status_code=400, detail="Backup file is empty")
 
-		candidate_hmacs = await _run_blocking(
-			_compute_backup_hmac_candidates,
+		computed_hmac = await _run_blocking(
+			_compute_backup_hmac,
 			tmp_path,
-			_get_backup_hmac_secrets(conn, secret_key),
+			_derive_backup_hmac_secret(secret_key),
 			timeout=_BACKUP_HMAC_TIMEOUT_SECONDS,
 			operation="compute backup upload HMAC",
 		)
-		if not any(hmac.compare_digest(candidate, expected_hmac) for candidate in candidate_hmacs):
+		if not hmac.compare_digest(computed_hmac, expected_hmac):
 			_log.error("Backup HMAC mismatch for file: %s", filename)
 			raise HTTPException(
 				status_code=400,
@@ -601,10 +573,17 @@ def _validate_data_sql(schema_sql: str, data_sql: str) -> None:
 				test_conn.executescript(schema_sql)
 				test_conn.executescript(data_sql)
 				result = test_conn.execute("PRAGMA integrity_check").fetchone()
+				# integrity_check validates page/structure only, not relational
+				# integrity. FK enforcement stays off during import (the schema
+				# has a circular nodes<->peers reference), so run an explicit
+				# foreign_key_check afterwards to reject orphaned references.
+				fk_violations = test_conn.execute("PRAGMA foreign_key_check").fetchall()
 			finally:
 				test_conn.close()
 			if result is None or result[0] != "ok":
 				raise HTTPException(status_code=400, detail="Backup data failed integrity check")
+			if fk_violations:
+				raise HTTPException(status_code=400, detail="Backup data has foreign-key violations")
 	except sqlite3.Error as exc:
 		raise HTTPException(status_code=400, detail=f"Backup data is invalid: {exc}") from exc
 
@@ -684,6 +663,13 @@ def _apply_restored_backup(
 			new_conn.executescript(schema_sql)
 			if data_sql.strip():
 				new_conn.executescript(data_sql)
+			# Reject a restore that would leave orphaned references. FK
+			# enforcement is off during import (circular nodes<->peers ref), so
+			# check explicitly before commit; a violation raises and the outer
+			# except rolls back to the pre-restore database.
+			fk_violations = new_conn.execute("PRAGMA foreign_key_check").fetchall()
+			if fk_violations:
+				raise sqlite3.IntegrityError("Restore data has foreign-key violations")
 			new_conn.commit()
 		finally:
 			new_conn.close()
@@ -829,6 +815,9 @@ def _export_sqlite_data(db_path: Path) -> str:
 			col_names = [d[0] for d in cursor.description]
 			col_list = ", ".join(f'"{c}"' for c in col_names)
 			for row in conn.execute(f'SELECT * FROM "{table}"'):
+				if table == "settings" and row[col_names.index("key")] == SETTING_BACKUP_HMAC_SECRET:
+					# Never ship a (legacy) HMAC key inside the archive it would authenticate.
+					continue
 				values = ", ".join(_sqlite_value_to_sql(v) for v in row)
 				lines.append(f'INSERT INTO "{table}" ({col_list}) VALUES ({values});')
 		return "\n".join(lines) + "\n" if lines else ""
@@ -1279,18 +1268,15 @@ async def validate_backup(
 	Use this to check backup integrity before prompting for password confirmation.
 	Returns 200 if valid, 400 with error detail if invalid.
 	"""
-	conn = await _open_db_connection(request.app.state.cfg.db_path)
 	tmp_path: Path | None = None
 	try:
 		tmp_path, _filename = await _receive_and_verify_upload(
 			file,
-			conn,
 			request.app.state.cfg.secret_key,
 		)
 		return OkResponse[None](message="Backup file is valid")
 	finally:
 		await file.close()
-		await _close_db_connection(conn)
 		if tmp_path is not None:
 			await _run_blocking(
 				tmp_path.unlink,
@@ -1300,8 +1286,7 @@ async def validate_backup(
 			)
 
 
-@router.post("/restore", response_model=OkResponse[RestoreResult])
-@limiter.limit(RATE_LIMIT_CRITICAL)
+@router.post("/restore", response_model=OkResponse[RestoreResult], dependencies=[Depends(rate_limit(RATE_LIMIT_CRITICAL))])
 async def restore_backup(  # async: uses await for file I/O
 	request: Request,
 	background_tasks: BackgroundTasks,
@@ -1337,7 +1322,6 @@ async def restore_backup(  # async: uses await for file I/O
 			)
 			tmp_upload_path, filename = await _receive_and_verify_upload(
 				file,
-				conn,
 				request.app.state.cfg.secret_key,
 			)
 

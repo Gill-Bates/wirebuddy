@@ -121,6 +121,9 @@ def create_user(
 	if not password:
 		raise ValueError("Password must not be blank")
 
+	# Hash outside the write transaction: the KDF is deliberately expensive and
+	# must not hold the SQLite writer lock while it runs.
+	password_hash = hash_password(password)
 	now = utcnow()
 	try:
 		with transaction(conn):
@@ -129,7 +132,7 @@ def create_user(
 				INSERT INTO users (username, password_hash, is_admin, is_active, created_at)
 				VALUES (?, ?, ?, 1, ?)
 				""",
-				(normalized_username, hash_password(password), int(is_admin), now),
+				(normalized_username, password_hash, int(is_admin), now),
 			)
 			row_id = cur.lastrowid
 			if row_id is None:
@@ -156,6 +159,14 @@ def update_user(
 		UpdateResult.CONFLICT: Username already taken
 		UpdateResult.LAST_ADMIN: Cannot demote/deactivate last admin
 	"""
+	# Hash outside the write transaction (only when a password is supplied): the
+	# KDF is deliberately expensive and must not hold the SQLite writer lock.
+	password_hash: str | None = None
+	if password is not None:
+		if not password:
+			raise ValueError("Password must not be blank")
+		password_hash = hash_password(password)
+
 	try:
 		with transaction(conn, immediate=True):
 			user = get_user_by_id(conn, user_id)
@@ -183,10 +194,8 @@ def update_user(
 				updates.append("username = ?")
 				params.append(normalized)
 			if password is not None:
-				if not password:
-					raise ValueError("Password must not be blank")
 				updates.append("password_hash = ?")
-				params.append(hash_password(password))
+				params.append(password_hash)
 			if is_admin is not None:
 				updates.append("is_admin = ?")
 				params.append(int(is_admin))

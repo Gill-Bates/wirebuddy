@@ -1329,6 +1329,8 @@
     }
 
     async function submitEditNode() {
+        const submitBtn = editNodeForm?.querySelector('[type="submit"]');
+        if (!submitBtn || submitBtn.disabled) return;
         const id = document.getElementById('editNodeId')?.value;
         const name = document.getElementById('editNodeName')?.value.trim();
         const fqdn = editNodeFqdnInput?.value.trim();
@@ -1349,12 +1351,15 @@
             return;
         }
 
+        setButtonLoading(submitBtn, true, 'Saving...', 'Save');
         try {
             await api('PATCH', `/api/nodes/${id}`, { name, fqdn, wg_port: port, show_on_dashboard: showOnDashboard });
             refreshNodes();
             bootstrap.Modal.getInstance(editNodeModalEl)?.hide();
         } catch (err) {
             await wbAlert(err.message, 'danger');
+        } finally {
+            setButtonLoading(submitBtn, false, 'Saving...', 'Save');
         }
     }
 

@@ -8,6 +8,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import ipaddress
 import logging
 import os
@@ -160,12 +161,28 @@ def _normalize_listen_ips(
 
 
 def _ensure_unbound_readable(path: Path) -> None:
-	"""Best-effort file permissions for unbound-readable generated files."""
+	"""Make a generated policy file root-owned and only readable by unbound.
+
+	These are the resolver's policy inputs (blocklist, client rules, peer tags,
+	local-data, unbound.conf). Keeping them root-owned 0640 (root:unbound) lets
+	the daemon read but not rewrite its own policy on the next reload, so a
+	compromise of the restricted unbound account cannot persistently rewrite
+	blocklists or overrides. Best-effort on a non-root dev box: fall back to a
+	group-only chown and then to the mode change alone, never crashing config
+	generation. The query log, which the daemon must write, does not flow
+	through this helper.
+	"""
 	try:
-		path.chmod(0o644)
-		shutil.chown(path, user="unbound", group="unbound")
+		path.chmod(0o640)
+	except OSError as exc:
+		_log.debug("Could not set mode on %s: %s", path, exc)
+		return
+	try:
+		shutil.chown(path, user="root", group="unbound")
 	except (OSError, LookupError) as exc:
-		_log.debug("Could not adjust permissions for %s: %s", path, exc)
+		_log.debug("Could not set root:unbound owner on %s: %s", path, exc)
+		with contextlib.suppress(OSError, LookupError):
+			shutil.chown(path, group="unbound")
 
 
 def _auto_num_threads() -> int:
@@ -557,11 +574,14 @@ def write_custom_client_rules(rules: list[ParsedRule]) -> None:
 	Rules with ``client_scope`` are emitted into a dedicated include file.
 	Supported scoped targets: exact domain rules only.
 	"""
+	from .custom_rules import RuleAction, resolve_effective_action
+
 	UNBOUND_CONF_DIR.mkdir(parents=True, exist_ok=True)
 	path = get_custom_client_rules_file()
 
-	# (client_cidr, domain) -> effective action, ALLOW wins over BLOCK
-	effective: dict[tuple[str, str], str] = {}
+	# Candidate (client_cidr, domain) overrides come from client-scoped exact
+	# rules — the only ones Unbound can express as a local-zone-override.
+	candidates: dict[tuple[str, str], str] = {}
 	for rule in rules:
 		if rule.client_scope is None or rule.domain is None:
 			continue
@@ -571,11 +591,25 @@ def write_custom_client_rules(rules: list[ParsedRule]) -> None:
 		except ValueError as exc:
 			_log.warning("DNS_CUSTOM_CLIENT_RULES dropped unsafe rule: %s", exc)
 			continue
-		key = (client_scope, domain)
-		if rule.action.value == "allow":
-			effective[key] = "allow"
-		elif key not in effective:
-			effective[key] = "block"
+		candidates[(client_scope, domain)] = str(rule.domain)
+
+	# Resolve each candidate through the shared precedence function against the
+	# FULL rule set, so a global (or overlapping-network) ALLOW suppresses a
+	# client BLOCK: emitting always_nxdomain anyway would make the resolver
+	# refuse a domain the parser reports as allowed. Using the scope network's
+	# own address as the representative client IP keeps containment correct for
+	# a /32 block inside a /24 (or global) ALLOW.
+	effective: dict[tuple[str, str], str] = {}
+	for (client_scope, domain), raw_domain in candidates.items():
+		try:
+			representative_ip = str(ipaddress.ip_network(client_scope, strict=False).network_address)
+		except ValueError:
+			continue
+		action = resolve_effective_action(raw_domain, representative_ip, rules)
+		if action == RuleAction.ALLOW:
+			effective[(client_scope, domain)] = "allow"
+		elif action == RuleAction.BLOCK:
+			effective[(client_scope, domain)] = "block"
 
 	# Domains that require a baseline transparent local-zone for block overrides
 	block_domains = sorted({domain for (_, domain), action in effective.items() if action == "block"})

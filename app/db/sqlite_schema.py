@@ -11,6 +11,7 @@ from __future__ import annotations
 import logging
 import secrets
 import sqlite3
+import sys
 
 from ..utils.crypto import hash_password
 from ..utils.time import utcnow
@@ -18,9 +19,26 @@ from .sqlite_runtime import transaction
 
 _log = logging.getLogger(__name__)
 
+
+def _print_bootstrap_credentials(username: str, password: str) -> None:
+	"""Write the one-time bootstrap credentials to stdout, bypassing the logging handlers."""
+	banner = (
+		"\n"
+		"======================================================================\n"
+		" WireBuddy bootstrap admin (shown once, never stored)\n"
+		f"   Username: {username}\n"
+		f"   Password: {password}\n"
+		" Sign in and change this password to continue.\n"
+		"======================================================================\n"
+	)
+	sys.stdout.write(banner)
+	sys.stdout.flush()
+
+
 _KNOWN_SCHEMA_TABLES = frozenset(
 	{
 		"auth_tokens",
+		"dashboard_layouts",
 		"interfaces",
 		"login_attempts",
 		"node_commands",
@@ -37,6 +55,7 @@ _KNOWN_SCHEMA_TABLES = frozenset(
 
 _PRAGMA_TABLE_INFO = {
 	"auth_tokens": "PRAGMA table_info(auth_tokens)",
+	"dashboard_layouts": "PRAGMA table_info(dashboard_layouts)",
 	"interfaces": "PRAGMA table_info(interfaces)",
 	"login_attempts": "PRAGMA table_info(login_attempts)",
 	"node_commands": "PRAGMA table_info(node_commands)",
@@ -52,24 +71,20 @@ _PRAGMA_TABLE_INFO = {
 _BOOTSTRAP_ADMIN_USERNAME = "admin"
 _PRONOUNCEABLE_VOWELS = "aeiou"
 _PRONOUNCEABLE_CONSONANTS = "bcdfghjklmnpqrstvwxyz"
+_BOOTSTRAP_SPECIALS = "!?#$%&*+-=@"
 
 
 def _generate_pronounceable_password() -> str:
-	"""Generate a pronounceable password in 'Hegupuxademu4172' style.
+	"""Generate a short one-time password in 'Tujoza47!' style.
 
-	Pattern: 5 consonant-vowel syllables (~6.7 bits each) with capitalised
-	first letter, plus a four-digit number suffix (~13.1 bits) — about 47
-	bits total, versus ~27 bits for the previous 3-syllable/2-digit form.
-	This is a one-time bootstrap credential (must_change_password=1 forces
-	an immediate change), so the goal is to comfortably outlast that window
-	against online brute-force while staying easy to type once. Uses
-	``secrets.choice`` for cryptographic randomness.
+	Pattern: 3 consonant-vowel syllables (6 letters, first one capitalised),
+	2 digits and 1 special character from a small, easily typed set (9 chars).
+	``must_change_password=1`` forces an immediate change. Randomness comes
+	only from the ``secrets`` module.
 	"""
-	syllables = [secrets.choice(_PRONOUNCEABLE_CONSONANTS) + secrets.choice(_PRONOUNCEABLE_VOWELS) for _ in range(5)]
-	word = "".join(syllables)
-	word = word[0].upper() + word[1:]
-	number = str(secrets.randbelow(9000) + 1000)
-	return word + number
+	letters = "".join(secrets.choice(_PRONOUNCEABLE_CONSONANTS) + secrets.choice(_PRONOUNCEABLE_VOWELS) for _ in range(3))
+	digits = f"{secrets.randbelow(100):02d}"
+	return letters.capitalize() + digits + secrets.choice(_BOOTSTRAP_SPECIALS)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -612,17 +627,45 @@ def _run_migrations(conn: sqlite3.Connection) -> None:
 	)
 	conn.execute("CREATE INDEX IF NOT EXISTS idx_nodes_status_last_seen ON nodes(status, last_seen)")
 
+	# Per-user dashboard layout: one row per widget. The CHECKs mirror the API validation
+	# (x 0..11, w 1..12, x+w<=12, h 1..100, y+h<=1000 = DASHBOARD_MAX_Y in sqlite_dashboard.py).
+	conn.execute(
+		"""
+		CREATE TABLE IF NOT EXISTS dashboard_layouts (
+			user_id INTEGER NOT NULL,
+			widget_id TEXT NOT NULL CHECK (length(widget_id) BETWEEN 1 AND 64),
+			position INTEGER NOT NULL CHECK (position >= 0),
+			x INTEGER NOT NULL CHECK (x BETWEEN 0 AND 11),
+			y INTEGER NOT NULL CHECK (y >= 0),
+			w INTEGER NOT NULL CHECK (w BETWEEN 1 AND 12),
+			h INTEGER NOT NULL CHECK (h BETWEEN 1 AND 100),
+			visible INTEGER NOT NULL DEFAULT 1 CHECK (visible IN (0, 1)),
+			layout_version INTEGER NOT NULL DEFAULT 1 CHECK (layout_version = 1),
+			PRIMARY KEY (user_id, widget_id),
+			CHECK (x + w <= 12),
+			CHECK (y + h <= 1000),
+			FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+		)
+		"""
+	)
+	# Layouts used to be JSON blobs in settings; move them once (invalid/orphaned ones are dropped).
+	from .sqlite_dashboard import migrate_dashboard_layouts_from_settings
+
+	migrate_dashboard_layouts_from_settings(conn)
+
 
 def ensure_default_admin(conn: sqlite3.Connection) -> bool:
 	"""Create a default admin user on first boot when no users exist.
 
 	Generates a random pronounceable password, stores it hashed with
-	``must_change_password = 1``, and prints the plaintext password to the
-	log so the operator can sign in once and immediately change it.
+	``must_change_password = 1`` and prints the one-time plaintext credentials
+	to stdout once the insert is committed. They never reach the logging
+	handlers and are not persisted anywhere.
 
 	Uses ``transaction(immediate=True)`` to safely serialise against
 	concurrent workers without standalone BEGIN/commit/rollback calls.
 	"""
+	password: str | None = None
 	try:
 		with transaction(conn, immediate=True):
 			(count,) = conn.execute("SELECT COUNT(*) FROM users").fetchone()
@@ -636,16 +679,11 @@ def ensure_default_admin(conn: sqlite3.Connection) -> bool:
 					""",
 					(_BOOTSTRAP_ADMIN_USERNAME, hash_password(password), utcnow()),
 				)
-				_log.warning(
-					"\n  ════════════════════════════════════════════\n"
-					"  Username : %s\n"
-					"  Password : %s\n"
-					"  Change this password on first login.\n"
-					"  ════════════════════════════════════════════",
-					_BOOTSTRAP_ADMIN_USERNAME,
-					password,
-				)
-				return True
 	except sqlite3.IntegrityError:
 		_log.debug("Default admin insert skipped because a user already exists")
-	return False
+		return False
+	if password is None:
+		return False
+	_print_bootstrap_credentials(_BOOTSTRAP_ADMIN_USERNAME, password)
+	_log.info("Bootstrap admin '%s' created; the one-time password was printed to the console", _BOOTSTRAP_ADMIN_USERNAME)
+	return True

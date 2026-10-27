@@ -81,3 +81,40 @@ test('form switch helper spacing produces the updated layout warning', async () 
         }),
     ]));
 });
+
+test('resized and reordered dashboard widgets do not create layout findings', async () => {
+    const summarized = summarizeFindings({
+        name: 'dashboard-main-mobile',
+        metrics: {
+            spacing: {
+                dashboardWidgetOverlaps: [],
+                statCardWidths: [120, 540, 320, 320],
+                dashboardTopRowAlignment: { variance: 50, aligned: false },
+                dashboardMobileStackOrder: { speedtestAboveMap: false, mapAboveRecent: false },
+                kpiHeightVariance: 50,
+            },
+        },
+        network: {},
+        diff: { ratio: 0, sizeMismatch: false },
+    });
+
+    expect(summarized.structuredFindings.filter((finding) => finding.category === 'layout')).toEqual([]);
+});
+
+test('overlapping visible dashboard widgets produce a layout finding', async () => {
+    const summarized = summarizeFindings({
+        name: 'dashboard-main-mobile',
+        metrics: {
+            spacing: {
+                dashboardWidgetOverlaps: [{ ids: ['kpi-nodes', 'kpi-connections'], width: 24, height: 80 }],
+            },
+        },
+        network: {},
+        diff: { ratio: 0, sizeMismatch: false },
+    });
+
+    expect(summarized.hardFindings).toContain('dashboardWidgetOverlaps=1');
+    expect(summarized.structuredFindings).toEqual(expect.arrayContaining([
+        expect.objectContaining({ id: 'dashboard-widget-overlap', count: 1, severity: 'error' }),
+    ]));
+});

@@ -1,6 +1,9 @@
+#!/usr/bin/env python3
 #
 # tests/test_frontend_cleanup.py
 # Copyright (C) 2026 Gill-Bates http://github.com/Gill-Bates
+#
+
 # SPDX-License-Identifier: MIT
 #
 """Regression coverage for the retained Settings frontend helpers."""

@@ -133,6 +133,16 @@ this agent.
 Severity is assigned by exploitability × impact, not by category alone.
 A missing rate limit on an internal debug endpoint is not automatically P1.
 
+Every list in this file is a set of issue classes to inspect, not a set of
+automatic findings or automatic severities. A listed smell becomes a finding
+only when the concrete occurrence causes or materially increases correctness,
+security, performance, maintainability, architectural, or operational risk, and
+its severity follows from the demonstrated exploitability, likelihood, blast
+radius, and impact of that occurrence — not from the priority heading it is
+listed under. Do not report preference-only or style-only differences, and do
+not default a category (missing index, missing validation, memory leak) to its
+listed priority without that demonstration.
+
 ## Priority 1 — Critical
 
 Review for the following, and classify an instance as P1 only when its
@@ -252,7 +262,6 @@ Avoid:
 
 * `typing.Optional` (use `X | None`)
 * `typing.List`, `typing.Dict`, `typing.Tuple` (use built-in generics or `collections.abc`)
-* `os.path`
 * compatibility shims
 * outdated asyncio patterns
 * Python <3.13 compatibility code
@@ -260,6 +269,66 @@ Avoid:
 * silent fallbacks
 * implicit exception suppression
 * unnecessary inheritance
+
+These are the conventions for new or changed code, not findings in themselves
+(see "Review Priorities"). Swapping one correct idiom for the preferred one —
+`os.path` for `pathlib`, `typing.Optional` for `X | None`, a non-`StrEnum`
+constant — is a finding only where the concrete occurrence carries a real
+correctness, security, or maintainability consequence.
+
+---
+
+# Python Correctness
+
+The rules above are conventions; these are semantic defects. Review for:
+
+* mutable default arguments
+* unintended shared class-level mutable state, class-versus-instance state confusion
+* identity (`is`) used where equality (`==`) is meant, or vice versa
+* iterator or generator exhaustion (a one-shot iterable consumed twice)
+* late-binding closure bugs in loops
+* `__eq__`/`__hash__` contracts that disagree
+* import-time side effects and circular imports with runtime consequences
+* nondeterministic behavior from unordered or global state
+
+---
+
+# Unsafe Python APIs
+
+Review for:
+
+* `eval`, `exec`, or `compile` on data that is not fully trusted
+* `pickle`, `marshal`, or unsafe YAML loading of untrusted input
+* `subprocess` with `shell=True` or a command line built from untrusted input
+* insecure temporary-file handling (predictable names, `mktemp`, world-readable)
+* `random` used for secrets, tokens, or password material instead of `secrets`
+
+---
+
+# Exception Handling
+
+Review for:
+
+* bare `except:` or over-broad `except Exception` that hides real failures
+* swallowed exceptions (caught and ignored, or logged and continued unsafely)
+* lost causes from missing `raise ... from ...` chaining
+* cleanup that does not run on the error path (prefer `finally` or a context
+  manager over hand-rolled cleanup)
+* retry logic that masks a non-transient error or retries a non-idempotent
+  operation
+
+---
+
+# Resource Lifecycle
+
+Review for deterministic release of resources acquired in the code:
+
+* files, streams, sockets, and locks not closed on every path
+* subprocesses, HTTP clients, and connection pools left open
+* temporary files and directories not cleaned up
+* async context managers and async generators not closed (`aclose`)
+
+Prefer `with`/`async with` or `contextlib` over manual open/close pairs.
 
 ---
 
@@ -297,6 +366,25 @@ Especially:
 
 ---
 
+# Async and Concurrency
+
+"Correct async" means more than the absence of blocking I/O (P1) and bounded
+concurrency (P2). Beyond those, review for:
+
+* orphaned fire-and-forget tasks (`create_task` without a retained reference)
+* unobserved task exceptions
+* incorrect cancellation handling, including accidentally swallowing
+  `asyncio.CancelledError`
+* missing structured concurrency (`TaskGroup`) where task ownership and failure
+  propagation matter
+* locks held across `await` points that do not need the lock
+* concurrent use of objects that are not concurrency-safe
+* CPU-heavy synchronous work on the event loop, and incorrect thread-pool or
+  thread-safety assumptions at the sync/async boundary
+* shutdown behavior of long-running or background tasks
+
+---
+
 # Database Rules
 
 Review for:
@@ -313,12 +401,22 @@ Review for:
 * unnecessary database roundtrips
 * Alembic migrations: existence, reversibility, data migrations
 
+Async SQLAlchemy-specific:
+
+* an `AsyncSession` shared across concurrent tasks (it is not concurrency-safe)
+* implicit I/O from lazy attribute access outside an awaited load
+* unclear transaction lifetime and commit/rollback ownership
+* autoflush or expire-on-commit behavior causing surprise queries or reloads
+
 SQLite-specific:
 
 * WAL compatibility
 * long write transactions
 * writer-lock risks
 * global session misuse
+* `PRAGMA foreign_keys` not enabled per connection
+* missing `busy_timeout` leaving writers to fail on lock contention
+* connection-scoped pragmas assumed to be global
 
 ---
 
@@ -350,6 +448,13 @@ Simple presentation conditions inside templates are acceptable.
 
 Complex logic should remain outside templates.
 
+Jinja2-specific:
+
+* autoescaping disabled, or `| safe`/`Markup` applied to untrusted data (an
+  XSS risk — see Priority 1)
+* template name or include path derived from user input
+* data interpolated into a JS or URL context without context-correct escaping
+
 ---
 
 # Security Rules
@@ -363,8 +468,21 @@ Review for:
 * unsafe file handling
 * unvalidated input
 * insecure defaults
+* SSRF via server-side fetches of user-controlled URLs
+* open redirects from user-controlled redirect targets
+* IDOR/BOLA: object access without an ownership or authorization check
+* unverified trust in `Host`, `X-Forwarded-*`, or other proxy headers
+* missing request-body and upload size limits
 * secrets, credentials, or tokens written to logs
-* unpinned dependencies or known-vulnerable versions
+* unpinned dependencies
+* dependency versions known to be vulnerable from evidence present in the
+  repository or supplied in the review context
+
+Do not claim a dependency is currently vulnerability-free, and do not assert a
+specific CVE status from model memory. This agent has no network access and
+installs nothing, so current CVE status cannot be established here; where a
+version's status matters and no repository evidence or supplied scan result
+settles it, state that limitation instead of a verdict.
 
 Where the root cause is an ignore rule (a secret reaching the repository or the
 Docker build context because `.gitignore` or `.dockerignore` does not exclude
@@ -385,6 +503,20 @@ Verify security headers where applicable:
 * X-Content-Type-Options
 * Referrer-Policy
 * Permissions-Policy
+
+---
+
+# Configuration
+
+Review for:
+
+* debug or development settings reachable in a production configuration
+* environment-variable parsing that accepts malformed or missing values
+  silently instead of failing fast
+* required settings with an unsafe fallback default when unset
+* fail-open behavior where a missing or invalid setting should fail closed
+  (an auth, TLS, or access check that defaults to permissive)
+* secrets sourced from insecure defaults or committed configuration
 
 ---
 
@@ -419,6 +551,39 @@ Only recommend comments for:
 * unusual constraints
 * important side effects
 * non-obvious implementation details
+
+---
+
+# Test Rules
+
+This agent does not execute tests, but it reviews them statically. Review for:
+
+* missing regression coverage for a defect being fixed
+* missing negative and failure-path tests
+* missing authentication and authorization boundary tests
+* missing input-validation boundary tests
+* missing race-condition or concurrency coverage where concurrency matters
+* missing transaction rollback and atomicity tests
+* missing migration upgrade/downgrade and data-preservation tests
+* missing API contract and status-code tests
+* nondeterministic or order-dependent tests
+* tests that mock away the behavior they are meant to verify
+* assertions too weak to detect a regression
+
+Do not require tests solely to raise coverage. Require them where an untested
+behavior creates a concrete regression risk.
+
+---
+
+# Logging and Observability
+
+Review for:
+
+* unstructured logs where structured context is needed for operation
+* PII, secrets, or tokens in log output
+* missing request or correlation IDs across a request's log lines
+* exceptions logged without actionable context
+* logging too noisy to be useful, or missing at a point an operator needs it
 
 ---
 

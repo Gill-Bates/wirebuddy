@@ -1,5 +1,5 @@
 <!-- Parent: ../AGENTS.md -->
-<!-- Generated: 2026-09-21 | Updated: 2026-09-21 -->
+<!-- Generated: 2026-09-21 | Updated: 2026-10-27 -->
 # lib
 
 ## Purpose
@@ -11,6 +11,7 @@ Shared implementation modules for the UI linter: token-driven configuration, des
 | File | Description |
 |---|---|
 | `constants.mjs` | Facade: `export *` from `config/index.mjs` |
+| `deps.mjs` | Module resolver: `loadDep(name)` takes a package from `PLAYWRIGHT_DIR` when that shared toolset ships it, else from the local `node_modules` |
 | `browser-utils.mjs` | Facade re-exporting the `runtime/` API (login, motion, CLS, screenshots, telemetry, visual diff, browser session) |
 | `audit-helpers.mjs` | Facade re-exporting `orchestration/audit-runner.mjs` |
 | `dom-snapshot.mjs` | Facade: `export *` from `dom-runtime/index.mjs` |

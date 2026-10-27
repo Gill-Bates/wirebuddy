@@ -80,6 +80,7 @@ test('settings action buttons bind through delegated runtime events', async ({ p
 });
 
 test('settings components sanitize datasets and boolean attributes deterministically', async ({ page }) => {
+    await page.addScriptTag({ path: path.resolve('/opt/wirebuddy/app/static/js/core/format.js') });
     await page.addScriptTag({ path: path.resolve('/opt/wirebuddy/app/static/js/settings/components.js') });
 
     const result = await page.evaluate(() => {
@@ -126,6 +127,9 @@ test('settings components sanitize datasets and boolean attributes deterministic
             blocklistCheckboxDisabled: blocklist.querySelector('input')?.hasAttribute('disabled') || false,
             blocklistCheckboxChecked: blocklist.querySelector('input')?.hasAttribute('checked') || false,
             certificateText: certificate.querySelector('small')?.textContent || '',
+            expectedCertificateDate: new Intl.DateTimeFormat(undefined, {
+                year: 'numeric', month: 'short', day: 'numeric',
+            }).format(new Date('2026-05-20T00:00:00Z')),
         };
     });
 
@@ -134,5 +138,5 @@ test('settings components sanitize datasets and boolean attributes deterministic
     expect(result.iconHidden).toBe(true);
     expect(result.blocklistCheckboxDisabled).toBe(true);
     expect(result.blocklistCheckboxChecked).toBe(false);
-    expect(result.certificateText).toContain('20 May 2026');
+    expect(result.certificateText).toContain(result.expectedCertificateDate);
 });

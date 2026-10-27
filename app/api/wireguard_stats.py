@@ -19,7 +19,7 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query
 from starlette.concurrency import run_in_threadpool
 
 from ..db import tsdb
@@ -27,7 +27,7 @@ from ..db.sqlite_nodes import get_all_tunnel_peer_ids
 from ..db.sqlite_peers import get_all_peers
 from ..db.sqlite_settings import get_tsdb_retention_days
 from ..utils.deps import get_conn, get_tsdb_dir
-from ..utils.rate_limit import RATE_LIMIT_HEAVY, limiter
+from ..utils.rate_limit import RATE_LIMIT_HEAVY, rate_limit
 from ..utils.time import utcnow
 from .auth import require_admin
 from .frontend_shared import CONNECTED_THRESHOLD_S as HANDSHAKE_THRESHOLD
@@ -386,10 +386,8 @@ def _compute_traffic_stats(
 	}
 
 
-@router.get("/stats/traffic")
-@limiter.limit(RATE_LIMIT_HEAVY)
+@router.get("/stats/traffic", dependencies=[Depends(rate_limit(RATE_LIMIT_HEAVY))])
 async def get_traffic_stats(
-	request: Request,
 	hours: int = Query(24, ge=1, le=8760, description="Number of hours of history (1-8760)"),
 	range_key: str | None = Query(None, pattern="^(6h|24h|7d|30d|90d|180d|y1)$"),
 	max_points: int = Query(DEFAULT_MAX_POINTS, ge=MIN_MAX_POINTS, le=MAX_MAX_POINTS, description="Target number of data points (10-200)"),
@@ -402,7 +400,6 @@ async def get_traffic_stats(
 	Returns bucketed data suitable for charting, with each peer as a separate dataset.
 
 	Args:
-	    request: Incoming request; the rate limiter resolves its key from it.
 	    hours: Number of hours of history (1-8760, validated at API boundary).
 	    range_key: Preset time range (6h, 24h, 7d, 30d, 90d, 180d, y1). Overrides hours if provided.
 	    max_points: Target number of data points/buckets (20-200). Lower values for mobile displays.

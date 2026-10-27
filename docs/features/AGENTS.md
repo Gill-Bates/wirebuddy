@@ -1,5 +1,5 @@
 <!-- Parent: ../AGENTS.md -->
-<!-- Generated: 2026-09-21 | Updated: 2026-09-21 -->
+<!-- Generated: 2026-09-21 | Updated: 2026-10-27 -->
 # features
 
 ## Purpose
@@ -10,7 +10,7 @@ User guides for each WireBuddy capability: WireGuard management, DNS ad-blocking
 |------|-------------|
 | `wireguard.md` | Interfaces, peers, client configs, routing modes, DNS and isolation, status/traffic, global preshared key |
 | `dns.md` | Unbound ad-blocking: requirements, setup, blocklists, custom rules, query log, DNS-over-TLS |
-| `monitoring.md` | Dashboard, traffic page, collection intervals, storage/retention, remote nodes, API access, export, troubleshooting |
+| `monitoring.md` | Dashboard (draggable per-user GridStack layout, `/api/dashboard/layout`), traffic page, collection intervals, storage/retention, remote nodes, API access, export, troubleshooting |
 | `geoip.md` | GeoIP database lifecycle, UI maps, destination traffic analysis, API endpoints, troubleshooting |
 | `multi-node.md` | Master/node clustering: architecture, security model, deployment (compose, enrollment), usage; largest page |
 | `acme.md` | Let's Encrypt/ACME: prerequisites, built-in HTTPS listener, requesting/using certificates, renewal, delete vs revoke, endpoints |

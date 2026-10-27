@@ -11,8 +11,8 @@ Integrated Unbound DNS ad-blocker. Generates Unbound configuration, supervises t
 |------|-------------|
 | `__init__.py` | Aliases `blocklist`, `config`, `constants`, `process` and the `unbound` compatibility namespace (`app.dns.unbound`, a `_UnboundNamespace` instance of `staticmethod` re-exports; new public functions must be added there to be reachable) |
 | `unbound_constants.py` | Blocklist registry (`BLOCKLIST_REGISTRY`), file path getters, `QUERY_LOG`, `run_exec`, atomic writes |
-| `unbound_config.py` | `generate_config` (threads/cache sizing, DoT upstreams, DNSSEC, listen IPs), `get_interface_ipv4_gateways`/`get_interface_ipv6_gateways` (listen addresses from interface rows), `write_config`, per-client rules, peer tags, local-data overrides |
-| `unbound_process.py` | Start/stop/restart/reload, PID handling, supervisor task, watchdog, listen-socket preflight, resolv.conf handling |
+| `unbound_config.py` | `generate_config` (threads/cache sizing, DoT upstreams, DNSSEC, listen IPs), `get_interface_ipv4_gateways`/`get_interface_ipv6_gateways` (listen addresses from interface rows), `write_config`, per-client rules, peer tags, local-data overrides; generated policy files are made root-owned `0640` (root:unbound) so the restricted unbound account cannot rewrite its own blocklists/overrides |
+| `unbound_process.py` | Start/stop/restart/reload, PID handling, supervisor task, watchdog, listen-socket preflight, resolv.conf handling; resolves `unbound`, `unbound-checkconf`, `pgrep` and `ss` from fixed absolute-path allowlists via `utils.binaries.first_executable` (fail-closed: no trusted path means DNS counts as not installed and start refuses), never from `$PATH` |
 | `unbound_blocklist.py` | SSRF-safe blocklist download, domain extraction, size caps, tag files, counts, blocked-domain cache |
 | `custom_rules.py` | AdGuard-compatible rule parser (`||domain^`, `@@` allow, wildcards, regex, client scopes) and evaluation |
 | `ingestion.py` | Facade documenting the ingestion split |
@@ -27,6 +27,7 @@ Integrated Unbound DNS ad-blocker. Generates Unbound configuration, supervises t
 ### Working In This Directory
 - Python files use **tabs** and start with the standard header block (`#!/usr/bin/env python3`, file path, `Copyright (C) 2026 Gill-Bates`, SPDX MIT); keep that style.
 - Unbound is an external binary; config values are validated/quoted (`_safe_unbound_value`, `_quote_unbound_path`) to prevent config injection.
+- The DNS binaries (`unbound`, `unbound-checkconf`, `pgrep`, `ss`) are resolved from trusted absolute-path allowlists, never from `$PATH`; resolution is fail-closed.
 - Blocklist URLs must pass the SSRF checks (`_is_safe_url`); do not bypass them.
 - Config and list files are written atomically via `atomic_write`.
 

@@ -2,14 +2,14 @@
 
 Authoritative route list generated from mounted FastAPI routers.
 
-- Generated: 2026-08-26
-- Total endpoints: 131
+- Generated: 2026-10-27
+- Total endpoints: 134
 
 ## Authentication Model
 
 - UI/API session: auth token cookie (`auth_token`)
 - Programmatic API: `Authorization: Bearer <auth_token>`
-- Node sync endpoints: node secret in Bearer header plus `X-Client-Cert-Fingerprint`
+- Node sync endpoints: node secret in Bearer header; `X-Client-Cert-Fingerprint` is checked only when sent by a trusted mTLS proxy (see [Authentication](authentication.md#node-sync-authentication))
 
 ## Endpoints by Resource
 
@@ -181,6 +181,14 @@ Authoritative route list generated from mounted FastAPI routers.
 | GET | `/api/nodes/{node_id}/speedtest/stream` |
 | POST | `/api/nodes/{node_id}/token` |
 
+### Dashboard
+
+| Method | Path |
+|---|---|
+| DELETE | `/api/dashboard/layout` |
+| GET | `/api/dashboard/layout` |
+| PUT | `/api/dashboard/layout` |
+
 ### Network
 
 | Method | Path |
@@ -196,6 +204,6 @@ Authoritative route list generated from mounted FastAPI routers.
 
 ## Notes
 
-- This page reflects mounted routes at runtime (`create_app()`), including all included routers.
+- This page lists the `/api` operations in the OpenAPI schema of `create_app()` (`app.openapi()`) as of the generation date; routes with `include_in_schema=False` are not listed.
 - Endpoint permissions vary (`get_current_user` vs `require_admin` vs node-specific auth dependencies).
 - For request/response schemas, use the OpenAPI spec at `/swagger/openapi.json` and Swagger UI at `/swagger`.

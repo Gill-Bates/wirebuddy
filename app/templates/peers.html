@@ -125,6 +125,9 @@
                                 {% else %}
                                 <span class="badge bg-secondary peer-connection-badge peer-connection-badge-mobile" role="status">Offline{% if peer['last_seen_text'] and peer['last_seen_text'] != 'Never' %}<span class="peer-badge-time"> · {{ peer['last_seen_text'] }}</span>{% endif %}</span>
                                 {% endif %}
+                                {% if peer['is_stale'] %}
+                                <span class="badge bg-warning text-dark peer-stale-badge" role="status">Stale</span>
+                                {% endif %}
                                 {% if peer['is_enabled'] %}
                                 <span class="badge bg-success peer-enabled-badge" role="status">Enabled</span>
                                 {% else %}
@@ -228,6 +231,9 @@
                             <span class="badge bg-success peer-card-online-badge" role="status">Online</span>
                             {% else %}
                             <span class="badge bg-secondary peer-card-online-badge" role="status">Offline</span>
+                            {% endif %}
+                            {% if peer['is_stale'] %}
+                            <span class="badge bg-warning text-dark peer-stale-badge" role="status">Stale</span>
                             {% endif %}
                             {% if peer['is_enabled'] %}
                             <span class="badge bg-success peer-card-enabled-badge" role="status">Enabled</span>

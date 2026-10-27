@@ -13,7 +13,7 @@ import logging
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
-from .custom_rules import ParsedRule, rule_applies_to_client
+from .custom_rules import ParsedRule, RuleAction, resolve_effective_action, rule_applies_to_client
 
 _log = logging.getLogger(__name__)
 
@@ -103,32 +103,30 @@ def parse_unbound_line(
 			pass
 
 		# === Block/Allow Priority Logic ===
-		# Priority 1: Allow rules (absolute whitelist override)
-		if allow_rules:
-			for rule in allow_rules:
-				if not rule_applies_to_client(rule, client):
-					continue
-				if rule.matches(domain):
-					# Whitelisted - not blocked, custom rule applied
-					return DnsQueryPoint(
-						ts=ts,
-						client=client,
-						domain=domain,
-						qtype=qtype,
-						rcode=rcode,
-						blocked=False,
-						custom_rule=True,
-					)
+		# ALLOW wins always, decided by the shared precedence resolver so this
+		# parser and unbound_config.write_custom_client_rules() can never
+		# disagree about whether a (domain, client) pair is allowed. An
+		# applicable ALLOW (global or client-scoped) suppresses both the
+		# blocklist set and any matching BLOCK rule.
+		if allow_rules and resolve_effective_action(domain, client, allow_rules) == RuleAction.ALLOW:
+			return DnsQueryPoint(
+				ts=ts,
+				client=client,
+				domain=domain,
+				qtype=qtype,
+				rcode=rcode,
+				blocked=False,
+				custom_rule=True,
+			)
 
-		# Priority 2: Check exact blocked domains (already lowercase).
-		# Global exact blocks live in blocklist.conf as local-zone entries
-		# (see unbound_blocklist.py / apply_custom_rules()).
+		# Exact blocked domains (already lowercase). Global exact blocks live in
+		# blocklist.conf as local-zone entries (unbound_blocklist.apply_custom_rules()).
 		blocked = _is_domain_blocked(domain, blocked_domains)
 		custom_rule = False
 
-		# Priority 3: Runtime block rules. `blocked` must mirror what Unbound
-		# actually refused, because it drives the UI's blocked/allowed filter,
-		# the blockrate KPIs and "Top Blocked Domains". get_custom_block_rules()
+		# Runtime block rules. `blocked` must mirror what Unbound actually
+		# refused, because it drives the UI's blocked/allowed filter, the
+		# blockrate KPIs and "Top Blocked Domains". get_custom_block_rules()
 		# hands us two kinds of rule with opposite enforcement status:
 		#
 		#   - Client-scoped exact-domain blocks ARE enforced: they become
@@ -136,7 +134,7 @@ def parse_unbound_line(
 		#     custom-client-rules.conf (unbound_config.write_custom_client_rules()).
 		#     They are absent from blocked_domains only because that set is
 		#     parsed from blocklist.conf, which holds no client scoping — so
-		#     Priority 2 cannot see them and this branch must mark them blocked.
+		#     the set check above cannot see them and this branch must mark them blocked.
 		#   - Global wildcard/regex blocks are NOT enforced: Unbound has no
 		#     wildcard/regex local-zone primitive, and we only see the line
 		#     after it already answered. Record the match for visibility

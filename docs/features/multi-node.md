@@ -108,13 +108,19 @@ Signed with `WIREBUDDY_SECRET_KEY` — cannot be forged without access to the ma
     If the master uses the self-signed fallback certificate, the node must trust
     it — see [Node cannot enroll over HTTPS](../troubleshooting.md#node-cannot-enroll-over-https).
 
-### Mutual Authentication
+### Sync Authentication
 
-After enrollment, all sync traffic uses **mutual certificate authentication**:
+Enrollment uses a signed enrollment token. The node sends its self-signed
+certificate, and the master stores its fingerprint. After enrollment, sync
+requests authenticate with the Bearer API secret:
 
-- Node → Master: `Bearer {api_secret}` + `X-Client-Cert-Fingerprint` header
-- Master validates both the API secret hash and certificate fingerprint
-- No external PKI required — fully self-contained
+- Node → Master: `Authorization: Bearer {api_secret}`; the master compares the
+  secret's hash.
+- The certificate fingerprint is checked only as an additional step, and only
+  when a reverse proxy listed in `WIREBUDDY_TRUSTED_PROXIES` terminates mTLS
+  and passes it in `X-Client-Cert-Fingerprint`. Without such a proxy, the
+  Bearer secret is the only credential.
+- No external PKI is required.
 
 ### Network Security
 

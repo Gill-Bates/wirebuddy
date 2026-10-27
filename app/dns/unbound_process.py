@@ -16,7 +16,6 @@ import ipaddress
 import logging
 import os
 import re
-import shutil
 import signal
 import socket
 import time
@@ -24,6 +23,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import Path
 
+from ..utils.binaries import first_executable
 from .unbound_constants import UNBOUND_CONF, UNBOUND_PID_FILE, atomic_write_text, run_exec
 
 _log = logging.getLogger(__name__)
@@ -45,20 +45,55 @@ _RESOLV_MANAGED_MARKER = "# Configured by WireBuddy for local Unbound DNS"
 # Binary Availability Check
 # ---------------------------------------------------------------------------
 
+# Fixed absolute-path allowlists for the DNS binaries. A resolver that manages
+# port 53, /etc/unbound and resolv.conf must never be launched by a bare name
+# resolved through $PATH, so resolution is fail-closed: no trusted path -> the
+# binary counts as unavailable and the caller refuses to start.
+_UNBOUND_BIN_CANDIDATES = (
+	Path("/usr/sbin/unbound"),
+	Path("/usr/bin/unbound"),
+	Path("/sbin/unbound"),
+	Path("/bin/unbound"),
+)
+_UNBOUND_CHECKCONF_BIN_CANDIDATES = (
+	Path("/usr/sbin/unbound-checkconf"),
+	Path("/usr/bin/unbound-checkconf"),
+	Path("/sbin/unbound-checkconf"),
+	Path("/bin/unbound-checkconf"),
+)
+_PGREP_BIN_CANDIDATES = (
+	Path("/usr/bin/pgrep"),
+	Path("/bin/pgrep"),
+)
+_SS_BIN_CANDIDATES = (
+	Path("/usr/sbin/ss"),
+	Path("/usr/bin/ss"),
+	Path("/sbin/ss"),
+	Path("/bin/ss"),
+)
+
 # Cached result of unbound installation check (None = not yet checked)
 _unbound_installed: bool | None = None
+# Resolved absolute paths from the last detection (None until resolved/when missing).
+_unbound_bin: str | None = None
+_unbound_checkconf_bin: str | None = None
 
 
 def is_unbound_installed(*, refresh: bool = False) -> bool:
 	"""Check if unbound binaries are available on the system.
 
-	Result is cached after first check unless ``refresh=True`` is passed.
+	Resolves ``unbound`` and ``unbound-checkconf`` to absolute paths from a fixed
+	allowlist and stores them for the start/checkconf paths to use. Fail-closed:
+	if either cannot be resolved to a trusted absolute path, unbound counts as not
+	installed. Result is cached after first check unless ``refresh=True``.
 	"""
-	global _unbound_installed
+	global _unbound_installed, _unbound_bin, _unbound_checkconf_bin
 	if refresh or _unbound_installed is None:
-		_unbound_installed = shutil.which("unbound") is not None and shutil.which("unbound-checkconf") is not None
+		_unbound_bin = first_executable(_UNBOUND_BIN_CANDIDATES)
+		_unbound_checkconf_bin = first_executable(_UNBOUND_CHECKCONF_BIN_CANDIDATES)
+		_unbound_installed = _unbound_bin is not None and _unbound_checkconf_bin is not None
 		if not _unbound_installed:
-			_log.warning("DNS_INIT unbound not installed, DNS features disabled")
+			_log.warning("DNS_INIT unbound not installed at a trusted path, DNS features disabled")
 	return _unbound_installed
 
 
@@ -280,7 +315,10 @@ def _pid_uses_wirebuddy_config(pid: int) -> bool:
 
 async def _find_wirebuddy_unbound_pids() -> list[int]:
 	"""Find running unbound PIDs that use WireBuddy's config."""
-	code, stdout, _ = await run_exec("pgrep", "-x", "unbound")
+	pgrep_bin = first_executable(_PGREP_BIN_CANDIDATES)
+	if pgrep_bin is None:
+		return []
+	code, stdout, _ = await run_exec(pgrep_bin, "-x", "unbound")
 	if code != 0:
 		return []
 
@@ -526,7 +564,10 @@ def _probe_listen_socket(ip: str, port: int) -> str | None:
 
 async def _describe_port_users(port: int) -> str:
 	"""Best-effort: name the processes holding *port*, for the error message."""
-	code, stdout, _ = await run_exec("ss", "-lntupnH", f"sport = :{port}", timeout=5.0)
+	ss_bin = first_executable(_SS_BIN_CANDIDATES)
+	if ss_bin is None:
+		return ""
+	code, stdout, _ = await run_exec(ss_bin, "-lntupnH", f"sport = :{port}", timeout=5.0)
 	if code != 0 or not stdout.strip():
 		return ""
 	holders: list[str] = []
@@ -593,8 +634,12 @@ async def _start_impl() -> tuple[bool, str]:
 		except Exception as exc:
 			return False, f"Failed to write initial config: {exc}"
 
-	# First check config is valid (30s timeout for large blocklists)
-	code, _, stderr = await run_exec("unbound-checkconf", str(UNBOUND_CONF), timeout=30.0)
+	# First check config is valid (30s timeout for large blocklists).
+	# is_unbound_installed() above resolved both absolute paths; guard anyway so
+	# a resolution gap fails closed instead of falling back to a bare name.
+	if _unbound_checkconf_bin is None or _unbound_bin is None:
+		return False, "Unbound binaries not found at a trusted path"
+	code, _, stderr = await run_exec(_unbound_checkconf_bin, str(UNBOUND_CONF), timeout=30.0)
 	if code != 0:
 		return False, f"Config check failed: {stderr}"
 
@@ -610,7 +655,7 @@ async def _start_impl() -> tuple[bool, str]:
 	# and fills the pipe buffer if not drained; it already logs to its own file)
 	try:
 		_unbound_proc = await asyncio.create_subprocess_exec(
-			"unbound",
+			_unbound_bin,
 			"-d",
 			"-c",
 			str(UNBOUND_CONF),

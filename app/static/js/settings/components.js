@@ -264,12 +264,7 @@
         // Expiry info
         const expiresDate = cert.expires_at ? new Date(cert.expires_at) : null;
         const expiresStr = expiresDate
-            ? expiresDate.toLocaleDateString('en-GB', {
-                timeZone: 'UTC',
-                year: 'numeric',
-                month: 'short',
-                day: '2-digit',
-            })
+            ? (window.WBFormat ? window.WBFormat.format(expiresDate, 'date') : expiresDate.toLocaleDateString())
             : 'Unknown';
         const daysStr = cert.days_until_expiry !== null ? ` (${cert.days_until_expiry}d)` : '';
 

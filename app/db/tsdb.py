@@ -41,7 +41,7 @@ from collections.abc import Callable, Generator
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any
+from typing import Any, ClassVar
 from weakref import WeakValueDictionary
 
 # Platform check for fcntl (Unix-only)
@@ -73,6 +73,7 @@ __all__ = [
 	"init_tsdb",
 	"purge_synthetic_data",
 	"query",
+	"query_bucketed",
 	"query_latest",
 	"reset_all",
 	"run_maintenance",
@@ -364,7 +365,7 @@ class _FileLock:
 	"""
 
 	# Weak references prevent unbounded growth as series paths change.
-	_thread_locks: WeakValueDictionary[str, _ReadWriteLock] = WeakValueDictionary()
+	_thread_locks: ClassVar[WeakValueDictionary[str, _ReadWriteLock]] = WeakValueDictionary()
 	_meta_lock: threading.Lock = threading.Lock()
 
 	def __init__(self, series_path: Path, *, read_only: bool = False):
@@ -940,6 +941,7 @@ def query(
 	limit: int = 1000,
 	latest: bool = False,
 	filter_fn: Callable[[Any], bool] | None = None,
+	strict_limit: bool = False,
 ) -> list[MetricPoint]:
 	"""Query data points from a time series.
 
@@ -949,19 +951,28 @@ def query(
 		metric: Name of the metric to query.
 		since: Optional lower bound (inclusive) for timestamps.
 		until: Optional upper bound (inclusive) for timestamps.
-		limit: Maximum number of points to return.
-		latest: If True, return the *latest* points (tail).
+		limit: Desired number of points. The storage layer never returns more
+			than ``MAX_QUERY_POINTS``; a larger request is capped, not honoured.
+		latest: If True, return the *latest* points (tail); otherwise the oldest.
 		filter_fn: Optional predicate on the raw value; points for which it returns False are dropped before limiting.
+		strict_limit: If True, a ``limit`` above ``MAX_QUERY_POINTS`` raises
+			``ValueError`` instead of being capped, so a caller cannot mistake a
+			capped result for the full window. Defaults to False to preserve the
+			existing capped behaviour of short-range callers; long ranges should
+			use ``query_bucketed`` instead of a large ``limit``.
 
 	Returns:
 		List of MetricPoint objects, sorted chronologically.
+
+	Raises:
+		ValueError: If ``strict_limit`` is True and ``limit`` exceeds ``MAX_QUERY_POINTS``.
 
 	Performance Note:
 		This function performs a full scan and sort (O(n log n)) of matching data.
 		For very large datasets (millions of points), consider:
 		- Using time filters (since/until) to reduce scan size
 		- Keeping limit reasonable (< 10,000 points)
-		- Using aggregation at write time for high-frequency metrics
+		- Using query_bucketed() for long ranges instead of a large limit
 	"""
 	p = _series_path(tsdb_dir, peer_key, metric)
 	if (not p.exists()) and (len(_rotated_archives(p)) == 0):
@@ -969,7 +980,19 @@ def query(
 
 	since_u = ensure_utc(since) if since else None
 	until_u = ensure_utc(until) if until else None
-	limit = min(max(0, int(limit)), MAX_QUERY_POINTS)
+	# Make the cap honest: fail in strict mode, otherwise cap but log once so a
+	# truncated long-range result is no longer silent at the storage layer.
+	requested_limit = max(0, int(limit))
+	if requested_limit > MAX_QUERY_POINTS:
+		if strict_limit:
+			raise ValueError(f"Requested {requested_limit} points exceeds MAX_QUERY_POINTS={MAX_QUERY_POINTS}")
+		_log.warning(
+			"TSDB query limit %d exceeds MAX_QUERY_POINTS=%d; result capped to the oldest %d points of the window (use query_bucketed for long ranges)",
+			requested_limit,
+			MAX_QUERY_POINTS,
+			MAX_QUERY_POINTS,
+		)
+	limit = min(requested_limit, MAX_QUERY_POINTS)
 
 	# Use shared lock for reads to allow concurrent queries
 	with _FileLock(p, read_only=True):
@@ -1001,6 +1024,102 @@ def query_latest(
 ) -> list[MetricPoint]:
 	"""Query the latest N data points."""
 	return query(tsdb_dir, peer_key=peer_key, metric=metric, limit=count, latest=True)
+
+
+_BUCKET_REDUCERS = frozenset(("last", "first", "sum", "max", "min"))
+
+
+def query_bucketed(
+	tsdb_dir: Path,
+	*,
+	peer_key: str,
+	metric: str,
+	since: datetime | None = None,
+	until: datetime | None = None,
+	bucket_seconds: int,
+	reducer: str = "last",
+	filter_fn: Callable[[Any], bool] | None = None,
+	reduce_fn: Callable[[Any | None, Any], Any] | None = None,
+) -> list[MetricPoint]:
+	"""Return one downsampled point per time bucket over the full window.
+
+	Unlike ``query``, this does not cap the scanned input at ``MAX_QUERY_POINTS``.
+	It streams raw points through ``_iter_metric_points`` and reduces them per
+	fixed-width bucket, so memory is bounded by the number of buckets in the
+	window rather than by the number of raw points. This lets long published
+	ranges be served without materialising or truncating the raw series.
+
+	Args:
+		tsdb_dir: Base directory for TSDB storage.
+		peer_key: WireGuard peer public key (or synthetic key).
+		metric: Name of the metric to query.
+		since: Optional lower bound (inclusive) for timestamps.
+		until: Optional upper bound (inclusive) for timestamps.
+		filter_fn: Optional predicate on the raw value; points for which it returns False are skipped.
+		bucket_seconds: Bucket width in seconds (must be positive).
+		reducer: How to combine points within a bucket:
+			``last``/``first`` keep a single raw value and drop every other point
+			of the bucket, so they are NOT suitable for per-sample delta snapshots
+			(e.g. country/ASN traffic), which must be summed;
+			``sum``/``max``/``min`` aggregate numeric counters (e.g. DNS totals)
+			and skip non-numeric values.
+		reduce_fn: Optional custom reducer ``(accumulator, value) -> accumulator``.
+			It is called once per point in stream order; ``accumulator`` is ``None``
+			for the first point of a bucket, and the return value (never ``None``)
+			becomes the bucket value. When given, it takes precedence over ``reducer``.
+
+	Returns:
+		MetricPoint list sorted by bucket start; each point's ``ts`` is the
+		bucket start (UTC).
+
+	Raises:
+		ValueError: If ``bucket_seconds`` is not positive or ``reducer`` is unknown
+			(``reducer`` is not validated when ``reduce_fn`` is given).
+	"""
+	if bucket_seconds <= 0:
+		raise ValueError("bucket_seconds must be positive")
+	if reduce_fn is None and reducer not in _BUCKET_REDUCERS:
+		raise ValueError(f"Unknown reducer {reducer!r}; expected one of {sorted(_BUCKET_REDUCERS)}")
+
+	p = _series_path(tsdb_dir, peer_key, metric)
+	if (not p.exists()) and (len(_rotated_archives(p)) == 0):
+		return []
+
+	since_u = ensure_utc(since) if since else None
+	until_u = ensure_utc(until) if until else None
+	bucket_delta = bucket_seconds
+
+	def _bucket_start(ts: datetime) -> datetime:
+		epoch = int(ts.timestamp())
+		floored = epoch - (epoch % bucket_delta)
+		return datetime.fromtimestamp(floored, tz=UTC)
+
+	numeric = reducer in ("sum", "max", "min")
+	buckets: dict[datetime, Any] = {}
+
+	with _FileLock(p, read_only=True):
+		for point in _iter_metric_points(p, since=since_u, until=until_u, filter_fn=filter_fn):
+			key = _bucket_start(point.ts)
+			val = point.value
+			if reduce_fn is not None:
+				buckets[key] = reduce_fn(buckets.get(key), val)
+			elif numeric:
+				if not isinstance(val, (int, float)) or isinstance(val, bool):
+					continue
+				if key not in buckets:
+					buckets[key] = val
+				elif reducer == "sum":
+					buckets[key] += val
+				elif reducer == "max":
+					buckets[key] = max(buckets[key], val)
+				else:
+					buckets[key] = min(buckets[key], val)
+			elif reducer == "first":
+				buckets.setdefault(key, val)
+			else:  # "last"
+				buckets[key] = val
+
+	return [MetricPoint(ts=k, value=buckets[k]) for k in sorted(buckets)]
 
 
 def get_peer_stats(tsdb_dir: Path, peer_key: str) -> dict[str, Any]:

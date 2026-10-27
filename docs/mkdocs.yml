@@ -10,6 +10,11 @@ edit_uri: edit/main/docs/
 docs_dir: .
 site_dir: ../site
 
+# AGENTS.md files are repository notes, not site content
+exclude_docs: |
+  AGENTS.md
+  **/AGENTS.md
+
 # SEO and canonical URL configuration
 use_directory_urls: true
 
@@ -19,14 +24,16 @@ theme:
   favicon: assets/favicon.png
   palette:
     # Light mode
-    - scheme: default
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
       primary: indigo
       accent: blue
       toggle:
         icon: material/brightness-7
         name: Switch to dark mode
     # Dark mode
-    - scheme: slate
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
       primary: indigo
       accent: blue
       toggle:

@@ -31,6 +31,7 @@ FastAPI routers for every HTTP surface of WireBuddy: authentication (password, T
 | `nodes.py` | Admin CRUD for remote nodes, token regeneration, restart, remote speedtest |
 | `nodes_sync.py` | Node-facing endpoints (enroll, heartbeat, config, SSE events, metrics, command ack), not user auth. Auth is the bearer session secret alone; the client-cert fingerprint is only additionally enforced when an explicitly trusted mTLS proxy injects it (`WIREBUDDY_TRUSTED_PROXIES`), otherwise self-asserted fingerprint headers are ignored |
 | `network_stats.py` | Host/WG interface throughput from `/sys/class/net` with history |
+| `dashboard_layout.py` | Per-user dashboard layout GET/PUT/DELETE under `/api/dashboard`; Pydantic contract + `_validate_dashboard_layout` (widget allowlist, bounds, duplicate/overflow 422, storage error 400), rows owned via `user["id"]` in `db/sqlite_dashboard.py` |
 | `frontend_pages.py` | UI page routes (`/ui/...`; registered on the router owned by `frontend_shared.py`), `/api/system/status`, about/changelog data |
 | `frontend_shared.py` | Shared frontend router primitives: context-aware Jinja templates, redirect helpers, GeoIP lookup, CSRF token, `require_user_or_redirect`/`require_admin_or_redirect`; owns the `router` that `main.py` mounts |
 | `frontend_status.py` | Public status page (`/status`): DNS probe/leak indicators, client IP and geo resolution |

@@ -4,7 +4,6 @@
 //
 
 import { countFindingRule, customFindingRule, thresholdFindingRule } from '../engine/policy-engine.mjs';
-import { isDashboardScope } from '../scopes/dashboard.mjs';
 
 export function buildVisualPolicy() {
     return {
@@ -155,63 +154,12 @@ export function buildVisualPolicy() {
                 explanation: 'The screenshot diff exceeded the allowed visual drift budget.',
                 remediation: 'Inspect the diff and update the layout or baseline intentionally.',
             }),
-            customFindingRule({
-                id: 'dashboard-kpi-visuals',
-                type: 'dashboard-kpi-visuals',
-                category: 'visual',
-                scopes: ['dashboard'],
-                build(context) {
-                    const findings = [];
-                    const icons = context.metrics.spacing?.dashboardKpiIcons || [];
-                    for (const icon of icons) {
-                        if (icon.contextualClasses?.length) {
-                            findings.push({
-                                id: 'dashboard-kpi-contextual-icon-color',
-                                type: 'dashboard-kpi-visuals',
-                                category: 'visual',
-                                severity: 'warning',
-                                message: 'Dashboard KPI icon uses contextual color',
-                                explanation: 'KPI icons should typically remain neutral unless the contract allows contextual states.',
-                                remediation: 'Use the neutral icon color token for KPI summaries.',
-                                legacyKey: 'dashboardKpiContextualIconColor=1',
-                                count: 1,
-                            });
-                        }
-                        if (icon.iconColorDelta != null && icon.iconColorDelta > 6) {
-                            findings.push({
-                                id: 'dashboard-kpi-neutral-icon-mismatch',
-                                type: 'dashboard-kpi-visuals',
-                                category: 'visual',
-                                severity: 'warning',
-                                message: 'Dashboard KPI neutral icon mismatch',
-                                explanation: 'The KPI icon color is too far from the neutral target.',
-                                remediation: 'Adjust the icon color token or fallback color.',
-                                legacyKey: 'dashboardKpiNeutralIconMismatch=1',
-                                count: 1,
-                            });
-                        }
-                        if (icon.iconCenterDelta != null && icon.iconCenterDelta > 1) {
-                            findings.push({
-                                id: 'dashboard-kpi-icon-vertical-center',
-                                type: 'dashboard-kpi-visuals',
-                                category: 'visual',
-                                severity: 'warning',
-                                message: 'Dashboard KPI icon is vertically off-center',
-                                explanation: 'The icon baseline or flex alignment is off relative to the card content.',
-                                remediation: 'Adjust alignment classes or icon sizing.',
-                                legacyKey: 'dashboardKpiIconVerticalCenter=1',
-                                count: 1,
-                            });
-                        }
-                    }
-                    return findings;
-                },
-            }),
             thresholdFindingRule({
                 id: 'kpi-height-variance',
                 type: 'kpi-height-variance',
                 category: 'layout',
                 severity: 'warning',
+                when: (context) => context.scope !== 'dashboard',
                 metricPath: 'metrics.spacing.kpiHeightVariance',
                 threshold: () => 4,
                 legacyKey: (context, value) => `kpiHeightVariance=${value}`,

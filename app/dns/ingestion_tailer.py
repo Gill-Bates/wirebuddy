@@ -129,14 +129,21 @@ class OffsetTracker:
 			self.dirty = True
 			self._save_seq += 1
 
-	def save_if_needed(self, force: bool = False) -> None:
-		"""Persist offset to disk if dirty and interval elapsed."""
+	def save_if_needed(self, force: bool = False) -> bool:
+		"""Persist offset to disk if dirty and interval elapsed.
+
+		Returns False only when a persist was actually attempted and failed, so
+		a caller that needs a durable offset (a forced save after fsyncing the
+		data it confirms) can treat the failure as a flush failure instead of
+		silently advancing. A no-op (not dirty, or interval not yet elapsed) and
+		a successful persist both return True.
+		"""
 		now = time.monotonic()
 		with self._lock:
 			if not self.dirty:
-				return
+				return True
 			if not force and (now - self.last_save) < OFFSET_SAVE_INTERVAL:
-				return
+				return True
 			state = TailState(inode=self.state.inode, offset=self.state.offset)
 			save_seq = self._save_seq
 
@@ -176,10 +183,12 @@ class OffsetTracker:
 					self.dirty = False
 				self.last_save = now
 			_log.debug("DNS_TAIL saved offset: inode=%d offset=%d", state.inode, state.offset)
+			return True
 		except Exception as e:
 			_log.warning("DNS_TAIL failed to save offset: %s", e)
 			with contextlib.suppress(OSError):
 				tmp_path.unlink(missing_ok=True)
+			return False
 
 
 def _put_with_shutdown(

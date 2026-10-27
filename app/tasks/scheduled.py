@@ -233,9 +233,8 @@ async def sample_country_traffic(ctx: main.LifespanContext) -> None:
 		GEO_TRAFFIC_KEY,
 		GEO_TRAFFIC_METRIC,
 		acquire_sampler_leadership,
-	)
-	from ..utils.conntrack import (
-		sample_country_traffic as do_sample,
+		commit_country_traffic,
+		prepare_country_traffic,
 	)
 
 	try:
@@ -246,11 +245,17 @@ async def sample_country_traffic(ctx: main.LifespanContext) -> None:
 			enabled, peer_ip_map = read_country_traffic_inputs_sync(ctx.cfg.db_path)
 			if not enabled:
 				return
-			country_deltas, asn_deltas = do_sample(peer_ip_map)
-			if country_deltas:
-				tsdb.append_point(ctx.cfg.tsdb_dir, peer_key=GEO_TRAFFIC_KEY, metric=GEO_TRAFFIC_METRIC, value=country_deltas)
-			if asn_deltas:
-				tsdb.append_point(ctx.cfg.tsdb_dir, peer_key=ASN_TRAFFIC_KEY, metric=ASN_TRAFFIC_METRIC, value=asn_deltas)
+			# Two-phase: write durably first, then advance the baseline. A failed
+			# TSDB write leaves the baseline untouched so the traffic is
+			# re-delivered on the next sample instead of being lost.
+			sample = prepare_country_traffic(peer_ip_map)
+			if sample.is_empty:
+				return
+			if sample.country:
+				tsdb.append_point(ctx.cfg.tsdb_dir, peer_key=GEO_TRAFFIC_KEY, metric=GEO_TRAFFIC_METRIC, value=sample.country)
+			if sample.asn:
+				tsdb.append_point(ctx.cfg.tsdb_dir, peer_key=ASN_TRAFFIC_KEY, metric=ASN_TRAFFIC_METRIC, value=sample.asn)
+			commit_country_traffic(sample.checkpoint)
 
 		await asyncio.to_thread(_run)
 	except Exception as exc:

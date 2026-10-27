@@ -10,6 +10,7 @@ import path from 'node:path';
 import { expect, test } from '@playwright/test';
 
 import {
+    captureKpiCards,
     captureStablePair,
     collectConsoleAndNetwork,
     diffScreenshots,
@@ -19,6 +20,21 @@ import {
     resetLayoutShiftMetric,
     sanitize,
 } from '../../lib/browser-utils.mjs';
+
+test('KPI capture includes visible dashboard widgets and skips hidden ones', async ({ page }, testInfo) => {
+    await page.setContent(`
+        <div class="grid-stack-item" data-widget-id="kpi-nodes"><div class="dashboard-kpi-card">Nodes</div></div>
+        <div class="grid-stack-item" data-widget-id="kpi-connections" hidden><div class="dashboard-kpi-card">Connections</div></div>
+        <div class="wb-kpi-card">Other KPI</div>
+    `);
+
+    const screenshotDir = testInfo.outputPath('dashboard-kpis');
+    ensureDir(screenshotDir);
+    const paths = await captureKpiCards(page, 'dashboard-main', screenshotDir);
+
+    expect(paths).toHaveLength(2);
+    expect(paths.every((file) => fs.existsSync(file))).toBe(true);
+});
 
 test('browser runtime facade preserves legacy CLS helpers', async ({ page }) => {
     await installLayoutShiftObserver(page.context());

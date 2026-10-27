@@ -18,6 +18,7 @@ from __future__ import annotations
 import base64
 import hmac
 import io
+import ipaddress
 import logging
 import os
 import re
@@ -62,7 +63,7 @@ from ..models.users import (
 from ..utils.coerce import coerce_db_bool
 from ..utils.crypto import DUMMY_PASSWORD_HASH, generate_token_expiry, new_token, verify_password
 from ..utils.deps import get_conn
-from ..utils.network import parse_ip_str
+from ..utils.network import parse_ip_str, resolve_client_ip
 from ..utils.otp import (
 	build_provisioning_uri,
 	generate_recovery_codes,
@@ -71,7 +72,7 @@ from ..utils.otp import (
 	verify_otp,
 	verify_otp_step,
 )
-from ..utils.rate_limit import RATE_LIMIT_AUTH, limiter
+from ..utils.rate_limit import RATE_LIMIT_AUTH, rate_limit
 from .response import ok_response
 
 _log = logging.getLogger(__name__)
@@ -215,43 +216,15 @@ def _allow_cookie_auth_for_path(path: str) -> bool:
 
 
 def _get_client_ip(request: Request) -> str:
-	"""Extract client IP from request with proxy validation.
+	"""Extract the client IP with proxy validation (see ``resolve_client_ip``).
 
-	SECURITY: Reads the ORIGINAL socket IP from request.scope["client"] before
-	Uvicorn's proxy middleware processes --forwarded-allow-ips. This prevents
-	IP spoofing attacks where an attacker sends X-Forwarded-For: 127.0.0.1
-	to bypass rate limiting.
-
-	Only trusts X-Forwarded-For/X-Real-IP if the ACTUAL socket connection
-	comes from a trusted proxy IP.
+	Raises HTTPException(400) when no usable socket address exists. The rate
+	limiter shares the same resolution via ``utils.network.resolve_client_ip``.
 	"""
-	# Get the REAL socket IP before any proxy header processing
-	# This is immune to --forwarded-allow-ips spoofing
-	scope_client = request.scope.get("client")
-	if not scope_client or not scope_client[0]:
+	client_ip = resolve_client_ip(request)
+	if client_ip is None:
 		raise HTTPException(status_code=400, detail="Unable to determine client IP")
-	socket_ip = parse_ip_str(scope_client[0])
-	if not socket_ip:
-		raise HTTPException(status_code=400, detail="Unable to determine client IP")
-
-	# Trust proxy headers only when the socket peer is a configured trusted proxy.
-	if _is_trusted_proxy_ip(socket_ip):
-		# Trust proxy headers only when socket IP is a local proxy
-		forwarded_for = request.headers.get("X-Forwarded-For")
-		if forwarded_for:
-			# Take first IP in chain (client IP before proxies)
-			candidate = parse_ip_str(forwarded_for.split(",")[0])
-			if candidate:
-				return candidate
-
-		x_real_ip = request.headers.get("X-Real-IP")
-		if x_real_ip:
-			candidate = parse_ip_str(x_real_ip)
-			if candidate:
-				return candidate
-
-	# Direct connection or untrusted proxy - use socket IP
-	return socket_ip
+	return client_ip
 
 
 def _is_https(request: Request) -> bool:
@@ -289,13 +262,37 @@ def _is_https(request: Request) -> bool:
 	return False
 
 
+def _is_loopback_peer(request: Request) -> bool:
+	"""Return True when the socket peer is a loopback address (127.0.0.0/8, ::1).
+
+	Uses the socket peer from ``request.scope`` only, never a forwarded header,
+	so it cannot be spoofed by a client. Used as the single implicit exception
+	to the HTTPS-auth requirement for local development.
+	"""
+	scope_client = request.scope.get("client")
+	if not scope_client or not scope_client[0]:
+		return False
+	socket_ip = parse_ip_str(scope_client[0])
+	if not socket_ip:
+		return False
+	try:
+		return ipaddress.ip_address(socket_ip).is_loopback
+	except ValueError:
+		return False
+
+
 def _enforce_https_transport(conn: sqlite3.Connection, request: Request, context: str) -> bool:
-	"""Reject plaintext transport when the GUI is configured for HTTPS.
+	"""Reject plaintext transport when a secure transport is required.
 
 	Returns the detected HTTPS state so callers can reuse it for cookie flags.
-	When HTTPS is off, plain-HTTP deployments keep working and only get a
-	warning, matching the historical behaviour.
+	Plaintext is rejected when the GUI is configured for HTTPS or when the
+	opt-in ``WIREBUDDY_REQUIRE_HTTPS_AUTH`` flag is set. The only implicit
+	exception is a loopback peer, so local HTTP development keeps working even
+	with the flag on. Otherwise plain-HTTP LAN deployments keep working and
+	only get a warning, matching the historical behaviour.
 	"""
+	from ..utils.config import get_config
+
 	try:
 		is_https = _is_https(request)
 	except HTTPException:
@@ -305,7 +302,12 @@ def _enforce_https_transport(conn: sqlite3.Connection, request: Request, context
 	if is_https:
 		return True
 
-	if get_gui_https_enabled(conn):
+	if _is_loopback_peer(request):
+		# Local development over HTTP: never rejected, but still insecure, so
+		# the cookie keeps its non-Secure flag.
+		return False
+
+	if get_gui_https_enabled(conn) or get_config().require_https_auth:
 		_log.warning("HTTPS_REQUIRED_REJECTED context=%s", context)
 		raise HTTPException(
 			status_code=400,
@@ -579,8 +581,7 @@ def _issue_session(
 # ---------------------------------------------------------------------------
 
 
-@router.post("/login")
-@limiter.limit(RATE_LIMIT_AUTH)
+@router.post("/login", dependencies=[Depends(rate_limit(RATE_LIMIT_AUTH))])
 def login(
 	request: Request,
 	response: Response,
@@ -632,8 +633,7 @@ def login(
 	return ok_response(data=data)
 
 
-@router.post("/mfa/verify")
-@limiter.limit(RATE_LIMIT_AUTH)
+@router.post("/mfa/verify", dependencies=[Depends(rate_limit(RATE_LIMIT_AUTH))])
 def verify_mfa(
 	request: Request,
 	response: Response,
@@ -733,8 +733,7 @@ def verify_mfa(
 	return ok_response(data=data)
 
 
-@router.post("/logout")
-@limiter.limit(RATE_LIMIT_AUTH)
+@router.post("/logout", dependencies=[Depends(rate_limit(RATE_LIMIT_AUTH))])
 def logout(
 	request: Request,
 	response: Response,
@@ -781,9 +780,8 @@ def get_current_user_info(user: sqlite3.Row = Depends(get_current_user)):
 	return ok_response(data=data)
 
 
-@router.get("/me/otp/setup")
-@limiter.limit(RATE_LIMIT_AUTH)
-def get_otp_setup_info(request: Request, user: sqlite3.Row = Depends(get_current_user)):
+@router.get("/me/otp/setup", dependencies=[Depends(rate_limit(RATE_LIMIT_AUTH))])
+def get_otp_setup_info(user: sqlite3.Row = Depends(get_current_user)):
 	"""Get OTP provisioning info for the current user (only if setup is pending).
 
 	NOTE: sync – FastAPI threadpools this handler. qrcode.make() + PIL PNG
@@ -812,8 +810,7 @@ def get_otp_setup_info(request: Request, user: sqlite3.Row = Depends(get_current
 	)
 
 
-@router.post("/me/otp/confirm")
-@limiter.limit(RATE_LIMIT_AUTH)
+@router.post("/me/otp/confirm", dependencies=[Depends(rate_limit(RATE_LIMIT_AUTH))])
 def confirm_my_otp_setup(
 	request: Request,
 	response: Response,
@@ -854,10 +851,8 @@ def confirm_my_otp_setup(
 	)
 
 
-@router.post("/me/otp/recovery-codes/zip")
-@limiter.limit(RATE_LIMIT_AUTH)
+@router.post("/me/otp/recovery-codes/zip", dependencies=[Depends(rate_limit(RATE_LIMIT_AUTH))])
 def download_my_recovery_codes_zip(
-	request: Request,
 	payload: RecoveryDownloadRequest,
 	user: sqlite3.Row = Depends(get_current_user),
 ):

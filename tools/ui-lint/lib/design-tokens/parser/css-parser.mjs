@@ -3,9 +3,10 @@
 // Copyright (C) 2026 Gill-Bates http://github.com/Gill-Bates
 //
 
-import postcss from 'postcss';
-
+import { loadDep } from '../../deps.mjs';
 import { normalizeCssAst } from './ast-normalizer.mjs';
+
+const { default: postcss } = await loadDep('postcss');
 
 export function parseDesignTokens(cssText, { from = 'tokens.css' } = {}) {
     const root = postcss.parse(String(cssText ?? ''), { from });

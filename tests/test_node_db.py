@@ -28,14 +28,18 @@ from app.db.sqlite_nodes import (
 	STATUS_PENDING,
 	VALID_NODE_COMMANDS,
 	_serialize_command_payload,
+	ack_node_command,
 	claim_pending_node_commands,
 	create_node,
 	enqueue_node_command,
 	enroll_node,
 	mark_stale_nodes_offline,
+	set_node_tunnel_peer,
+	update_node_api_secret,
 	update_node_heartbeat,
 )
 from app.db.sqlite_schema import init_schema
+from app.utils.time import utcnow
 
 _A_COMMAND = next(iter(VALID_NODE_COMMANDS))
 
@@ -170,3 +174,94 @@ def test_mark_stale_nodes_offline_rejects_non_positive(conn, bad):
 def test_refresh_auth_token_rejects_non_positive_hours(conn, bad):
 	with pytest.raises(ValueError):
 		refresh_auth_token(conn, "some-token", hours=bad)
+
+
+# ─── update_node_api_secret re-enrollment boundary (P2.2) ─────────────────────
+
+
+def _make_tunnel_peer(conn: sqlite3.Connection, node_id: str) -> int:
+	"""Create an enabled peer and bind it as the node's tunnel peer."""
+	now = utcnow()
+	cur = conn.execute(
+		"""
+		INSERT INTO peers (public_key, allowed_ips, is_enabled, created_at, updated_at)
+		VALUES (?, ?, 1, ?, ?)
+		""",
+		(f"pk-{node_id}", "10.0.0.2/32", now, now),
+	)
+	peer_id = cur.lastrowid
+	assert set_node_tunnel_peer(conn, node_id, peer_id) is True
+	return peer_id
+
+
+def _peer_enabled(conn: sqlite3.Connection, peer_id: int) -> int:
+	return conn.execute("SELECT is_enabled FROM peers WHERE id = ?", (peer_id,)).fetchone()["is_enabled"]
+
+
+def test_token_regen_disables_tunnel_peer(conn):
+	create_node(conn, "n1", "N1", "example.com", 51820, "hash")
+	enroll_node(conn, "n1", "f" * 64)
+	peer_id = _make_tunnel_peer(conn, "n1")
+	assert _peer_enabled(conn, peer_id) == 1
+
+	assert update_node_api_secret(conn, "n1", "new-hash") is True
+
+	# Boundary: old WireGuard key is disabled in the DB; node is pending again.
+	assert _peer_enabled(conn, peer_id) == 0
+	assert _status(conn, "n1") == STATUS_PENDING
+
+
+def test_token_regen_purges_unacked_commands_but_keeps_acked(conn):
+	create_node(conn, "n1", "N1", "example.com", 51820, "hash")
+	# One command that will be delivered + acked, one left unacked.
+	enqueue_node_command(conn, "n1", _A_COMMAND)
+	enqueue_node_command(conn, "n1", _A_COMMAND)
+	claimed = claim_pending_node_commands(conn, "n1", limit=1)
+	assert len(claimed) == 1
+	assert ack_node_command(conn, "n1", claimed[0]["id"]) is True
+
+	update_node_api_secret(conn, "n1", "new-hash")
+
+	rows = conn.execute("SELECT id, acked_at FROM node_commands WHERE node_id = ?", ("n1",)).fetchall()
+	# Unacked command is purged; the acked one survives (audit trail).
+	assert len(rows) == 1
+	assert rows[0]["acked_at"] is not None
+
+
+def test_enroll_re_enables_tunnel_peer_after_regen(conn):
+	create_node(conn, "n1", "N1", "example.com", 51820, "hash")
+	enroll_node(conn, "n1", "f" * 64)
+	peer_id = _make_tunnel_peer(conn, "n1")
+
+	update_node_api_secret(conn, "n1", "new-hash")
+	assert _peer_enabled(conn, peer_id) == 0
+
+	# Successful re-enrollment re-enables the reused tunnel peer.
+	assert enroll_node(conn, "n1", "a" * 64) is True
+	assert _peer_enabled(conn, peer_id) == 1
+
+
+# ─── SSE session validity across token regeneration ───────────────────────────
+
+
+def test_node_session_is_current_ends_after_token_regeneration(conn):
+	from app.api.nodes_sync import node_session_is_current
+
+	create_node(conn, "n1", "N1", "example.com", 51820, "hash-old")
+	enroll_node(conn, "n1", "a" * 64)
+	assert node_session_is_current(conn, "n1", "hash-old") is True
+
+	# Regeneration swaps the secret and resets the node to pending: the SSE
+	# stream that authenticated with the old secret must be told to close.
+	assert update_node_api_secret(conn, "n1", "hash-new") is True
+	assert node_session_is_current(conn, "n1", "hash-old") is False
+	assert node_session_is_current(conn, "n1", "hash-new") is False  # still pending
+	enroll_node(conn, "n1", "b" * 64)
+	assert node_session_is_current(conn, "n1", "hash-new") is True
+	assert node_session_is_current(conn, "n1", "hash-old") is False
+
+
+def test_node_session_is_current_false_for_deleted_node(conn):
+	from app.api.nodes_sync import node_session_is_current
+
+	assert node_session_is_current(conn, "missing", "x") is False

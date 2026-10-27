@@ -1,5 +1,5 @@
 <!-- Parent: ../AGENTS.md -->
-<!-- Generated: 2026-09-21 | Updated: 2026-09-21 -->
+<!-- Generated: 2026-09-21 | Updated: 2026-10-27 -->
 # getting-started
 
 ## Purpose
@@ -8,15 +8,15 @@ Onboarding path for new operators: choosing an installation method, a fast Docke
 ## Key Files
 | File | Description |
 |------|-------------|
-| `installation.md` | Installation methods: Docker Compose (recommended), docker run, local development; post-installation, updating, reverse proxy |
+| `installation.md` | Installation methods overview: Docker installation, then links to `quick-start.md` / `docker.md` for sysctl, `.env`, Compose, docker run and updating; local development, reverse proxy, firewall, next steps |
 | `quick-start.md` | Step-by-step: prerequisites, clone, configure `.env` (secret key generation), enable IP forwarding, start and sign in |
 | `docker.md` | Docker setup: prerequisites, compose file, included security hardening, persistent data, custom port/bind address, reverse proxy, docker run |
-| `first-steps.md` | After first login: replace temporary password, set public server address, create/start an interface, add a peer, import client config, verify tunnel, optional services |
+| `first-steps.md` | After first login: replace the temporary admin password (printed once on the console at first start), set public server address, create/start an interface, add a peer, import client config, verify tunnel, optional services |
 
 ## For AI Agents
 
 ### Working In This Directory
-- Commands must match `docker/docker-compose.yml` and `docker/README_Docker.md`; update all together.
+- Commands must match `docker/docker-compose.yml`; `docker/README_Docker.md` only links here and carries no commands to keep in sync.
 - Use generated placeholder secrets only; never paste real keys.
 - Pages use `title:` front matter.
 

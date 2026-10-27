@@ -102,7 +102,7 @@ docker compose --env-file .env -f docker/docker-compose.yml up -d
     Navigate to `http://localhost:8000` and login with:
     
     - **Username:** `admin`
-    - **Password:** check the server log — run `docker logs wirebuddy` and look for the generated bootstrap password
+    - **Password:** printed once to the console at first startup (not logged, not stored). Read it with `docker logs wirebuddy`
     
     !!! warning
         On first login WireBuddy redirects you to a mandatory password change screen; the temporary password is invalidated once you set a new one.
@@ -121,30 +121,10 @@ docker compose --env-file .env -f docker/docker-compose.yml up -d
 === "DNS Ad-Blocker"
     ![DNS](https://raw.githubusercontent.com/Gill-Bates/wirebuddy/main/.github/img/screen_4.jpeg)
 
-## Why WireBuddy?
+## Security
 
-| Feature | WireBuddy | Traditional Solutions |
-|---------|-----------|----------------------|
-| Web Interface | ✅ Modern & Responsive | ⚠️ CLI or Basic Web UI |
-| DNS Ad-Blocking | ✅ Built-in Unbound | ❌ Requires Separate Setup |
-| Traffic Analytics | ✅ Per-peer with GeoIP | ⚠️ Limited or None |
-| Multi-User Auth | ✅ Passkeys + TOTP | ⚠️ Single Admin Only |
-| Let's Encrypt | ✅ Integrated | ❌ Manual Configuration |
-| Docker Support | ✅ Official Images | ⚠️ Community Maintained |
-
-## Security First
-
-WireBuddy implements defense-in-depth security:
-
-- **Password Security:** PBKDF2-SHA256 with 600,000 iterations
-- **Passkeys Support:** WebAuthn (FIDO2) for passwordless authentication
-- **Secrets Encryption:** Fernet encryption with per-row salt
-- **CSRF Protection:** Double-submit cookie with Origin validation
-- **Rate Limiting:** Progressive IP lockout with backoff
-- **Input Validation:** Strict regex and Pydantic validation
-- **Container Hardening:** Minimal capabilities and no-new-privileges
-
-[:material-shield-check: Security Overview](security/overview.md){ .md-button }
+Authentication, secret storage, CSRF and rate-limiting behaviour, and container
+hardening are described in the [Security Overview](security/overview.md).
 
 ## Community & Support
 

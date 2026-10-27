@@ -211,7 +211,7 @@ function _showModal({ title, message, type, showCancel, showInput, inputDefault,
 
         if (showInput) {
             inputEl.addEventListener('keydown', e => {
-                if (e.key === 'Enter') {
+                if (e.key === 'Enter' && !e.isComposing) {
                     e.preventDefault();
                     okBtn.click();
                 }
@@ -219,6 +219,10 @@ function _showModal({ title, message, type, showCancel, showInput, inputDefault,
             modalEl.addEventListener('shown.bs.modal', () => {
                 inputEl.focus();
                 inputEl.select();
+            }, { once: true, signal });
+        } else {
+            modalEl.addEventListener('shown.bs.modal', () => {
+                (showCancel ? cancelBtn : okBtn).focus();
             }, { once: true, signal });
         }
 

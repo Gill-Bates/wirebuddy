@@ -45,6 +45,7 @@
 
 .dns-retention-scale,
 .retention-scale,
+.stale-months-scale,
 .backup-retention-scale {
     --thumb-size: 16px;
     --rs-points: 6;
@@ -62,6 +63,7 @@
 
 .dns-retention-slider,
 .retention-slider,
+.stale-months-slider,
 .backup-retention-slider {
     width: 100%;
     margin: 0;
@@ -71,6 +73,7 @@
 
 .dns-retention-slider:focus,
 .retention-slider:focus,
+.stale-months-slider:focus,
 .backup-retention-slider:focus {
     outline: none;
     box-shadow: none;
@@ -78,6 +81,7 @@
 
 .dns-retention-slider:focus-visible,
 .retention-slider:focus-visible,
+.stale-months-slider:focus-visible,
 .backup-retention-slider:focus-visible {
     outline: 2px solid var(--wb-focus-ring-color);
     outline-offset: 2px;
@@ -85,12 +89,14 @@
 
 .dns-retention-slider::-webkit-slider-thumb,
 .retention-slider::-webkit-slider-thumb,
+.stale-months-slider::-webkit-slider-thumb,
 .backup-retention-slider::-webkit-slider-thumb {
     background-color: var(--wb-accent-red);
 }
 
 .dns-retention-slider::-moz-range-thumb,
 .retention-slider::-moz-range-thumb,
+.stale-months-slider::-moz-range-thumb,
 .backup-retention-slider::-moz-range-thumb {
     background-color: var(--wb-accent-red);
 }
@@ -98,12 +104,14 @@
 @media (pointer: coarse) {
     .dns-retention-scale,
     .retention-scale,
+    .stale-months-scale,
     .backup-retention-scale {
         --thumb-size: 19.2px;
     }
 
     .dns-retention-slider::-webkit-slider-thumb,
     .retention-slider::-webkit-slider-thumb,
+    .stale-months-slider::-webkit-slider-thumb,
     .backup-retention-slider::-webkit-slider-thumb {
         width: 1.2rem;
         height: 1.2rem;
@@ -111,6 +119,7 @@
 
     .dns-retention-slider::-moz-range-thumb,
     .retention-slider::-moz-range-thumb,
+    .stale-months-slider::-moz-range-thumb,
     .backup-retention-slider::-moz-range-thumb {
         width: 1.2rem;
         height: 1.2rem;
@@ -265,6 +274,58 @@
     .backup-retention-label:nth-child(3) {
         opacity: 0;
         pointer-events: none;
+    }
+}
+
+/* Peer stale threshold: non-linear 9-point scale, labels sit on the thumb positions */
+.stale-months-scale {
+    --rs-points: 9;
+}
+
+.stale-months-labels {
+    position: relative;
+    height: 1.3em;
+    margin: var(--rs-label-y) var(--rs-thumb-r) 0;
+    user-select: none;
+    pointer-events: none;
+}
+
+.stale-months-label {
+    --rs-i: 0;
+
+    position: absolute;
+    top: 0;
+    left: calc(100% * var(--rs-i) / (var(--rs-points) - 1));
+    transform: translateX(-50%);
+    font-size: 0.675rem;
+    color: var(--bs-secondary-color);
+    line-height: 1;
+    white-space: nowrap;
+    transition: opacity 0.2s ease;
+}
+
+.stale-months-label:nth-child(2) { --rs-i: 1; }
+.stale-months-label:nth-child(3) { --rs-i: 2; }
+.stale-months-label:nth-child(4) { --rs-i: 3; }
+.stale-months-label:nth-child(5) { --rs-i: 4; }
+.stale-months-label:nth-child(6) { --rs-i: 5; }
+.stale-months-label:nth-child(7) { --rs-i: 6; }
+.stale-months-label:nth-child(8) { --rs-i: 7; }
+.stale-months-label:nth-child(9) { --rs-i: 8; }
+
+@container retention-scale (max-width: 260px) {
+    .stale-months-label:nth-child(2),
+    .stale-months-label:nth-child(5),
+    .stale-months-label:nth-child(7) {
+        opacity: 0;
+    }
+}
+
+@container retention-scale (max-width: 180px) {
+    .stale-months-label:nth-child(4),
+    .stale-months-label:nth-child(6),
+    .stale-months-label:nth-child(8) {
+        opacity: 0;
     }
 }
 
@@ -579,6 +640,21 @@
 @media (width >= 1200px) {
     .blocklist-clean-grid {
         grid-template-columns: repeat(4, minmax(0, 1fr));
+    }
+}
+
+/* Side by side (col-xl): the editor absorbs the free height of the equal-height card */
+@media (width >= 1200px) {
+    .custom-rules-card-body {
+        display: flex;
+        flex-direction: column;
+        min-height: 0;
+    }
+
+    /* Two classes outrank Bootstrap's textarea.form-control min-height */
+    .custom-rules-card-body .custom-rules-textarea {
+        flex: 1 1 auto;
+        min-height: 12rem;
     }
 }
 

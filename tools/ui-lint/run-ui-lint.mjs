@@ -7,7 +7,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { chromium, webkit, firefox, devices } from 'playwright';
+import { loadDep } from './lib/deps.mjs';
 
 import {
     ABOUT_APPLICATION_DETAILS_FORBIDDEN_ROWS,
@@ -41,9 +41,6 @@ import {
     INPUT_GROUP_HEIGHT_TOLERANCE_PX,
     STANDARD_BUTTON_HEIGHT_EXPECTED_PX,
     STANDARD_BUTTON_HEIGHT_TOLERANCE_PX,
-    KPI_CONTEXTUAL_ICON_CLASSES,
-    KPI_ICON_CENTER_TOLERANCE_PX,
-    KPI_ICON_NEUTRAL_COLOR_DISTANCE_MAX,
     LOGIN_ERROR_SETTLE_MS,
     LOGIN_LOCKOUT_RESET_MS,
     LOGIN_TEST_STAGGER_MS,
@@ -110,6 +107,10 @@ import { LOGIN_FAILURE_VIEWS, VIEWS } from './lib/views.mjs';
 // lib/rule-registry.mjs.
 import { collectDOMSnapshot, createContext, runRules, tokens as registryTokens } from './rules/index.mjs';
 
+// Playwright comes from PLAYWRIGHT_DIR when set, else from local node_modules (lib/deps.mjs).
+const playwrightModule = await loadDep('playwright');
+const { chromium, webkit, firefox, devices } = playwrightModule.default ?? playwrightModule;
+
 const BASE_URL = process.env.UI_LINT_BASE_URL || 'http://localhost:8000';
 const USERNAME = process.env.UI_LINT_USERNAME;
 const PASSWORD = process.env.UI_LINT_PASSWORD;
@@ -125,6 +126,9 @@ if (!USERNAME || !PASSWORD) {
 
 // Browser matrix configuration
 // Set UI_LINT_BROWSERS=chromium,webkit,firefox to test all browsers
+// PLAYWRIGHT_BROWSER (shared with the tests/e2e drivers) is used when UI_LINT_BROWSERS is unset;
+// an invalid value fails fast. The legacy BROWSER counts only when it names an engine (desktops
+// export BROWSER=xdg-open).
 // Default: chromium only for speed
 const AVAILABLE_BROWSERS = { chromium, webkit, firefox };
 
@@ -163,7 +167,24 @@ function parsePositiveIntegerEnv(rawValue, fallback, label) {
     return value;
 }
 
-const SELECTED_BROWSERS = parseSelectedBrowsers(process.env.UI_LINT_BROWSERS);
+function sharedBrowserSelection() {
+    const explicit = process.env.PLAYWRIGHT_BROWSER;
+    if (explicit) {
+        if (!(explicit in AVAILABLE_BROWSERS)) {
+            throw new Error(`Invalid PLAYWRIGHT_BROWSER '${explicit}'. Available: ${Object.keys(AVAILABLE_BROWSERS).join(', ')}`);
+        }
+        return explicit;
+    }
+    return process.env.BROWSER in AVAILABLE_BROWSERS ? process.env.BROWSER : undefined;
+}
+
+const SELECTED_BROWSERS = parseSelectedBrowsers(process.env.UI_LINT_BROWSERS || sharedBrowserSelection());
+// COLOR_SCHEME=light|dark (shared with the tests/e2e drivers) narrows the view matrix to one theme.
+const COLOR_SCHEME = (process.env.COLOR_SCHEME || '').trim().toLowerCase();
+const ACTIVE_VIEWS = COLOR_SCHEME ? VIEWS.filter((view) => String(view.theme).toLowerCase() === COLOR_SCHEME) : VIEWS;
+if (COLOR_SCHEME && !ACTIVE_VIEWS.length) {
+    throw new Error(`COLOR_SCHEME=${COLOR_SCHEME} matches no view theme`);
+}
 const BROWSER_CONCURRENCY = parsePositiveIntegerEnv(
     process.env.UI_LINT_BROWSER_CONCURRENCY,
     1,
@@ -2192,42 +2213,28 @@ async function collectPageMetrics(page, scope) {
                 spacing.rowToRowGap <= constants.VERTICAL_GAP_MAX;
         };
 
-        if (scope === 'dashboard' || scope === 'dns') {
+        if (scope === 'dns') {
             measureStandardMainGridGap();
         }
 
         if (scope === 'dashboard') {
-            const statCards = Array.from(document.querySelectorAll('.dashboard-stats-row > div .card')).slice(0, 4);
-            spacing.statCardWidths = statCards.map((card) => round(card.getBoundingClientRect().width));
-
-            const topRowColumns = Array.from(document.querySelectorAll('.row.g-3.mb-3 > .col-lg-6'))
-                .filter((el) => isVisible(el))
-                .slice(0, 2);
-            if (topRowColumns.length === 2) {
-                const heights = topRowColumns.map((col) => round(col.getBoundingClientRect().height));
-                spacing.dashboardTopRowAlignment = {
-                    heights,
-                    variance: round(Math.abs(heights[0] - heights[1])),
-                    aligned: Math.abs(heights[0] - heights[1]) <= 4,
-                };
-            }
-
-            const mapCard = document.querySelector('.dashboard-map-col .card');
-            const recentCard = document.querySelector('.dashboard-recent-peers-col .card');
-            const speedCard = document.querySelector('.dashboard-speedtest-col .card');
-
-            // Mobile stack order is intentional: Speedtest -> Peer Locations -> Recent Peer Activity.
-            if (mapCard && recentCard && speedCard && window.matchMedia('(max-width: 767.98px)').matches) {
-                const mapRect = mapCard.getBoundingClientRect();
-                const recentRect = recentCard.getBoundingClientRect();
-                const speedRect = speedCard.getBoundingClientRect();
-                spacing.dashboardMobileStackOrder = {
-                    speedtestAboveMap: speedRect.top <= mapRect.top + 2,
-                    mapAboveRecent: mapRect.top <= recentRect.top + 2,
-                    speedTop: round(speedRect.top),
-                    mapTop: round(mapRect.top),
-                    recentTop: round(recentRect.top),
-                };
+            const grid = document.getElementById('wb-dashboard-grid');
+            const widgets = grid && !grid.classList.contains('wb-dashboard-grid--loading')
+                ? Array.from(grid.querySelectorAll(':scope > .grid-stack-item[data-widget-id]'))
+                    .filter((item) => isVisible(item))
+                    .map((item) => ({ id: item.dataset.widgetId, rect: item.getBoundingClientRect() }))
+                : [];
+            spacing.dashboardWidgetOverlaps = [];
+            for (let i = 0; i < widgets.length; i++) {
+                for (let j = i + 1; j < widgets.length; j++) {
+                    const left = widgets[i];
+                    const right = widgets[j];
+                    const width = Math.min(left.rect.right, right.rect.right) - Math.max(left.rect.left, right.rect.left);
+                    const height = Math.min(left.rect.bottom, right.rect.bottom) - Math.max(left.rect.top, right.rect.top);
+                    if (width > 2 && height > 2) {
+                        spacing.dashboardWidgetOverlaps.push({ ids: [left.id, right.id], width: round(width), height: round(height) });
+                    }
+                }
             }
 
             const recentPeerRows = Array.from(document.querySelectorAll('#recent-peers .peer-row-clickable'))
@@ -3347,37 +3354,6 @@ async function collectPageMetrics(page, scope) {
                 };
             });
 
-        const dashboardKpiIcons = scope === 'dashboard'
-            ? Array.from(document.querySelectorAll('.dashboard-kpi-grid .wb-kpi-card'))
-                .filter((el) => isVisible(el))
-                .map((card) => {
-                    const body = card.querySelector('.card-body');
-                    const icon = card.querySelector('.wb-kpi-icon');
-                    const label = card.querySelector('.wb-kpi-label');
-                    const bodyRect = body?.getBoundingClientRect() || null;
-                    const iconRect = icon?.getBoundingClientRect() || null;
-                    const iconStyle = icon ? window.getComputedStyle(icon) : null;
-                    const labelStyle = label ? window.getComputedStyle(label) : null;
-                    const iconColor = iconStyle?.color || '';
-                    const labelColor = labelStyle?.color || '';
-                    const iconColorParsed = parseColor(iconColor);
-                    const labelColorParsed = parseColor(labelColor);
-                    const delta = colorDistance(iconColorParsed, labelColorParsed);
-                    const iconCenter = iconRect ? (iconRect.top + iconRect.bottom) / 2 : null;
-                    const bodyCenter = bodyRect ? (bodyRect.top + bodyRect.bottom) / 2 : null;
-                    return {
-                        label: norm(label?.textContent) || null,
-                        iconName: norm(icon?.textContent) || null,
-                        iconColor: normalizeColor(iconColor),
-                        labelColor: normalizeColor(labelColor),
-                        iconColorDelta: delta == null ? null : round(delta),
-                        iconCenterDelta: iconCenter == null || bodyCenter == null ? null : round(Math.abs(iconCenter - bodyCenter)),
-                        contextualClasses: Array.from(icon?.classList || [])
-                            .filter((cls) => constants.KPI_CONTEXTUAL_ICON_CLASSES.includes(cls)),
-                    };
-                })
-            : [];
-
         const kpiHeights = Array.from(document.querySelectorAll('.wb-kpi-card'))
             .filter((el) => isVisible(el))
             .map((card) => {
@@ -3413,7 +3389,6 @@ async function collectPageMetrics(page, scope) {
             .map(rectInfo);
 
         spacing.kpiCards = kpiCards;
-        spacing.dashboardKpiIcons = dashboardKpiIcons;
         spacing.kpiHeights = kpiHeights;
         spacing.kpiHeightVariance = kpiHeightVariance;
         spacing.cardsMissingKpiClass = cardsWithoutKpiClass;
@@ -4932,15 +4907,15 @@ async function main() {
             };
 
             // Run authenticated view tests
-            console.log(`[${browserName}] Entering ${formatPhaseLabel('view', VIEWS.length)}`);
-            const orderedViewResults = new Array(VIEWS.length);
+            console.log(`[${browserName}] Entering ${formatPhaseLabel('view', ACTIVE_VIEWS.length)}`);
+            const orderedViewResults = new Array(ACTIVE_VIEWS.length);
             const viewEntriesByDevice = {
                 desktop: [],
                 'large-desktop': [],
                 tablet: [],
                 mobile: [],
             };
-            for (const entry of VIEWS.entries()) {
+            for (const entry of ACTIVE_VIEWS.entries()) {
                 const [viewIndex, view] = entry;
                 const bucket = viewEntriesByDevice[view.device] || viewEntriesByDevice.desktop;
                 bucket.push([viewIndex, view]);
@@ -4954,12 +4929,12 @@ async function main() {
                         const entries = viewEntriesByDevice[device] || [];
                         for (const [viewIndex, view] of entries) {
                             try {
-                                logViewStart(browserName, view, viewIndex, VIEWS.length);
+                                logViewStart(browserName, view, viewIndex, ACTIVE_VIEWS.length);
                                 const result = await auditView(page, view, browserName);
                                 result.browser = browserName;
                                 orderedViewResults[viewIndex] = finalizeResult(result);
                                 appendSupplementaryRegistryFindings(orderedViewResults[viewIndex], result.registryFindings || []);
-                                logViewDone(browserName, view, viewIndex, VIEWS.length, orderedViewResults[viewIndex]);
+                                logViewDone(browserName, view, viewIndex, ACTIVE_VIEWS.length, orderedViewResults[viewIndex]);
                             } catch (err) {
                                 console.error(`[${browserName}/${view.name}] Audit failed: ${err.message}`);
                                 orderedViewResults[viewIndex] = buildAuditErrorResult(view, browserName, err.message);
@@ -4974,7 +4949,7 @@ async function main() {
             results.push(...orderedViewResults.filter(Boolean));
 
             // Run login-failure tests LAST to avoid rate limiting blocking the real login
-            console.log(`[${browserName}] Completed ${formatPhaseLabel('view', VIEWS.length)}`);
+            console.log(`[${browserName}] Completed ${formatPhaseLabel('view', ACTIVE_VIEWS.length)}`);
             if (!runLoginFailureTests) {
                 console.log(`[${browserName}] Skipping ${formatPhaseLabel('login-failure', LOGIN_FAILURE_VIEWS.length)} (UI_LINT_LOGIN_FAILURE_TESTS != 1)`);
                 return;
@@ -5132,14 +5107,10 @@ async function main() {
             compactCardActionRowIssues: spacing.compactCardActionRows?.filter((entry) => !entry.isCompactMargin || !entry.isCompactPadding || !entry.isBorderless)?.length || 0,
             duplicateRequests: result.network?.duplicateRequests?.length || 0,
             kpiCards: spacing.kpiCards?.length || 0,
-            dashboardKpiIcons: spacing.dashboardKpiIcons?.length || 0,
-            dashboardKpiContextualIconColor: spacing.dashboardKpiIcons?.filter((card) => card.contextualClasses?.length)?.length || 0,
-            dashboardKpiNeutralIconMismatch: spacing.dashboardKpiIcons?.filter((card) => card.iconColorDelta != null && card.iconColorDelta > KPI_ICON_NEUTRAL_COLOR_DISTANCE_MAX)?.length || 0,
-            dashboardKpiIconVerticalCenter: spacing.dashboardKpiIcons?.filter((card) => card.iconCenterDelta != null && card.iconCenterDelta > KPI_ICON_CENTER_TOLERANCE_PX)?.length || 0,
+            dashboardWidgetOverlaps: spacing.dashboardWidgetOverlaps?.length || 0,
             kpiMissingClass: spacing.cardsMissingKpiClass?.length || 0,
             cardBorderRadiusMismatch: spacing.cardBorderRadiusIssues?.length || 0,
             kpiHeightVariance: spacing.kpiHeightVariance || 0,
-            dashboardTopRowVariance: spacing.dashboardTopRowAlignment?.variance || 0,
             recentPeerDividerIssues: spacing.recentPeerRows?.filter((row) => row.hasLegacyBorderBottom || (!row.isLast && !row.hasPseudoDivider))?.length || 0,
             dnsUnavailableStates: spacing.dnsUnavailableStates?.length || 0,
             dnsUnavailableIncorrectSpacing: spacing.dnsUnavailableStates?.filter(s => !s.marginCompensatesGap || !s.visualGapExpected)?.length || 0,

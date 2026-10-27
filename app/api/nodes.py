@@ -49,6 +49,7 @@ from ..db.sqlite_nodes import (
 	get_node_by_name,
 	get_peer_count_for_node,
 	get_peers_count_by_node,
+	mark_node_delete_failed,
 	update_node,
 	update_node_api_secret,
 )
@@ -59,7 +60,7 @@ from ..utils.config import WG_CONFIG_PATH, get_config
 from ..utils.crypto import hash_token
 from ..utils.deps import get_conn
 from ..utils.node_token import generate_enrollment_token
-from ..utils.rate_limit import RATE_LIMIT_CRITICAL, RATE_LIMIT_HEAVY, limiter
+from ..utils.rate_limit import RATE_LIMIT_CRITICAL, RATE_LIMIT_HEAVY, rate_limit
 from ..utils.tsdb_helpers import build_latest_by_node
 from .wireguard_config import sync_interface_config
 from .wireguard_utils import run_wg_command
@@ -454,10 +455,8 @@ def _assert_node_unique(
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-@router.post("")
-@limiter.limit(RATE_LIMIT_CRITICAL)
+@router.post("", dependencies=[Depends(rate_limit(RATE_LIMIT_CRITICAL))])
 def create_node_endpoint(
-	request: Request,
 	body: NodeCreate,
 	conn: sqlite3.Connection = Depends(get_conn),
 	user: sqlite3.Row = Depends(require_admin),
@@ -524,10 +523,8 @@ def get_node_endpoint(
 	return ok_response(data=_node_to_dict(node, get_peer_count_for_node(conn, node_id)))
 
 
-@router.patch("/{node_id}")
-@limiter.limit(RATE_LIMIT_CRITICAL)
+@router.patch("/{node_id}", dependencies=[Depends(rate_limit(RATE_LIMIT_CRITICAL))])
 def update_node_endpoint(
-	request: Request,
 	node_id: str,
 	body: NodeUpdate,
 	conn: sqlite3.Connection = Depends(get_conn),
@@ -558,10 +555,40 @@ def update_node_endpoint(
 	return ok_response(message="Node updated")
 
 
-@router.delete("/{node_id}")
-@limiter.limit(RATE_LIMIT_CRITICAL)
+async def _revoke_tunnel_peer_live(node_id: str, public_key: str, interface_name: str, *, action: str) -> None:
+	"""Remove a node's tunnel peer from the live WireGuard interface.
+
+	A failed removal is tolerated only while the interface is down (no live
+	access to revoke); otherwise the caller's operation is refused with 503.
+	"""
+	code, _, stderr = await run_wg_command("wg", "set", interface_name, "peer", public_key, "remove")
+	if code == 0:
+		_log.info("Removed tunnel peer from WG: node=%s iface=%s", node_id, interface_name)
+		return
+	# The command can legitimately fail when the interface is not running.
+	iface_code, _, _ = await run_wg_command("wg", "show", interface_name)
+	if iface_code == 0:
+		_log.error(
+			"Refusing node %s: tunnel peer still active on WG: node=%s iface=%s err=%s",
+			action,
+			node_id,
+			interface_name,
+			stderr.strip(),
+		)
+		raise HTTPException(
+			status_code=503,
+			detail=f"Node access could not be revoked from WireGuard; node not {'deleted' if action == 'delete' else 'changed'}",
+		)
+	_log.warning(
+		"Tunnel peer removal skipped, interface %s is not active: node=%s err=%s",
+		interface_name,
+		node_id,
+		stderr.strip(),
+	)
+
+
+@router.delete("/{node_id}", dependencies=[Depends(rate_limit(RATE_LIMIT_CRITICAL))])
 async def delete_node_endpoint(
-	request: Request,
 	node_id: str,
 	conn: sqlite3.Connection = Depends(get_conn),
 	user: sqlite3.Row = Depends(require_admin),
@@ -584,40 +611,7 @@ async def delete_node_endpoint(
 	# a failed WG revoke afterwards leaves the DB row (and a half-removed
 	# cluster member) behind.
 	if tunnel_peer_info:
-		public_key, interface_name = tunnel_peer_info
-		code, _, stderr = await run_wg_command(
-			"wg",
-			"set",
-			interface_name,
-			"peer",
-			public_key,
-			"remove",
-		)
-		if code == 0:
-			_log.info("Removed tunnel peer from WG: node=%s iface=%s", node_id, interface_name)
-		else:
-			# The command can legitimately fail when the interface is not
-			# running - there is no live access to revoke in that case. Only
-			# refuse the delete while the interface is actually up, otherwise a
-			# node on a stopped interface could never be removed.
-			iface_code, _, _ = await run_wg_command("wg", "show", interface_name)
-			if iface_code == 0:
-				_log.error(
-					"Refusing node delete: tunnel peer still active on WG: node=%s iface=%s err=%s",
-					node_id,
-					interface_name,
-					stderr.strip(),
-				)
-				raise HTTPException(
-					status_code=503,
-					detail="Node access could not be revoked from WireGuard; node not deleted",
-				)
-			_log.warning(
-				"Tunnel peer removal skipped, interface %s is not active: node=%s err=%s",
-				interface_name,
-				node_id,
-				stderr.strip(),
-			)
+		await _revoke_tunnel_peer_live(node_id, *tunnel_peer_info, action="delete")
 
 	# Send removal signal to node now that live access has been revoked
 	# (must happen while SSE auth still works, i.e. before the DB delete below).
@@ -625,7 +619,22 @@ async def delete_node_endpoint(
 	if notified > 0:
 		_log.info("Sent removal signal to %d SSE client(s) for node %s", notified, node_id)
 
-	unassigned_peer_count = delete_node(conn, node_id)
+	# The removal signal above is irreversible for the node (it wipes its local
+	# enrollment state). If the final DB delete now fails, flag the row as
+	# 'error' so it stops showing as online and the operator can retry the
+	# delete, instead of leaving a half-removed cluster member behind (P3.1).
+	try:
+		unassigned_peer_count = delete_node(conn, node_id)
+	except Exception:
+		_log.error("NODE_DELETE_DB_FAILED node=%s - removal already signalled; flagging node as error", node_id, exc_info=True)
+		try:
+			mark_node_delete_failed(conn, node_id)
+		except Exception:
+			_log.error("Failed to flag node=%s as error after delete failure", node_id, exc_info=True)
+		raise HTTPException(
+			status_code=500,
+			detail="Node removal was signalled but the database delete failed; the node is marked 'error'. Retry the delete.",
+		) from None
 	if unassigned_peer_count is None:
 		raise HTTPException(status_code=404, detail="Node not found")
 
@@ -653,10 +662,8 @@ async def delete_node_endpoint(
 	)
 
 
-@router.post("/{node_id}/token")
-@limiter.limit(RATE_LIMIT_CRITICAL)
-def regenerate_token(
-	request: Request,
+@router.post("/{node_id}/token", dependencies=[Depends(rate_limit(RATE_LIMIT_CRITICAL))])
+async def regenerate_token(
 	node_id: str,
 	conn: sqlite3.Connection = Depends(get_conn),
 	user: sqlite3.Row = Depends(require_admin),
@@ -664,7 +671,23 @@ def regenerate_token(
 	"""Regenerate enrollment token for re-enrollment. Invalidates old token."""
 	node = _get_node_or_404(conn, node_id)
 	token, secret_hash = _generate_node_token(conn, node_id, node["name"])
-	update_node_api_secret(conn, node_id, secret_hash)
+	# Cut the old key's live access first so a failed revoke leaves nothing changed.
+	tunnel_interface: str | None = None
+	if node["tunnel_peer_id"]:
+		tunnel_peer = get_peer_by_id(conn, node["tunnel_peer_id"])
+		if tunnel_peer:
+			tunnel_interface = tunnel_peer["interface"]
+			await _revoke_tunnel_peer_live(node_id, tunnel_peer["public_key"], tunnel_peer["interface"], action="token regeneration")
+	# Order: live revoke (may 503, nothing changed yet) -> DB update (disables the
+	# tunnel peer) -> config file sync. The sync is not repeated before the DB
+	# update, so no parallel config write can re-add the old key afterwards.
+	if not update_node_api_secret(conn, node_id, secret_hash):
+		raise HTTPException(status_code=404, detail="Node not found")
+	if tunnel_interface:
+		try:
+			sync_interface_config(WG_CONFIG_PATH, tunnel_interface, conn, pepper=get_config().secret_key)
+		except Exception as exc:
+			_log.warning("Failed to sync config after token regeneration: %s", exc)
 	_log.info("Node token regenerated: id=%s (by user=%s)", node_id, user["username"])
 
 	return ok_response(
@@ -673,10 +696,8 @@ def regenerate_token(
 	)
 
 
-@router.post("/{node_id}/restart")
-@limiter.limit(RATE_LIMIT_CRITICAL)
+@router.post("/{node_id}/restart", dependencies=[Depends(rate_limit(RATE_LIMIT_CRITICAL))])
 async def restart_node(
-	request: Request,
 	node_id: str,
 	conn: sqlite3.Connection = Depends(get_conn),
 	user: sqlite3.Row = Depends(require_admin),
@@ -696,10 +717,8 @@ async def restart_node(
 	)
 
 
-@router.post("/{node_id}/speedtest")
-@limiter.limit(RATE_LIMIT_HEAVY)
+@router.post("/{node_id}/speedtest", dependencies=[Depends(rate_limit(RATE_LIMIT_HEAVY))])
 async def trigger_node_speedtest(
-	request: Request,
 	node_id: str,
 	conn: sqlite3.Connection = Depends(get_conn),
 	user: sqlite3.Row = Depends(require_admin),

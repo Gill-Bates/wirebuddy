@@ -5,7 +5,9 @@
 
 import fs from 'node:fs';
 
-import { PNG } from 'pngjs';
+import { loadDep } from '../deps.mjs';
+
+const { PNG } = await loadDep('pngjs');
 
 function toImageData(source) {
     if (typeof source === 'string') {
@@ -25,7 +27,7 @@ function toImageData(source) {
 
 export async function computeSSIM(imgPathA, imgPathB) {
     try {
-        const { default: ssim } = await import('ssim.js');
+        const { default: ssim } = await loadDep('ssim.js');
 
         const imgA = toImageData(imgPathA);
         const imgB = toImageData(imgPathB);

@@ -54,7 +54,7 @@ from ..utils.passkeys import (
 	verify_authentication,
 	verify_registration,
 )
-from ..utils.rate_limit import RATE_LIMIT_AUTH, limiter
+from ..utils.rate_limit import RATE_LIMIT_AUTH, rate_limit
 from .auth import _get_client_ip, _is_https, _issue_session, get_current_user, require_admin
 from .response import ok_response
 from .users import _get_user_or_404
@@ -212,8 +212,7 @@ class PasskeyLoginFinishRequest(BaseModel):
 # ---------------------------------------------------------------------------
 
 
-@router.post("/register/start")
-@limiter.limit(RATE_LIMIT_AUTH)
+@router.post("/register/start", dependencies=[Depends(rate_limit(RATE_LIMIT_AUTH))])
 def passkey_register_start(
 	request: Request,
 	user: sqlite3.Row = Depends(get_current_user),
@@ -247,8 +246,7 @@ def passkey_register_start(
 	return ok_response(data=options)
 
 
-@router.post("/register/finish")
-@limiter.limit(RATE_LIMIT_AUTH)
+@router.post("/register/finish", dependencies=[Depends(rate_limit(RATE_LIMIT_AUTH))])
 def passkey_register_finish(
 	request: Request,
 	payload: PasskeyRegisterFinishRequest,
@@ -344,8 +342,7 @@ def passkey_register_finish(
 # ---------------------------------------------------------------------------
 
 
-@router.post("/login/start")
-@limiter.limit(RATE_LIMIT_AUTH)
+@router.post("/login/start", dependencies=[Depends(rate_limit(RATE_LIMIT_AUTH))])
 def passkey_login_start(
 	request: Request,
 	payload: PasskeyLoginStartRequest | None = None,
@@ -394,8 +391,7 @@ def passkey_login_start(
 	return ok_response(data=options)
 
 
-@router.post("/login/finish")
-@limiter.limit(RATE_LIMIT_AUTH)
+@router.post("/login/finish", dependencies=[Depends(rate_limit(RATE_LIMIT_AUTH))])
 def passkey_login_finish(
 	request: Request,
 	response: Response,
@@ -547,10 +543,8 @@ def delete_passkey_endpoint(
 	return ok_response(message="Passkey deleted")
 
 
-@router.post("/reset/{user_id}")
-@limiter.limit(RATE_LIMIT_AUTH)
+@router.post("/reset/{user_id}", dependencies=[Depends(rate_limit(RATE_LIMIT_AUTH))])
 def reset_user_passkeys(
-	request: Request,
 	user_id: int,
 	admin: sqlite3.Row = Depends(require_admin),
 	conn: sqlite3.Connection = Depends(get_conn),
@@ -609,10 +603,8 @@ def check_passkeys_available(conn: sqlite3.Connection = Depends(get_conn)):
 # ---------------------------------------------------------------------------
 
 
-@router.post("/enable/{user_id}")
-@limiter.limit(RATE_LIMIT_AUTH)
+@router.post("/enable/{user_id}", dependencies=[Depends(rate_limit(RATE_LIMIT_AUTH))])
 def enable_user_passkey(
-	request: Request,
 	user_id: int,
 	admin: sqlite3.Row = Depends(require_admin),
 	conn: sqlite3.Connection = Depends(get_conn),
@@ -642,10 +634,8 @@ def enable_user_passkey(
 	)
 
 
-@router.post("/disable/{user_id}")
-@limiter.limit(RATE_LIMIT_AUTH)
+@router.post("/disable/{user_id}", dependencies=[Depends(rate_limit(RATE_LIMIT_AUTH))])
 def disable_user_passkey(
-	request: Request,
 	user_id: int,
 	admin: sqlite3.Row = Depends(require_admin),
 	conn: sqlite3.Connection = Depends(get_conn),

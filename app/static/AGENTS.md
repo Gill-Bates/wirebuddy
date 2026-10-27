@@ -1,5 +1,5 @@
 <!-- Parent: ../AGENTS.md -->
-<!-- Generated: 2026-09-21 | Updated: 2026-09-21 -->
+<!-- Generated: 2026-09-21 | Updated: 2026-10-27 -->
 # static
 
 ## Purpose
@@ -13,11 +13,11 @@ None at this level; all content lives in the subdirectories below. (`img/`, `ven
 |-----------|---------|
 | `css/` | Design tokens, foundations, components, utilities, page sheets; see `css/AGENTS.md` |
 | `js/` | Page controllers, shared runtime helpers, settings modules; see `js/AGENTS.md` |
-| `vendor/` | Vendored Bootstrap, Chart.js, Leaflet, Material Icons; see `vendor/AGENTS.md` |
+| `vendor/` | Vendored Bootstrap, Chart.js, Leaflet, GridStack, Material Icons; see `vendor/AGENTS.md` |
 
 ## For AI Agents
 ### Working In This Directory
-- No build step: files are served as-is, so edits are live after a hard refresh. Do not introduce bundlers, ES module `import`, or npm-managed frontend deps.
+- No build step: files are served as-is, so edits go live without a rebuild. `main.py` serves `/static` with `Cache-Control: no-cache` (browsers revalidate via ETag/304), so no hard refresh is needed. Do not introduce bundlers, ES module `import`, or npm-managed frontend deps.
 - Load order and which files a page uses is decided in `../templates/base.html` (global) and each page template's `extra_css`/`extra_js` blocks. Add a new file there or it will not load.
 - Never edit `vendor/`.
 - Avoid inline `style=`/`onclick=` in templates; CSP-strict conventions push styling into CSS classes here.

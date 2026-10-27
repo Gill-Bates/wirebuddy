@@ -20,7 +20,7 @@ Data pipeline
    - Stores a single JSON snapshot in TSDB
 
 2. This endpoint (on demand):
-   - Queries TSDB snapshots for the requested time window
+   - Streams TSDB snapshots for the requested time window (no point cap)
    - Sums per-country deltas across all snapshots
    - Returns the aggregated result sorted by total traffic
 
@@ -40,14 +40,14 @@ from datetime import timedelta
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 from starlette.concurrency import run_in_threadpool
 
 from ..db import tsdb
 from ..utils.conntrack import ASN_TRAFFIC_KEY, ASN_TRAFFIC_METRIC, GEO_TRAFFIC_KEY, GEO_TRAFFIC_METRIC
 from ..utils.deps import get_tsdb_dir
-from ..utils.rate_limit import RATE_LIMIT_HEAVY, limiter
+from ..utils.rate_limit import RATE_LIMIT_HEAVY, rate_limit
 from ..utils.time import utcnow
 from .auth import require_admin
 from .response import ok_response
@@ -61,10 +61,6 @@ router = APIRouter(tags=["wireguard"])
 __all__ = ["router"]
 
 # Synthetic TSDB key for country traffic snapshots (written by scheduler)
-
-# Max data points to query.
-# At 30 s sampling, 100k points cover ~34.7 days, so larger windows are truncated.
-_MAX_POINTS = 100_000
 
 # Cap peer names per country in the response
 _MAX_PEER_NAMES = 20
@@ -138,6 +134,9 @@ class CountryTrafficData(BaseModel):
 	display_unit: str
 	hours: int
 	total_countries: int
+	truncated: bool = False
+	requested_hours: int = 0
+	effective_hours: float = 0.0
 
 
 # ISO 3166-1 country names (subset covering >99 % of real-world traffic).
@@ -375,6 +374,57 @@ def _validate_peer_filter(peer: str | None) -> str | None:
 	return peer
 
 
+def _int_or_zero(value: Any) -> int:
+	"""Return ``value`` as int, or 0 for non-numeric input."""
+	if isinstance(value, bool) or not isinstance(value, (int, float)):
+		return 0
+	return int(value)
+
+
+def _merge_snapshots(acc: dict[str, Any] | None, snapshot: Any) -> dict[str, Any] | None:
+	"""Sum two country/ASN delta snapshots into a new snapshot (TSDB ``reduce_fn``).
+
+	Per key, ``rx``/``tx`` and ``by_peer[peer].rx/tx`` are summed, ``peers`` is
+	the duplicate-free union in first-seen order and ``name`` comes from the
+	first snapshot that carries one. Only the accumulator is mutated (it is
+	created here, never taken from the raw series). Non-dict
+	snapshots/entries are skipped.
+	"""
+	merged: dict[str, Any] = acc if acc is not None else {}
+	if not isinstance(snapshot, dict):
+		return merged
+
+	for key, info in snapshot.items():
+		if not isinstance(info, dict):
+			continue
+		target = merged.get(key)
+		if target is None:
+			target = merged[key] = {"rx": 0, "tx": 0, "peers": [], "by_peer": {}}
+		target["rx"] += _int_or_zero(info.get("rx"))
+		target["tx"] += _int_or_zero(info.get("tx"))
+
+		name = info.get("name")
+		if "name" not in target and isinstance(name, str) and name:
+			target["name"] = name
+
+		peers = info.get("peers")
+		if isinstance(peers, list):
+			for peer_name in peers:
+				if isinstance(peer_name, str) and peer_name not in target["peers"]:
+					target["peers"].append(peer_name)
+
+		by_peer = info.get("by_peer")
+		if isinstance(by_peer, dict):
+			for peer_name, data in by_peer.items():
+				if not isinstance(data, dict):
+					continue
+				slot = target["by_peer"].setdefault(peer_name, {"rx": 0, "tx": 0})
+				slot["rx"] += _int_or_zero(data.get("rx"))
+				slot["tx"] += _int_or_zero(data.get("tx"))
+
+	return merged
+
+
 def _aggregate_snapshots(
 	points: list,
 	peer_filter: str | None,
@@ -554,30 +604,31 @@ def _compute_traffic_generic(
 	log_prefix: str,
 	build_entry_fn: Callable[[str, dict[str, Any], str], Any],
 	build_empty_result_fn: Callable[[int], Any],
-	build_result_fn: Callable[[list[Any], str, int], Any],
+	build_result_fn: Callable[[list[Any], str, int, bool, float], Any],
 ) -> Any:
 	"""Generic TSDB traffic aggregation for country and ASN endpoints."""
-	since = utcnow() - timedelta(hours=hours)
+	now = utcnow()
+	since = now - timedelta(hours=hours)
 
+	# One window-wide bucket: the endpoints only need totals, so the stream is
+	# merged into at most a few epoch-aligned aggregates, uncapped by MAX_QUERY_POINTS.
 	try:
-		points = tsdb.query(
+		points = tsdb.query_bucketed(
 			tsdb_dir,
 			peer_key=traffic_key,
 			metric=traffic_metric,
 			since=since,
-			limit=_MAX_POINTS,
+			bucket_seconds=max(1, hours * 3600),
+			reduce_fn=_merge_snapshots,
 		)
 	except Exception as exc:
 		_log.error("%s TSDB query failed: %s", log_prefix, exc, exc_info=True)
 		return build_empty_result_fn(hours)
 
-	if len(points) >= _MAX_POINTS:
-		_log.warning(
-			"%s query hit %d-point cap for %dh window; results may be truncated",
-			log_prefix,
-			_MAX_POINTS,
-			hours,
-		)
+	# The whole window was streamed, so the result is never partial; the fields
+	# stay in the response for API compatibility.
+	truncated = False
+	effective_hours = float(hours)
 
 	agg = _aggregate_snapshots(points, peer_filter)
 	max_bytes = max((max(info["rx"], info["tx"]) for info in agg.values()), default=0)
@@ -598,7 +649,7 @@ def _compute_traffic_generic(
 			continue
 
 	_log.debug(
-		"%s hours=%d points=%d entries=%d display_unit=%s peer_filter=%s",
+		"%s hours=%d buckets=%d entries=%d display_unit=%s peer_filter=%s",
 		log_prefix,
 		hours,
 		len(points),
@@ -607,7 +658,7 @@ def _compute_traffic_generic(
 		peer_filter,
 	)
 
-	return build_result_fn(entries, display_unit, hours)
+	return build_result_fn(entries, display_unit, hours, truncated, effective_hours)
 
 
 def _compute_country_traffic(
@@ -622,7 +673,8 @@ def _compute_country_traffic(
 
 	    {"DE": {"rx": 1234, "tx": 5678, "peers": ["Alice"], "by_peer": {"Alice": {"rx": 1234, "tx": 5678}}}, ...}
 
-	This function sums all such snapshots within ``[now - hours, now]``.
+	This function sums all such snapshots within ``[now - hours, now]`` by
+	streaming them (no point cap).
 
 	Args:
 		tsdb_dir: Path to TSDB directory.
@@ -643,12 +695,18 @@ def _compute_country_traffic(
 			display_unit="B",
 			hours=h,
 			total_countries=0,
+			truncated=False,
+			requested_hours=h,
+			effective_hours=float(h),
 		),
-		build_result_fn=lambda countries, unit, h: CountryTrafficData(
+		build_result_fn=lambda countries, unit, h, truncated, effective_h: CountryTrafficData(
 			countries=countries,
 			display_unit=unit,
 			hours=h,
 			total_countries=len(countries),
+			truncated=truncated,
+			requested_hours=h,
+			effective_hours=effective_h,
 		),
 	)
 
@@ -718,10 +776,8 @@ async def _handle_traffic_request(
 	return ok_response(data=result)
 
 
-@router.get("/stats/traffic-by-country", response_model=None)
-@limiter.limit(RATE_LIMIT_HEAVY)
+@router.get("/stats/traffic-by-country", response_model=None, dependencies=[Depends(rate_limit(RATE_LIMIT_HEAVY))])
 async def get_traffic_by_country(
-	request: Request,
 	hours: int = Query(24, ge=1, le=8760, description="Hours of history (1-8760)"),
 	range_key: str | None = Query(None, pattern="^(6h|24h|7d|30d|90d|180d|y1)$"),
 	peer: str | None = Query(None, description="Filter by peer name", max_length=255),
@@ -740,7 +796,10 @@ async def get_traffic_by_country(
 
 	Returns:
 		``{countries: [{code, name, rx, tx, total, peers, peer_names}, ...],
-		  display_unit, hours, total_countries}``
+		  display_unit, hours, total_countries, truncated, requested_hours,
+		  effective_hours}``. The whole window is always aggregated, so
+		  ``truncated`` is False and ``effective_hours`` equals ``requested_hours``
+		  (both kept for compatibility).
 	"""
 	resolved_hours = _resolve_hours(range_key, hours)
 	return await _handle_traffic_request(
@@ -775,6 +834,9 @@ class ASNTrafficData(BaseModel):
 	display_unit: str
 	hours: int
 	total_asns: int
+	truncated: bool = False
+	requested_hours: int = 0
+	effective_hours: float = 0.0
 
 
 def _compute_asn_traffic(
@@ -788,7 +850,8 @@ def _compute_asn_traffic(
 
 	    {"13335": {"rx": 1234, "tx": 5678, "name": "Cloudflare", "peers": ["Alice"], "by_peer": {"Alice": {"rx": 1234, "tx": 5678}}}, ...}
 
-	This function sums all such snapshots within ``[now - hours, now]``.
+	This function sums all such snapshots within ``[now - hours, now]`` by
+	streaming them (no point cap).
 
 	Args:
 		tsdb_dir: Path to TSDB directory.
@@ -809,20 +872,24 @@ def _compute_asn_traffic(
 			display_unit="B",
 			hours=h,
 			total_asns=0,
+			truncated=False,
+			requested_hours=h,
+			effective_hours=float(h),
 		),
-		build_result_fn=lambda asns, unit, h: ASNTrafficData(
+		build_result_fn=lambda asns, unit, h, truncated, effective_h: ASNTrafficData(
 			asns=asns,
 			display_unit=unit,
 			hours=h,
 			total_asns=len(asns),
+			truncated=truncated,
+			requested_hours=h,
+			effective_hours=effective_h,
 		),
 	)
 
 
-@router.get("/stats/traffic-by-asn", response_model=None)
-@limiter.limit(RATE_LIMIT_HEAVY)
+@router.get("/stats/traffic-by-asn", response_model=None, dependencies=[Depends(rate_limit(RATE_LIMIT_HEAVY))])
 async def get_traffic_by_asn(
-	request: Request,
 	hours: int = Query(24, ge=1, le=8760, description="Hours of history (1-8760)"),
 	range_key: str | None = Query(None, pattern="^(6h|24h|7d|30d|90d|180d|y1)$"),
 	peer: str | None = Query(None, description="Filter by peer name", max_length=255),
@@ -841,7 +908,10 @@ async def get_traffic_by_asn(
 
 	Returns:
 		``{asns: [{asn, name, rx, tx, total, peers, peer_names}, ...],
-		  display_unit, hours, total_asns}``
+		  display_unit, hours, total_asns, truncated, requested_hours,
+		  effective_hours}``. The whole window is always aggregated, so
+		  ``truncated`` is False and ``effective_hours`` equals ``requested_hours``
+		  (both kept for compatibility).
 	"""
 	resolved_hours = _resolve_hours(range_key, hours)
 	return await _handle_traffic_request(

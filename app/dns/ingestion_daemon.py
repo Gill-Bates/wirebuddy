@@ -105,6 +105,14 @@ async def run_dns_ingestion(
 			return_when=asyncio.FIRST_COMPLETED,
 		)
 
+		# Signal shutdown BEFORE cancelling the surviving task. The tailer runs
+		# via asyncio.to_thread(), so Task.cancel() cannot interrupt its thread
+		# mid-blocking-put(): if the writer died, nothing drains the queue and
+		# the tailer thread would otherwise loop forever on queue.Full. Setting
+		# stop_event first lets _put_with_shutdown() observe it on its next
+		# bounded put() and exit, so the cancel() below actually completes.
+		stop_event.set()
+
 		finished = next(iter(done))
 		for pending_task in pending:
 			pending_task.cancel()
@@ -156,6 +164,10 @@ async def run_dns_ingestion(
 		raise
 
 	finally:
+		# Defensive: ensure the shared stop_event is set on every exit path so a
+		# thread blocked in _put_with_shutdown() always observes it and the
+		# cancel()/gather() below can complete instead of hanging.
+		stop_event.set()
 		# Ensure all tasks are cleaned up
 		for task in (tailer_task, writer_task, monitor_task):
 			if not task.done():

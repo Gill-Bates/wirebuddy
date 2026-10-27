@@ -1,5 +1,5 @@
 <!-- Parent: ../AGENTS.md -->
-<!-- Generated: 2026-09-21 | Updated: 2026-09-21 -->
+<!-- Generated: 2026-09-21 | Updated: 2026-10-27 -->
 # css
 
 ## Purpose
@@ -8,7 +8,7 @@ WireBuddy's stylesheet tree. A token-driven design system is loaded globally by 
 ## Key Files
 | File | Description |
 |------|-------------|
-| `wb-ui-system.css` | Central UI system (~1000 lines, numbered sections): tokens, typography, cards, KPI/stat cards, buttons, tables, badges, forms, section spacing, page header, list groups, alerts, dropdowns, modals, nav tabs, progress, tooltips |
+| `wb-ui-system.css` | Central UI system (~1100 lines, numbered sections): tokens, typography, cards, KPI/stat cards, buttons, tables, badges, forms, section spacing, page header, list groups, alerts, dropdowns, modals, nav tabs, progress, tooltips |
 | `style.css` | Global app styles on top of Bootstrap variables: shell/sidebar, z-index layering, shared widgets |
 | `dashboard.css`, `dns.css`, `peers.css`, `traffic.css`, `users.css`, `login.css` | Page-specific rule bodies; pulled in via thin wrappers in `pages/` (`pages/dns.css` etc. just `@import` component CSS plus one of these) |
 | `status.css` | Public status page flow visualisation (own tokens `--flow-*`); linked directly by `status.html`, not via `pages/` |

@@ -35,7 +35,7 @@
             upper: /[A-Z]/.test(password),
             lower: /[a-z]/.test(password),
             digit: /[0-9]/.test(password),
-            special: /[^A-Za-z0-9]/.test(password),
+            special: /[!@#$%^&*()\-_=+\[\]{};:'",.<>/?|`~]/.test(password), // mirrors _SPECIAL_RE in models/users.py
         };
         checks.strength = [checks.upper, checks.lower, checks.digit, checks.special].filter(Boolean).length >= 3;
         return checks;

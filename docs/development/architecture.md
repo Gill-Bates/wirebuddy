@@ -135,8 +135,7 @@ return the generic `OkResponse[...]` envelope:
 
 ```python
 # app/api/wireguard_peers.py
-@router.post("/peers", status_code=201, response_model=OkResponse[PeerPublic])
-@limiter.limit(RATE_LIMIT_HEAVY)
+@router.post("/peers", status_code=201, response_model=OkResponse[PeerPublic], dependencies=[Depends(rate_limit(RATE_LIMIT_HEAVY))])
 async def create_peer(
 	request: Request,
 	payload: PeerCreate,
@@ -305,7 +304,11 @@ WireBuddy uses dual storage for DNS telemetry:
 
 Separate counters (vs. pre-computed ratios) are more precise and flexible for UI aggregation.
 
-This split keeps the ingestion path robust while making long-range trend queries cheap.
+Both stores are written by appending lines, so ingestion never rewrites existing
+data. Trend charts read the minute aggregates (`query_bucketed` in
+`app/db/tsdb.py`), which streams the points of the requested window and reduces
+them per time bucket. The cost of a query therefore grows with the number of
+aggregate points in the window, not with the number of logged DNS queries.
 
 ## Metrics Collection
 

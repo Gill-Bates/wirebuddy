@@ -257,6 +257,22 @@ def delete_node(conn: sqlite3.Connection, node_id: str) -> int | None:
 		return assigned_peer_count
 
 
+def mark_node_delete_failed(conn: sqlite3.Connection, node_id: str) -> bool:
+	"""Flag a node as ``error`` after an irreversible removal signal.
+
+	Used when the removal command was already delivered (the node wipes its
+	local state) but the final :func:`delete_node` write did not complete, so
+	the node must not keep showing as online. The operator can retry the delete.
+	Returns True if a row was updated.
+	"""
+	with transaction(conn, immediate=True):
+		cur = conn.execute(
+			"UPDATE nodes SET status = ? WHERE id = ?",
+			(STATUS_ERROR, node_id),
+		)
+		return cur.rowcount > 0
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Enrollment
 # ─────────────────────────────────────────────────────────────────────────────
@@ -268,6 +284,10 @@ def enroll_node(
 	cert_fingerprint: str,
 ) -> bool:
 	"""Mark a node as enrolled by storing its certificate fingerprint.
+
+	Also re-enables the node's tunnel peer, which ``update_node_api_secret``
+	disables at the re-enrollment boundary, so a reused tunnel peer regains
+	``is_enabled=1`` exactly when enrollment succeeds (pending -> online).
 
 	Returns True if the node was found and updated.
 	"""
@@ -281,6 +301,16 @@ def enroll_node(
 			""",
 			(cert_fingerprint, STATUS_ONLINE, now, now, node_id, STATUS_PENDING),
 		)
+		if cur.rowcount > 0:
+			tunnel_row = conn.execute(
+				"SELECT tunnel_peer_id FROM nodes WHERE id = ?",
+				(node_id,),
+			).fetchone()
+			if tunnel_row is not None and tunnel_row["tunnel_peer_id"]:
+				conn.execute(
+					"UPDATE peers SET is_enabled = 1 WHERE id = ?",
+					(tunnel_row["tunnel_peer_id"],),
+				)
 		return cur.rowcount > 0
 
 
@@ -309,9 +339,32 @@ def update_node_api_secret(
 ) -> bool:
 	"""Replace the API secret hash (for token regeneration / re-enrollment).
 
-	Also resets status to 'pending' and clears the cert fingerprint.
+	Forms a real re-enrollment boundary: resets status to 'pending', clears the
+	cert fingerprint, disables the existing tunnel peer (``is_enabled=0``) so its
+	old WireGuard key stops authorising traffic in the DB, and purges unacked
+	durable commands so none can cross the boundary into the new session. The
+	tunnel peer row is kept for address stability and must be re-enabled
+	(``is_enabled=1``) on successful re-enrollment; removing the old key from the
+	live WireGuard interface is the caller's (API layer) responsibility.
 	"""
 	with transaction(conn, immediate=True):
+		tunnel_row = conn.execute(
+			"SELECT tunnel_peer_id FROM nodes WHERE id = ?",
+			(node_id,),
+		).fetchone()
+		if tunnel_row is not None and tunnel_row["tunnel_peer_id"]:
+			conn.execute(
+				"UPDATE peers SET is_enabled = 0 WHERE id = ?",
+				(tunnel_row["tunnel_peer_id"],),
+			)
+
+		# Drop unacked durable commands so the normal claim path cannot replay
+		# pre-reset commands into the re-enrolled session.
+		conn.execute(
+			"DELETE FROM node_commands WHERE node_id = ? AND acked_at IS NULL",
+			(node_id,),
+		)
+
 		cur = conn.execute(
 			"""
 			UPDATE nodes

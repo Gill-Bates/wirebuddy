@@ -31,11 +31,11 @@ from ..db.sqlite_settings import get_setting
 from ..dns import ingestion as dns_ingestion
 from ..dns import unbound
 from ..utils.coerce import BOOL_TRUE_VALUES
-from ..utils.config import get_config
+from ..utils.config import get_config, parse_proxy_cidrs
 from ..utils.deps import get_conn
 from ..utils.formatting import format_optional_bandwidth_mbit
 from ..utils.network import parse_ip
-from ..utils.rate_limit import RATE_LIMIT_DEFAULT, limiter
+from ..utils.rate_limit import RATE_LIMIT_DEFAULT, rate_limit
 from .auth import _get_client_ip, get_current_user_optional
 from .frontend_shared import extract_geo_fields, lookup_ip_cached, router, templates
 
@@ -110,16 +110,7 @@ def _load_status_trusted_proxy_networks() -> tuple[ipaddress.IPv4Network | ipadd
 	value = str(os.environ.get(_STATUS_TRUSTED_PROXY_CIDRS_ENV, "")).strip()
 	if not value:
 		return ()
-	networks: list[ipaddress.IPv4Network | ipaddress.IPv6Network] = []
-	for raw in value.split(","):
-		item = raw.strip()
-		if not item:
-			continue
-		try:
-			networks.append(ipaddress.ip_network(item, strict=False))
-		except ValueError:
-			_log.warning("Ignoring invalid %s entry: %r", _STATUS_TRUSTED_PROXY_CIDRS_ENV, item)
-	return tuple(networks)
+	return parse_proxy_cidrs(value, _STATUS_TRUSTED_PROXY_CIDRS_ENV)
 
 
 _status_trusted_proxy_networks_cache: tuple[ipaddress.IPv4Network | ipaddress.IPv6Network, ...] | None = None
@@ -886,8 +877,7 @@ async def _run_status_health_checks(
 	return checks, outbound_ip
 
 
-@router.get("/status", response_class=HTMLResponse)
-@limiter.limit(RATE_LIMIT_DEFAULT)
+@router.get("/status", response_class=HTMLResponse, dependencies=[Depends(rate_limit(RATE_LIMIT_DEFAULT))])
 async def status_page(
 	request: Request,
 	conn: sqlite3.Connection = Depends(get_conn),

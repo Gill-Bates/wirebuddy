@@ -17,7 +17,7 @@ name = "wirebuddy"
 # at runtime, the release workflow validates the git tag against it, and
 # docker/Dockerfile copies this file into the image so the About page reports
 # the same number the tag was cut from.
-version = "1.6.2"
+version = "1.7.0"
 description = "Lightweight WireGuard Management WebUI"
 readme = "README.md"
 requires-python = ">=3.13"
@@ -39,41 +39,41 @@ classifiers = [
 # versions.
 dependencies = [
     "aiosqlite==0.22.1",
-    "cbor2==6.1.4",
-    "cryptography==50.0.1",
+    "cbor2==6.1.5",
+    "cryptography==50.0.2",
     "email-validator==2.3.0",
-    "fastapi==0.141.1",
+    "fastapi==0.162.0",
     "geoip2==5.3.0",
     "httpx[http2]==0.28.1",
     "jinja2==3.1.6",
-    "markdown==3.10.3",
+    "markdown==3.11.2",
     "nh3==0.3.7",
-    "Pillow==12.3.0",
-    "pydantic==2.13.5",
-    "pydantic-settings==2.15.0",
+    "Pillow==13.0.0",
+    "pydantic==2.14.1",
+    "pydantic-settings==2.16.1",
     "pyotp==2.10.0",
     "python-multipart==0.0.32",
     "qrcode[pil]==8.2",
-    "slowapi==0.1.10",
-    "uvicorn[standard]==0.53.0",
-    "webauthn==3.0.0",
+    "uvicorn[standard]==0.54.0",
+    "webauthn==3.0.1",
 ]
+
 
 [project.optional-dependencies]
 dev = [
-    "pytest==9.1.1",
-    "pytest-asyncio==1.4.0",
-    "pytest-cov==7.1.0",
-    "ruff==0.16.8",
+    "pytest",
+    "pytest-asyncio",
+    "pytest-cov",
+    "ruff==0.17.3",
 ]
 docs = [
-    "markdown==3.10.3",
-    "mkdocs==1.6.1",
-    "mkdocs-git-revision-date-localized-plugin==1.6.0",
-    "mkdocs-material==9.7.7",
-    "mkdocs-minify-plugin==0.8.0",
-    "mkdocs-redirects==1.2.3",
-    "pymdown-extensions==12.1",
+    "markdown",
+    "mkdocs",
+    "mkdocs-git-revision-date-localized-plugin",
+    "mkdocs-material",
+    "mkdocs-minify-plugin",
+    "mkdocs-redirects",
+    "pymdown-extensions",
 ]
 
 [project.urls]
@@ -106,6 +106,8 @@ exclude = ["app.static*", "app.templates*"]
 [tool.ruff]
 line-length = 160
 target-version = "py313"
+# A different local ruff must not silently produce other results than the CI gate.
+required-version = "==0.17.3"
 extend-exclude = ["data", "dev-data", "site", ".mkdocs-cache"]
 
 [tool.ruff.lint]
@@ -120,6 +122,8 @@ select = [
     "E",     # pycodestyle errors
     "EM",    # exception messages assigned to a name first
     "F",     # pyflakes
+    "FAST001", # redundant response_model in the route decorator
+    "FAST003", # path parameter missing from the handler signature
     "G",     # logging-format: %s args, never f-strings (lazy formatting)
     "I",     # import sorting
     "ICN",   # import conventions
@@ -144,6 +148,11 @@ select = [
 ignore = [
     # Formatter-owned; keeping this on fights `ruff format`.
     "ISC001",
+    # Further rules Ruff documents as conflicting with `ruff format`.
+    "E111",
+    "E114",
+    "E117",
+    "D300",
     # The codebase is indented with tabs on purpose (see AGENTS.md); this is a
     # style choice, not a defect.
     "W191",
@@ -180,8 +189,8 @@ ignore = [
     "TRY300",
     "TRY301",
     "B904",
-    # Deliberate lazy imports (heavy or optional dependencies) throughout
-    # app/utils and app/node.
+    # Deliberate lazy imports (heavy or optional dependencies, import cycles)
+    # across app/ (main, server, tasks, api, utils, node).
     "PLC0415",
     # Package-level singletons (db connections, schedulers, caches) are
     # rebound by lifespan hooks and module-level setup on purpose.
@@ -196,33 +205,6 @@ ignore = [
     "PLR0913",
     "PLR0915",
     "PLR0917",
-    # `Depends(...)` / `File(...)` in defaults *is* the FastAPI DI contract.
-    "B008",
-    # This application's job is driving `wg`, `ip`, `iptables`, `unbound-control`
-    # and `conntrack`. S603 fires on every one of those calls and cannot be
-    # satisfied while that remains true, so it would only train readers to skip
-    # the output. The properties it stands in for are enforced instead: there is
-    # no `shell=True` anywhere in app/, every call passes an argument *list*, and
-    # the privileged binaries are resolved to absolute paths from fixed
-    # allowlists rather than PATH (`_resolve_trusted_binary` in app/main.py,
-    # `_resolve_ip_binary` in app/node/firewall.py). S607 stays enabled, which is
-    # what catches a binary invoked by bare name.
-    "S603",
-    # Dynamic SQL here only ever interpolates *identifiers* the code itself owns
-    # - column lists built from literals like `"username = ?"`, a generated
-    # `?,?,?` placeholder string, table names from module-level allowlists that
-    # are additionally checked against sqlite_master with a bound parameter. Every
-    # value is bound, never formatted in. SQL parameters cannot express a dynamic
-    # column list, so this pattern is the correct one and the rule has nothing
-    # left to warn about.
-    "S608",
-    # The prose in this repository uses real typography: EN DASH in docstrings,
-    # log messages and UI strings, MULTIPLICATION SIGN in comments. The homoglyph
-    # confusion these rules guard against applies to identifiers and comparison
-    # values; none of the occurrences here are either.
-    "RUF001",
-    "RUF002",
-    "RUF003",
     # Every occurrence is an isinstance() check on *deserialised external input* -
     # enrollment token payloads, WebAuthn clientDataJSON, a node's persisted state
     # file, a master's HTTP response. A wrong type there is a data-validation
@@ -242,18 +224,26 @@ ignore = [
     "ASYNC109",
 ]
 
+# The prose uses real typography: EN DASH in docstrings, log messages and UI
+# strings, MULTIPLICATION SIGN in comments. Every other homoglyph is still flagged.
+allowed-confusables = ["–", "×"]
+
+[tool.ruff.lint.flake8-bugbear]
+# `Depends(...)` / `File(...)` in defaults *is* the FastAPI DI contract; B008 stays
+# active for every other call in a default argument.
+extend-immutable-calls = [
+    "fastapi.Depends",
+    "fastapi.File",
+    "fastapi.Form",
+    "fastapi.Query",
+    "fastapi.Body",
+    "fastapi.Header",
+    "fastapi.Cookie",
+    "fastapi.Path",
+    "fastapi.Security",
+]
+
 [tool.ruff.lint.per-file-ignores]
-# slowapi resolves the rate-limit key by looking up a parameter *named*
-# `request` in the endpoint signature (see app/utils/rate_limit.py). Every
-# `@limiter.limit(...)` handler therefore has to declare it, and the ~50 that
-# never read it are not dead parameters - removing or renaming one silently
-# disables rate limiting on that endpoint. Scoped to the router modules and
-# main.py rather than ignored globally, so a genuinely unused argument anywhere
-# else still gets reported. Unused FastAPI `Depends(...)` parameters that exist
-# for their authorization side effect are written `_: ... = Depends(...)`
-# instead, which the rule accepts.
-"app/api/*.py" = ["ARG001"]
-"app/main.py" = ["ARG001"]
 # The one module that is deliberately *not* UTC: it schedules the speedtest for a
 # wall-clock hour in the operator's own timezone ("run at 2am local"), and
 # time.mktime() on a naive datetime is what applies the system's DST rules. Making
@@ -262,6 +252,8 @@ ignore = [
 # UTC-aware (see app/utils/time.py and tests/test_time.py).
 "app/utils/speedtest_window.py" = ["DTZ001", "DTZ005", "DTZ006"]
 "tests/*" = [
+    "S603",
+    "S608",
     # Stub signatures have to match what the real callable is invoked with,
     # so monkeypatch lambdas routinely take arguments they ignore.
     "ARG001",
@@ -280,6 +272,28 @@ ignore = [
     "T20",
 ]
 "tools/*.py" = ["T20"]
+# This application's job is driving `wg`, `ip`, `iptables` and `conntrack`. S603
+# fires on every direct subprocess call and cannot be satisfied while that remains
+# true, so it is exempt only in the modules that make such calls. The properties it
+# stands in for are enforced instead: there is no `shell=True` anywhere in app/,
+# every call passes an argument *list*, and the privileged binaries are resolved to
+# absolute paths from fixed allowlists rather than PATH. S607 stays enabled
+# everywhere, which is what catches a binary invoked by bare name. A new module
+# calling subprocess directly is flagged and has to justify itself.
+"app/utils/conntrack.py" = ["S603"]
+"app/node/firewall.py" = ["S603"]
+"app/node/wg_manager.py" = ["S603"]
+"app/api/frontend_pages.py" = ["S603"]
+# Dynamic SQL here only ever interpolates *identifiers* the code itself owns -
+# column lists built from literals like `"username = ?"`, a generated `?,?,?`
+# placeholder string, table names from module-level allowlists. Every value is
+# bound, never formatted in, and SQL parameters cannot express a dynamic column
+# list. Exempt only in the DB layer and the backup restore; S608 stays on
+# everywhere else, where a formatted query would be a real injection risk.
+"app/db/*.py" = ["S608"]
+"app/api/backup.py" = ["S608"]
+# Fullwidth digits are the input under test (NFKC normalisation of MFA codes).
+"tests/test_mfa_code_normalization.py" = ["RUF001"]
 
 [tool.ruff.lint.pydocstyle]
 # Google style is what the tree already uses: a one-line summary, a blank line,

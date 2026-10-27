@@ -53,7 +53,7 @@ def _login(conn: sqlite3.Connection) -> Response:
 	request = Request({"type": "http", "method": "POST", "path": "/api/passkeys/login/finish", "headers": []})
 	response = Response()
 	payload = PasskeyLoginFinishRequest(credential={"id": _CREDENTIAL_ID})
-	passkeys.passkey_login_finish.__wrapped__(request, response, payload, conn)
+	passkeys.passkey_login_finish(request, response, payload, conn)
 	return response
 
 

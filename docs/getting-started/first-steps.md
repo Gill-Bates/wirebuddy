@@ -8,8 +8,9 @@ This guide takes a new installation from the first login to a working client.
 
 ## 1. Sign in and replace the temporary password
 
-On first startup WireBuddy creates an `admin` account and writes its random
-temporary password to the container log:
+On first startup WireBuddy creates an `admin` account and prints its random
+temporary password once to the console; it is not written to a file or the
+log. Read it from the container output:
 
 ```bash
 docker logs wirebuddy

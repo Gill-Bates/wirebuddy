@@ -252,6 +252,7 @@ _GLOBAL_SETTINGS_RECOVERY_KEYS = [
 	"gui_localhost_only",
 	"enable_status_page",
 	"enable_swagger",
+	"peer_stale_months",
 ]
 
 
@@ -283,7 +284,14 @@ def _normalize_recovery_value(key: str, value: str) -> str | None:
 		if not text.isdigit():
 			return None
 		keepalive = int(text)
-		return str(keepalive) if 0 <= keepalive <= 3600 else None
+		# Must match the API/UI limit (wireguard_settings.py), or a restored value cannot be re-saved.
+		return str(keepalive) if 0 <= keepalive <= 600 else None
+
+	if key == "peer_stale_months":
+		if not (text.isascii() and text.isdigit()):
+			return None
+		months = int(text)
+		return str(months) if PEER_STALE_MONTHS_MIN <= months <= PEER_STALE_MONTHS_MAX else None
 
 	if key in {"wg_use_psk", "gui_localhost_only", "enable_status_page", "enable_swagger"}:
 		return _normalize_bool(text)
@@ -408,10 +416,31 @@ def recover_missing_global_settings(
 	return updated
 
 
+DEFAULT_PEER_STALE_MONTHS = 6
+PEER_STALE_MONTHS_MIN = 1
+PEER_STALE_MONTHS_MAX = 120
+
+
+def get_peer_stale_months(conn: sqlite3.Connection) -> int:
+	"""Return the stale threshold in months; invalid or missing values fall back to the default."""
+	raw = get_setting(conn, "peer_stale_months")
+	try:
+		months = int(str(raw).strip())
+	except (TypeError, ValueError):
+		return DEFAULT_PEER_STALE_MONTHS
+	if PEER_STALE_MONTHS_MIN <= months <= PEER_STALE_MONTHS_MAX:
+		return months
+	return DEFAULT_PEER_STALE_MONTHS
+
+
 DNS_LOG_RETENTION_OPTIONS = _RETENTION_OPTIONS
 DEFAULT_DNS_LOG_RETENTION_DAYS = 7
 
-TSDB_RETENTION_OPTIONS = _RETENTION_OPTIONS
+# TSDB has no keep-nothing mode: the storage layer coerces anything below 1 day
+# to 1 (MIN_RETENTION_DAYS), so 0 would be accepted at the setting and silently
+# become 1. Exclude 0 here; the API validator imports this tuple, so the
+# narrowing rejects 0 without an API-layer edit. (DNS log and speedtest keep 0.)
+TSDB_RETENTION_OPTIONS = (7, 30, 90, 180, 365)
 DEFAULT_TSDB_RETENTION_DAYS = 7
 
 # Speedtest data retention (longer default since data is sparse)

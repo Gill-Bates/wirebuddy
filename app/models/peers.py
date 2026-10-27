@@ -257,9 +257,15 @@ class PeerCreate(BaseModel):
 
 	@model_validator(mode="after")
 	def validate_key_consistency(self):
-		"""Ensure key fields are used consistently."""
-		if self.public_key and self.private_key:
-			raise ValueError("Provide either public_key or private_key, not both")
+		"""Require both keys together or neither, matching the create endpoint.
+
+		The endpoint imports an existing keypair when both are given, rejects a
+		lone key, and generates a fresh pair when neither is given. Rejecting
+		the both-set case here made keypair import impossible before the
+		endpoint ever ran. preshared_key stays independent.
+		"""
+		if bool(self.public_key) != bool(self.private_key):
+			raise ValueError("Provide both private and public key, or neither")
 		return self
 
 	@model_validator(mode="after")

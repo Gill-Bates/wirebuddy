@@ -185,7 +185,7 @@ def test_confirm_endpoint_with_stale_user_row_returns_409_and_keeps_state(conn, 
 	request = Request({"type": "http", "method": "POST", "path": "/api/auth/me/otp/confirm", "headers": [], "query_string": b"", "client": ("127.0.0.1", 1)})
 	payload = auth_api.OTPConfirmRequest(code=pyotp.TOTP(secret).now())
 	with pytest.raises(HTTPException) as exc:
-		auth_api.confirm_my_otp_setup.__wrapped__(request, Response(), payload, conn, stale_user)
+		auth_api.confirm_my_otp_setup(request, Response(), payload, conn, stale_user)
 
 	assert exc.value.status_code == 409
 	assert get_user_by_id(conn, 1)["otp_recovery_codes"] == "codes-first"

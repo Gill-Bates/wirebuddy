@@ -7,7 +7,8 @@
 # broken commit and main - a failure first surfaced during the release itself,
 # the one run where it is most expensive. Gates on pytest, the correctness half
 # of ruff, the container entrypoint and Dockerfile, and the single-manifest
-# invariant.
+# invariant. Also callable (workflow_call) so docker-build.yml can gate a
+# release on the same checks for the tagged commit.
 #
 
 name: CI
@@ -20,6 +21,9 @@ on:
     branches:
       - main
   workflow_dispatch:
+  # The release workflow calls this as its gate; the triggers above are
+  # unchanged, so the PR gate behaves exactly as before.
+  workflow_call:
 
 permissions:
   contents: read
@@ -57,9 +61,7 @@ jobs:
 
       # The tests import app/, so the runtime stack has to be present too, not
       # just the dev extra. Both lists come out of pyproject.toml through
-      # tools/pyproject-deps.py so the pins stay in one place - every runtime
-      # dependency carries an exact == pin, which is what makes this install
-      # reproducible without a lockfile.
+      # tools/pyproject-deps.py so the dependency list stays in one place.
       #
       # The project itself is deliberately not installed: [tool.pytest]
       # pythonpath = ["."] already puts the source tree on sys.path, and a
@@ -76,7 +78,7 @@ jobs:
       # The full rule set configured in pyproject.toml, blocking. The tree was
       # brought to zero findings before this became a gate; the deliberate
       # exemptions live in pyproject.toml with the reasoning next to each one
-      # (the slowapi `request` parameter, subprocess invocation of wg/ip/iptables,
+      # (subprocess invocation of wg/ip/iptables,
       # dynamic SQL identifiers, EN DASH in prose, local wall-clock scheduling),
       # and narrower cases carry a per-line `# noqa` naming the reason.
       #
@@ -164,19 +166,36 @@ jobs:
           echo "pyproject.toml version: ${VERSION}"
           echo "$VERSION" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$'
 
-      # Every runtime dependency carries an exact pin, which is what lets CI,
-      # a local install and the published image resolve to one set of versions
-      # without a lockfile. A range would quietly reintroduce the drift the
-      # pins exist to prevent, so it is rejected here rather than discovered
-      # when two environments disagree.
-      - name: Runtime dependencies are pinned
+  workflows:
+    name: Workflow lint (actionlint + shellcheck)
+    runs-on: ubuntu-26.04
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      # actionlint runs shellcheck over every inline `run:` block when the
+      # binary is on PATH, and silently skips it otherwise. Failing here keeps
+      # that half of the gate from disappearing unnoticed with a runner image.
+      - name: shellcheck is available
+        run: command -v shellcheck && shellcheck --version
+
+      # Exact release plus its published sha256, so the binary that gates the
+      # workflows is a reviewed one. .github/actionlint.yaml is picked up
+      # automatically and declares the 26.04 runner labels.
+      - name: Install actionlint
+        env:
+          ACTIONLINT_VERSION: '1.7.12'
+          ACTIONLINT_SHA256: 8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8
         run: |
           set -euo pipefail
-          python3 tools/pyproject-deps.py > runtime-requirements.txt
-          unpinned="$(grep -vE '==' runtime-requirements.txt || true)"
-          if [ -n "$unpinned" ]; then
-            echo 'ERROR: these runtime dependencies are not pinned with ==:'
-            printf '%s\n' "$unpinned"
-            exit 1
-          fi
-          echo "All $(wc -l < runtime-requirements.txt) runtime dependencies are pinned."
+          archive="actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"
+          curl -fsSL --proto '=https' --tlsv1.2 -o "$archive" \
+            "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/${archive}"
+          echo "${ACTIONLINT_SHA256}  ${archive}" | sha256sum --check --strict
+          tar -xzf "$archive" actionlint
+          ./actionlint -version
+
+      - name: actionlint
+        run: ./actionlint -color

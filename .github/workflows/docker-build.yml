@@ -17,8 +17,19 @@ env:
   REGISTRY: docker.io
 
 jobs:
+  # Release gate: the same checks the PR gate runs, on the tagged commit. The
+  # main-ancestry check in meta only proves the commit is on main, not that CI
+  # for it finished green - a tag pushed right after the merge could otherwise
+  # start publishing while CI was still running.
+  ci:
+    name: CI gate
+    uses: ./.github/workflows/ci.yml
+    permissions:
+      contents: read
+
   meta:
     name: Validate build metadata
+    needs: ci
     # Named, not ubuntu-latest, and on 26.04 ahead of the migration
     # (actions/runner-images#14748: x64 only, rolled out 2026-10-19 to
     # 2026-11-19) - weeks in which two runs of one tag could disagree about the
@@ -382,9 +393,10 @@ jobs:
             image_suffix: arm64
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 60
+    # No actions: write. The gha cache backend authenticates with the runner's
+    # cache token (ACTIONS_RUNTIME_TOKEN), not with GITHUB_TOKEN.
     permissions:
       contents: read
-      actions: write
 
     steps:
       - name: Checkout repository
@@ -397,7 +409,10 @@ jobs:
         with:
           cache-binary: false
 
-      - name: Log in to Docker Hub
+      # Logged in only for the authenticated base-image pull during the build and
+      # again right before the push; the third-party Trivy action runs in
+      # between with no registry credentials on the runner.
+      - name: Log in to Docker Hub (build)
         uses: docker/login-action@v4
         with:
           registry: ${{ env.REGISTRY }}
@@ -428,6 +443,9 @@ jobs:
             -t "${{ matrix.test_image }}" \
             -f docker/Dockerfile \
             .
+
+      - name: Log out of Docker Hub
+        run: docker logout
 
       - name: Smoke test (Master mode)
         run: |
@@ -554,16 +572,22 @@ jobs:
       - name: Trivy vulnerability scan
         # Pinned to an immutable commit SHA, not a mutable ref. In March 2026
         # (GHSA-69fq-xp46-6x23) an attacker force-pushed 76 of 77 trivy-action
-        # tags to a credential-stealing commit; this step runs after the Docker
-        # Hub login, so a compromised action would see those credentials.
+        # tags to a credential-stealing commit; this step runs between the two
+        # Docker Hub logins, so a compromised action sees no credentials.
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           cache: 'false'
           image-ref: '${{ matrix.test_image }}'
+          # Trivy itself floats to the newest release on purpose; the action stays
+          # SHA-pinned (Renovate bumps it) and runs with no registry credentials.
+          version: 'latest'
           format: 'json'
           output: 'trivy-${{ matrix.image_suffix }}.json'
           exit-code: '1'
           ignore-unfixed: true
+          # Vulnerabilities only. No gate owns secret/misconfig scanning yet
+          # (open gap, would be a Trivy fs job in ci.yml).
+          scanners: 'vuln'
           vuln-type: 'os,library'
           severity: 'CRITICAL,HIGH'
           timeout: '10m'
@@ -608,6 +632,13 @@ jobs:
           path: trivy-${{ matrix.image_suffix }}.json
           retention-days: 14
           if-no-files-found: warn
+
+      - name: Log in to Docker Hub (push)
+        uses: docker/login-action@v4
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
 
       - name: Push arch-specific image
         run: |

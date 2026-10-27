@@ -684,43 +684,68 @@ def resolve_country_from_url(url: str, *, timeout: float | None = None) -> str |
 	"""
 	if not url:
 		return None
+	hostname = _parse_resolvable_hostname(url)
+	if hostname is None:
+		return None
 	try:
-		hostname = urlparse(url).hostname
-		if not hostname:
-			return None
-		hostname = hostname.rstrip(".").lower()
-		if len(hostname) > 253 or not _HOSTNAME_RE.fullmatch(hostname):
-			return None
-		if "." not in hostname:
-			return None
-
 		future = _DNS_LOOKUP_EXECUTOR.submit(_resolve_hostname_addrinfo, hostname)
 		try:
 			addrinfo = future.result(timeout=timeout)
 		except FutureTimeoutError:
 			_log.warning("GeoIP DNS resolution for %s timed out after %.1fs", hostname, timeout)
 			return None
-
-		if not addrinfo:
-			return None
-		seen_ips: set[str] = set()
-		for entry in addrinfo:
-			ip = entry[4][0]
-			if ip in seen_ips:
-				continue
-			seen_ips.add(ip)
-			if not _public_ip(ip):
-				continue
-			geo = geolocate_ip(ip)
-			if geo and geo.get("country"):
-				return str(geo["country"]).lower()
-		return None
+		return _country_from_addrinfo(addrinfo)
 	except Exception:
 		return None
 
 
+def _parse_resolvable_hostname(url: str) -> str | None:
+	"""Extract and validate the hostname to resolve, or ``None`` if unusable."""
+	try:
+		hostname = urlparse(url).hostname
+	except ValueError:
+		return None
+	if not hostname:
+		return None
+	hostname = hostname.rstrip(".").lower()
+	if len(hostname) > 253 or not _HOSTNAME_RE.fullmatch(hostname):
+		return None
+	if "." not in hostname:
+		return None
+	return hostname
+
+
+def _country_from_addrinfo(addrinfo: list[tuple]) -> str | None:
+	"""Resolve the first public address in ``addrinfo`` to an ISO country code."""
+	if not addrinfo:
+		return None
+	seen_ips: set[str] = set()
+	for entry in addrinfo:
+		ip = entry[4][0]
+		if ip in seen_ips:
+			continue
+		seen_ips.add(ip)
+		if not _public_ip(ip):
+			continue
+		geo = geolocate_ip(ip)
+		if geo and geo.get("country"):
+			return str(geo["country"]).lower()
+	return None
+
+
 async def resolve_country_from_url_async(url: str) -> str | None:
-	"""Async wrapper that isolates blocking DNS resolution in a worker thread."""
+	"""Async wrapper that isolates blocking DNS resolution in a worker thread.
+
+	The resolver runs in the dedicated, size-limited ``_DNS_LOOKUP_EXECUTOR``
+	(not via ``asyncio.to_thread``), so a slow ``getaddrinfo()`` can only pin a
+	thread in that isolated pool and never touches the global default executor.
+	"""
+	if not url:
+		return None
+	hostname = _parse_resolvable_hostname(url)
+	if hostname is None:
+		return None
+
 	loop = asyncio.get_running_loop()
 	sem = getattr(loop, "_wirebuddy_geoip_dns_semaphore", None)
 	if sem is None:
@@ -731,28 +756,35 @@ async def resolve_country_from_url_async(url: str) -> str | None:
 	except TimeoutError:
 		return None
 
-	worker = asyncio.create_task(asyncio.to_thread(resolve_country_from_url, url))
+	# Submit to the dedicated executor and await its concurrent.futures.Future
+	# directly. No asyncio.to_thread() hop means no global-pool worker is ever
+	# involved, so a hung resolver cannot pin a thread outside this pool.
+	concurrent_future = _DNS_LOOKUP_EXECUTOR.submit(_resolve_hostname_addrinfo, hostname)
+	worker = asyncio.wrap_future(concurrent_future)
 
-	def _release_when_done(task: asyncio.Task) -> None:
-		# Consume a late exception so a timed-out resolver cannot produce an
-		# unhandled-task warning.  The resolver normally catches its own errors.
-		with suppress(asyncio.CancelledError, Exception):
-			task.exception()
+	def _release_when_done(_fut: object) -> None:
+		# wrap_future's cancellation does not stop the underlying executor work;
+		# release the slot only once the dedicated-executor future itself has
+		# actually finished, so a slow resolver cannot create unbounded
+		# concurrent lookups.
 		sem.release()
 
 	try:
-		result = await asyncio.wait_for(asyncio.shield(worker), timeout=3.0)
+		addrinfo = await asyncio.wait_for(asyncio.shield(worker), timeout=3.0)
 	except TimeoutError:
-		# wait_for() must not release the slot while the DNS thread is still
-		# running; otherwise slow DNS can create unbounded concurrent lookups.
-		worker.add_done_callback(_release_when_done)
+		# The resolver is still running in the dedicated executor; defer the
+		# slot release until it finishes so the pool stays bounded.
+		concurrent_future.add_done_callback(_release_when_done)
 		return None
 	except asyncio.CancelledError:
-		worker.add_done_callback(_release_when_done)
+		concurrent_future.add_done_callback(_release_when_done)
 		raise
 	except Exception:
 		sem.release()
 		return None
 	else:
 		sem.release()
-		return result
+		try:
+			return _country_from_addrinfo(addrinfo)
+		except Exception:
+			return None

@@ -15,6 +15,7 @@ from pathlib import Path
 
 import pytest
 from fastapi import Request, Response
+from starlette.types import Receive, Scope, Send
 
 from app.main import (
 	_DNS_INGESTION_MAX_BACKOFF_EXPONENT,
@@ -53,7 +54,11 @@ def test_request_id_is_server_generated_and_external_value_is_separate():
 			"http_version": "1.1",
 		}
 	)
-	middleware = RequestIDMiddleware(lambda scope, receive, send: None)
+
+	async def dummy_app(scope: Scope, receive: Receive, send: Send) -> None:
+		pass
+
+	middleware = RequestIDMiddleware(dummy_app)
 
 	async def call_next(req: Request) -> Response:
 		assert req.state.request_id != "client-chosen-id"

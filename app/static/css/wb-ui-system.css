@@ -12,9 +12,6 @@
     --wb-space-3: 24px;
     --wb-space-4: 32px;
 
-    /* Layout: Footer height for padding calculations (set via JS if dynamic) */
-    --wb-footer-height: 48px;
-
     /* Typography */
     --wb-font-base: 0.875rem;
 
@@ -373,6 +370,22 @@ small {
 /* Multi-line textareas must grow freely */
 textarea.form-control {
     height: auto;
+}
+
+/* iOS Safari zooms into any focused text control below 16px and stays zoomed.
+   Touch devices therefore get 16px; desktop keeps the compact size. */
+@media (pointer: coarse) {
+    input:not([type="checkbox"], [type="radio"], [type="range"], [type="hidden"], [type="submit"], [type="button"], [type="color"], [type="file"]),
+    select,
+    textarea,
+    .form-control,
+    .form-control-sm,
+    .form-select,
+    .form-select-sm,
+    .input-group-sm > .form-control,
+    .input-group-sm > .form-select {
+        font-size: 16px;
+    }
 }
 
 summary {

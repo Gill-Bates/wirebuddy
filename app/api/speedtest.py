@@ -43,7 +43,7 @@ from ..speedtest import (
 from ..speedtest.tester import ProgressCallback, ProgressEvent, run_speedtest
 from ..utils.config import Config
 from ..utils.deps import get_config, get_conn
-from ..utils.rate_limit import RATE_LIMIT_CRITICAL, RATE_LIMIT_HEAVY, RATE_LIMIT_UI_HEAVY, limiter
+from ..utils.rate_limit import RATE_LIMIT_CRITICAL, RATE_LIMIT_HEAVY, RATE_LIMIT_UI_HEAVY, rate_limit
 from ..utils.time import utcnow
 from ..utils.tsdb_helpers import build_latest_by_node
 from .auth import get_current_user, require_admin
@@ -339,8 +339,7 @@ async def get_speedtest_settings(
 	)
 
 
-@router.patch("/speedtest/settings")
-@limiter.limit(RATE_LIMIT_HEAVY)
+@router.patch("/speedtest/settings", dependencies=[Depends(rate_limit(RATE_LIMIT_HEAVY))])
 async def update_speedtest_settings(
 	request: Request,
 	payload: SpeedtestSettingsPayload,
@@ -447,8 +446,7 @@ async def _run_speedtest_core(
 	return result or {"status": "error", "reason": "Invalid result type"}, stored
 
 
-@router.post("/speedtest/run")
-@limiter.limit(RATE_LIMIT_HEAVY)
+@router.post("/speedtest/run", dependencies=[Depends(rate_limit(RATE_LIMIT_HEAVY))])
 async def trigger_speedtest(
 	request: Request,
 	_: sqlite3.Row = Depends(require_admin),
@@ -469,8 +467,7 @@ async def trigger_speedtest(
 	return ok_response(data={"stream_id": session.stream_id})
 
 
-@router.get("/speedtest/run/stream/{stream_id}")
-@limiter.limit(RATE_LIMIT_UI_HEAVY)
+@router.get("/speedtest/run/stream/{stream_id}", dependencies=[Depends(rate_limit(RATE_LIMIT_UI_HEAVY))])
 async def trigger_speedtest_stream(
 	stream_id: str,
 	request: Request,
@@ -508,8 +505,7 @@ async def trigger_speedtest_stream(
 	)
 
 
-@router.get("/speedtest/history")
-@limiter.limit(RATE_LIMIT_UI_HEAVY)
+@router.get("/speedtest/history", dependencies=[Depends(rate_limit(RATE_LIMIT_UI_HEAVY))])
 async def get_speedtest_history(
 	request: Request,
 	range_key: str | None = Query(None, pattern="^(6h|24h|7d|30d|90d|180d|y1)$"),
@@ -521,7 +517,7 @@ async def get_speedtest_history(
 	"""Get speedtest history data for charting.
 
 	Args:
-		request: Incoming request; the rate limiter resolves its key from it
+		request: Incoming request (used to resolve the app config)
 		range_key: Time range preset (6h, 24h, 7d, 30d, 90d, 180d, y1)
 		limit: Maximum number of points to return
 		node_id: Filter results — null or empty = master only, 'all' = all remote nodes (master excluded), otherwise specific node
@@ -712,8 +708,7 @@ async def get_speedtest_storage_stats(
 	)
 
 
-@router.patch("/speedtest/storage/retention")
-@limiter.limit(RATE_LIMIT_HEAVY)
+@router.patch("/speedtest/storage/retention", dependencies=[Depends(rate_limit(RATE_LIMIT_HEAVY))])
 async def update_speedtest_retention(
 	request: Request,
 	payload: SpeedtestRetentionPayload,
@@ -740,8 +735,7 @@ async def update_speedtest_retention(
 	)
 
 
-@router.delete("/speedtest/storage")
-@limiter.limit(RATE_LIMIT_CRITICAL)
+@router.delete("/speedtest/storage", dependencies=[Depends(rate_limit(RATE_LIMIT_CRITICAL))])
 async def purge_speedtest_data(
 	request: Request,
 	_: sqlite3.Row = Depends(require_admin),

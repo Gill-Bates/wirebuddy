@@ -46,8 +46,13 @@ Node daemon synchronization routes under /api/nodes/* (for example enroll,
 heartbeat, config/events sync, node speedtest submit/progress) use dedicated
 node authentication:
 
-- Authorization: Bearer <node_api_secret>
-- X-Client-Cert-Fingerprint header
+- `POST /api/nodes/enroll` is authenticated by a signed enrollment token
+  and the node's self-signed certificate.
+- All later sync requests require `Authorization: Bearer <node_api_secret>`.
+- The `X-Client-Cert-Fingerprint` header is only evaluated when it comes from a
+  proxy listed in `WIREBUDDY_TRUSTED_PROXIES` (no proxy is trusted by default
+  for this header). Then it must match the fingerprint stored at enrollment;
+  otherwise it is ignored and the Bearer secret is the only credential.
 
 This is separate from user session auth.
 

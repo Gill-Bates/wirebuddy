@@ -25,7 +25,9 @@ chmod 600 .env
 
 ## Replace the Bootstrap Password
 
-On first startup, retrieve the generated temporary password from the log:
+On first startup, the generated temporary password is printed once to the
+console (stdout), outside the normal log handlers, and is never stored. Read it
+from the container output:
 
 ```bash
 docker compose --env-file .env -f docker/docker-compose.yml logs wirebuddy

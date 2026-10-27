@@ -5,15 +5,15 @@
 
 import { registerCaptureComponent } from './component-registry.mjs';
 
-registerCaptureComponent({ selector: '.wb-kpi-card', type: 'kpi' });
+registerCaptureComponent({ selector: '.wb-kpi-card, .dashboard-kpi-card', type: 'kpi' });
 
-export async function captureKpiCards(page, viewName, screenshotDir, { selector = '.wb-kpi-card' } = {}) {
+export async function captureKpiCards(page, viewName, screenshotDir, { selector = '.wb-kpi-card, .dashboard-kpi-card' } = {}) {
     const cards = await page.$$(selector);
     const paths = [];
 
-    for (let i = 0; i < cards.length; i += 1) {
-        const card = cards[i];
-        const pathOut = `${screenshotDir}/${viewName.replace(/[^a-z0-9-_]+/gi, '_').toLowerCase()}-kpi-${i}.png`;
+    for (const card of cards) {
+        if (!(await card.isVisible())) continue;
+        const pathOut = `${screenshotDir}/${viewName.replace(/[^a-z0-9-_]+/gi, '_').toLowerCase()}-kpi-${paths.length}.png`;
         await card.screenshot({ path: pathOut });
         paths.push(pathOut);
     }

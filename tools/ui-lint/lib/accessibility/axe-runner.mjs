@@ -3,11 +3,12 @@
 // Copyright (C) 2026 Gill-Bates http://github.com/Gill-Bates
 //
 
+import { loadDep } from '../deps.mjs';
 import { normalizeAccessibilityFinding } from './violation-normalizer.mjs';
 
 export async function runAxeAudit(page) {
     try {
-        const { default: AxeBuilder } = await import('@axe-core/playwright');
+        const { default: AxeBuilder } = await loadDep('@axe-core/playwright');
         const axeResults = await new AxeBuilder({ page })
             .withTags(['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa', 'best-practice'])
             .analyze();

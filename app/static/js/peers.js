@@ -444,6 +444,27 @@ if (!peersApp) {
         }
     }
 
+    // Badge state comes only from the server-computed is_stale flag.
+    function syncStaleBadge(container, isStale, anchorSelector) {
+        if (!container) return;
+        const existing = container.querySelector('.peer-stale-badge');
+        if (!isStale) {
+            existing?.remove();
+            return;
+        }
+        if (existing) return;
+        const badge = document.createElement('span');
+        badge.className = 'badge bg-warning text-dark peer-stale-badge';
+        badge.setAttribute('role', 'status');
+        badge.textContent = 'Stale';
+        const anchor = container.querySelector(anchorSelector);
+        if (anchor) {
+            anchor.after(badge);
+        } else {
+            container.appendChild(badge);
+        }
+    }
+
     function updateLastSeenDisplay(row, epochSeconds) {
         const lastSeenCell = row.querySelector('.peer-last-seen');
         const connectionBadges = row.querySelectorAll('.peer-connection-badge-mobile');
@@ -604,6 +625,7 @@ if (!peersApp) {
         enabledBadge.setAttribute('role', 'status');
         enabledBadge.textContent = peer.is_enabled ? 'Enabled' : 'Disabled';
         tdStatus.append(connBadge, enabledBadge);
+        syncStaleBadge(tdStatus, peer.is_stale === true, '.peer-connection-badge');
 
         const tdActions = document.createElement('td');
         tdActions.className = 'peer-actions-cell';
@@ -695,6 +717,7 @@ if (!peersApp) {
         enabledBadge.setAttribute('role', 'status');
         enabledBadge.textContent = peer.is_enabled ? 'Enabled' : 'Disabled';
         status.appendChild(enabledBadge);
+        syncStaleBadge(status, peer.is_stale === true, '.peer-card-online-badge');
 
         header.append(identity, status);
 
@@ -1231,6 +1254,11 @@ if (!peersApp) {
                     ? updateLastSeenCache(peerId, liveHandshake)
                     : toEpochSeconds(state.lastSeenCache.get(peerId));
                 const rel = updateLastSeenDisplay(row, cachedHandshake);
+                const card = document.querySelector(`#peer-card-list .peer-card[data-peer-id="${peerId}"]`);
+                if (typeof stats.is_stale === 'boolean') {
+                    syncStaleBadge(row.querySelector('.peer-status-cell'), stats.is_stale, '.peer-connection-badge');
+                    syncStaleBadge(card?.querySelector('.peer-card-status'), stats.is_stale, '.peer-card-online-badge');
+                }
 
                 const liveEndpointIp = String(stats.endpoint_ip || parseEndpointIp(stats.endpoint || '') || '').trim();
                 updatePeerSeenCache(
@@ -1257,7 +1285,6 @@ if (!peersApp) {
                 if (clientIpCell) {
                     updateClientIpCell(clientIpCell, endpointIp, country, city, asOrg);
                 }
-                const card = document.querySelector(`#peer-card-list .peer-card[data-peer-id="${peerId}"]`);
                 syncPeerCardLiveState(card, rel);
                 updateRowSearchText(row);
                 if (card) updateRowSearchText(card);
@@ -1661,6 +1688,7 @@ if (!peersApp) {
             e.preventDefault();
 
             const submitBtn = document.getElementById('add-peer-submit-btn');
+            if (submitBtn.disabled) return;
             const submitText = submitBtn.querySelector('.submit-text');
             const submitSpinner = submitBtn.querySelector('.spinner-border');
             const peerNameInput = document.getElementById('peer-name');
@@ -1746,6 +1774,7 @@ if (!peersApp) {
             e.preventDefault();
 
             const submitBtn = document.getElementById('edit-peer-submit-btn');
+            if (submitBtn.disabled) return;
             const submitText = submitBtn.querySelector('.submit-text');
             const submitSpinner = submitBtn.querySelector('.spinner-border');
             const peerId = Number(document.getElementById('edit-peer-id').value);

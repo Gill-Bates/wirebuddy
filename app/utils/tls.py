@@ -22,7 +22,7 @@ exclusively here.
 
 from __future__ import annotations
 
-import datetime as _dt
+import datetime as dt
 import ipaddress
 import logging
 import os
@@ -51,8 +51,8 @@ __all__ = [
 SELFSIGNED_DIRNAME = "_selfsigned"
 
 # Regenerate the self-signed certificate once it has less than this left.
-_SELFSIGNED_RENEW_BEFORE = _dt.timedelta(days=30)
-_SELFSIGNED_VALIDITY = _dt.timedelta(days=825)
+_SELFSIGNED_RENEW_BEFORE = dt.timedelta(days=30)
+_SELFSIGNED_VALIDITY = dt.timedelta(days=825)
 
 # A hostname doubles as a directory name under ``certs_dir``, so only a plain
 # label sequence is accepted: an absolute path or an embedded separator would
@@ -71,14 +71,14 @@ class TlsMaterial:
 	keyfile: Path
 	source: str  # "letsencrypt" | "self-signed"
 	domain: str
-	expires_at: _dt.datetime | None = None
+	expires_at: dt.datetime | None = None
 
 	@property
 	def is_self_signed(self) -> bool:
 		return self.source == "self-signed"
 
 
-def load_certificate_expiry(cert_path: Path) -> _dt.datetime | None:
+def load_certificate_expiry(cert_path: Path) -> dt.datetime | None:
 	"""Return the notAfter timestamp of a PEM certificate, or None."""
 	try:
 		data = cert_path.read_bytes()
@@ -92,7 +92,7 @@ def load_certificate_expiry(cert_path: Path) -> _dt.datetime | None:
 	try:
 		return cert.not_valid_after_utc
 	except AttributeError:  # cryptography < 42
-		return cert.not_valid_after.replace(tzinfo=_dt.UTC)
+		return cert.not_valid_after.replace(tzinfo=dt.UTC)
 
 
 def normalize_hostname(fqdn: str | None) -> str:
@@ -153,7 +153,7 @@ def _letsencrypt_material(certs_dir: Path, domain: str) -> TlsMaterial | None:
 		return None
 
 	expires_at = load_certificate_expiry(certfile)
-	now = _dt.datetime.now(_dt.UTC)
+	now = dt.datetime.now(dt.UTC)
 	if expires_at is None:
 		# Unparseable: the listener would fail to start on it, so treat it as
 		# absent instead of handing it out as valid material.
@@ -231,7 +231,7 @@ def ensure_self_signed_cert(certs_dir: Path, hostname: str) -> TlsMaterial:
 		)
 
 	target_dir.mkdir(parents=True, exist_ok=True)
-	now = _dt.datetime.now(_dt.UTC)
+	now = dt.datetime.now(dt.UTC)
 	key = ec.generate_private_key(ec.SECP256R1())
 	subject = x509.Name(
 		[
@@ -245,7 +245,7 @@ def ensure_self_signed_cert(certs_dir: Path, hostname: str) -> TlsMaterial:
 		.issuer_name(subject)
 		.public_key(key.public_key())
 		.serial_number(x509.random_serial_number())
-		.not_valid_before(now - _dt.timedelta(minutes=5))
+		.not_valid_before(now - dt.timedelta(minutes=5))
 		.not_valid_after(now + _SELFSIGNED_VALIDITY)
 		.add_extension(x509.SubjectAlternativeName(_san_entries(hostname)), critical=False)
 		.add_extension(x509.BasicConstraints(ca=False, path_length=None), critical=True)
@@ -290,7 +290,7 @@ def _self_signed_is_usable(certfile: Path, keyfile: Path, hostname: str) -> bool
 	expires_at = load_certificate_expiry(certfile)
 	if expires_at is None:
 		return False
-	if expires_at - _dt.datetime.now(_dt.UTC) < _SELFSIGNED_RENEW_BEFORE:
+	if expires_at - dt.datetime.now(dt.UTC) < _SELFSIGNED_RENEW_BEFORE:
 		_log.info("TLS_SELFSIGNED_STALE expires_at=%s - regenerating", expires_at.isoformat())
 		return False
 

@@ -87,8 +87,8 @@ never use a wildcard. Incorrect trust can let clients spoof addresses used by
 rate limiting, audit logs, secure-cookie decisions, or status-page access.
 
 `WIREBUDDY_ALLOWED_HOSTS` can add Host-header validation. The public status page
-has a separate trusted-proxy setting and is intended only for WireGuard-internal
-clients.
+uses the same variable, but with its own trust rules (loopback plus the
+configured CIDRs) and is intended only for WireGuard-internal clients.
 
 ## Rate limiting and lockout
 
@@ -138,8 +138,8 @@ ports with the host and upstream firewalls.
 
 ## Operational controls
 
-- The temporary bootstrap admin password is logged once and must be changed at
-  first login.
+- The temporary bootstrap admin password is printed once to the console, never
+  logged or stored, and must be changed at first login.
 - Swagger is disabled unless enabled under **Settings → General** and remains
   admin-authenticated.
 - Login, MFA, passkey, password, user, peer, interface, and settings actions

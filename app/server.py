@@ -298,7 +298,12 @@ def main(host: str | None = None, port: int | None = None, graceful_timeout: int
 		"true",
 		"yes",
 	)
-	proxy_allow_ips = os.environ.get("WIREBUDDY_TRUSTED_PROXIES", "127.0.0.1,::1").strip() or "127.0.0.1,::1"
+	# Single source of truth: uvicorn's forwarded-allow-ips come from the same
+	# parsed Config.trusted_proxies that resolve_client_ip() trusts, so the two
+	# proxy-trust boundaries can no longer diverge (e.g. uvicorn rejecting a peer
+	# the app would still trust). Fall back to loopback only if parsing yielded
+	# nothing.
+	proxy_allow_ips = ",".join(str(network) for network in cfg.trusted_proxies) or "127.0.0.1,::1"
 	public_origin = os.environ.get("WIREBUDDY_PUBLIC_ORIGIN", "").strip()
 	if not public_origin and wg_fqdn:
 		# The database FQDN is an explicit administrator setting and is safe to
@@ -312,6 +317,8 @@ def main(host: str | None = None, port: int | None = None, graceful_timeout: int
 		acme_http_port = 0
 
 	_record_listener_state("https" if ssl_certfile else "http", bind_host, gui_port)
+	# Read by create_app() to judge how exposed the unvalidated Host header is.
+	os.environ["WIREBUDDY_BIND_HOST"] = bind_host
 
 	if ssl_certfile and not reload_enabled and acme_http_port > 0:
 		# HTTPS mode: run the TLS listener plus a plaintext ACME/redirect
