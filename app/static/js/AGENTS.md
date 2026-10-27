@@ -9,7 +9,7 @@ First-party browser JavaScript, written as classic scripts (IIFEs attaching to `
 | File | Description |
 |------|-------------|
 | `api.js` | Fetch wrapper `apiCall` (CSRF, error handling) used by every page |
-| `theme.js` | Light/dark theme init with safe localStorage (iOS private mode) |
+| `theme.js` | Three-state theme (auto default, light, dark) with safe localStorage (iOS private mode); `data-bs-theme` carries the resolved value, `data-wb-theme-mode` the chosen mode; auto follows OS changes live |
 | `ui-state.js` | show/hide/state helpers exposed on window |
 | `modal.js`, `toast.js` | Modal and toast helpers |
 | `reconnect.js` | `WBReconnect`: server-restart/connection-loss overlay and polling |

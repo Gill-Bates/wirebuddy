@@ -32,7 +32,8 @@
                         <th>Role</th>
                         <th>Status</th>
                         <th>Last Login</th>
-                        <th>Created</th>
+                        <th scope="col">Connection</th>
+                        <th data-col="created">Created</th>
                         <th class="user-actions-head" aria-hidden="true"></th>
                     </tr>
                 </thead>
@@ -147,14 +148,16 @@
                         </td>
                         <td data-label="Last Login">
                             {% if u['last_login_at'] %}
-                            <div class="last-login">
-                                <div class="login-time"><time datetime="{{ u['last_login_at']|utc_iso }}" data-wb-format="datetime">{{ u['last_login_at'].strftime('%Y-%m-%d %H:%M') }} UTC</time></div>
-                                {% if u['last_login_ip'] %}
-                                {{ geo_ip_stack(u['last_login_ip'], u['last_login_country_code'], u['last_login_city'], u['last_login_as_org']) }}
-                                {% endif %}
-                            </div>
+                            <div class="login-time"><time datetime="{{ u['last_login_at']|utc_iso }}" data-wb-format="datetime">{{ u['last_login_at'].strftime('%Y-%m-%d %H:%M') }} UTC</time></div>
                             {% else %}
                             <span class="text-muted">Never</span>
+                            {% endif %}
+                        </td>
+                        <td data-label="Connection" class="login-connection">
+                            {% if u['last_login_at'] and u['last_login_ip'] %}
+                            {{ geo_ip_stack(u['last_login_ip'], u['last_login_country_code'], u['last_login_city'], u['last_login_as_org']) }}
+                            {% else %}
+                            <span class="text-muted">—</span>
                             {% endif %}
                         </td>
                         <td data-label="Created"><time datetime="{{ u['created_at']|utc_iso }}" data-wb-format="date">{{ u['created_at'].strftime('%Y-%m-%d') }}</time></td>

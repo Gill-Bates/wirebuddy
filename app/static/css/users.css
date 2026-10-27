@@ -79,13 +79,7 @@
     vertical-align: middle;
 }
 
-/* Last Login structure (all viewports) */
-.last-login {
-    display: flex;
-    flex-direction: column;
-    gap: 2px;
-}
-
+/* Last Login / Connection cells (all viewports) */
 .geo-country-flag {
     width: 1rem;
     height: 0.75rem;
@@ -112,20 +106,29 @@
     display: inline-block;
 }
 
-.last-login .geo-ip-stack {
+/* Long IPv6 addresses wrap at their zero-width break points instead of widening the table. */
+.login-connection {
+    max-width: 12rem;
+}
+
+.login-connection code {
+    white-space: normal;
+}
+
+.login-connection .geo-ip-stack {
     display: flex;
     flex-direction: column;
     gap: 0.15rem;
 }
 
-.last-login .geo-ip-main {
+.login-connection .geo-ip-main {
     display: inline-flex;
     align-items: center;
     gap: 0.35rem;
     flex-wrap: wrap;
 }
 
-.last-login .geo-ip-meta {
+.login-connection .geo-ip-meta {
     display: flex;
     flex-wrap: wrap;
     gap: 0.25rem;
@@ -134,7 +137,7 @@
     color: var(--bs-secondary-color);
 }
 
-.last-login .geo-country-flag {
+.login-connection .geo-country-flag {
     width: 1rem;
     height: 0.75rem;
     border-radius: 2px;
@@ -143,11 +146,21 @@
     flex: 0 0 auto;
 }
 
-.last-login .geo-ip-meta .geo-meta-provider {
+.login-connection .geo-ip-meta .geo-meta-provider {
     max-width: 100%;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
+    overflow-wrap: anywhere;
+}
+
+/* Between the card breakpoint and xl the extra column needs room: wrap the timestamp, drop Created. */
+@media (992px <= width <= 1199.98px) {
+    .users-table .login-time {
+        white-space: normal;
+    }
+
+    .users-table th[data-col="created"],
+    .users-table td[data-label="Created"] {
+        display: none;
+    }
 }
 
 .users-mobile-geo-value {
@@ -242,6 +255,7 @@
     .users-table .wb-responsive-row>td[data-label="Role"],
     .users-table .wb-responsive-row>td[data-label="Status"],
     .users-table .wb-responsive-row>td[data-label="Last Login"],
+    .users-table .wb-responsive-row>td[data-label="Connection"],
     .users-table .wb-responsive-row>td[data-label="Created"] {
         display: none;
     }

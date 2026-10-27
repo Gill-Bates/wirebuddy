@@ -1,3 +1,10 @@
+## [1.7.1] - 2026-xx-xx
+
+- ``New`` The theme button now cycles through three modes: Auto (default, follows the system setting and switches live with it), Light and Dark.
+
+<details markdown="1">
+<summary>Previous versions...</summary>
+
 ## [1.7.0] - 2026-10-28
 
 - ``New`` The dashboard is customizable: drag and resize tiles, add or remove widgets, and reset to the default layout. Layouts are saved per user (existing ones migrate automatically and are included in backups); editing needs a viewport of 992 px or more.
@@ -16,9 +23,6 @@
 - ``Security`` Peer enable/disable/migrate and client isolation now fail closed: if a change cannot be applied to the live interface or firewall, the request fails and the stored state is rolled back.
 - ``Security`` Regenerating a node's token now fully re-enrolls it: the old tunnel peer is removed from the live interface and config, stale control commands are purged, and the node's event stream is closed.
 - ``Security`` Rate limiting is counted before authentication and IPv6 clients share one counter per /64; Unbound now runs from fixed absolute paths with locked-down config permissions.
-
-<details markdown="1">
-<summary>Previous versions...</summary>
 
 ## [1.6.2] - 2026-10-01
 

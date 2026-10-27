@@ -61,6 +61,7 @@
     let fitting = false; // true while fit-driven updates run: they are not user layout changes
     let applyingLayout = false;
     let editingNow = false;
+    let slotLayer = null; // edit-mode layer of empty-cell placeholders, created on first edit
 
     function widgetElement(id) {
         return document.querySelector(`.grid-stack-item[data-widget-id="${id}"]`);
@@ -276,9 +277,42 @@
         }
     }
 
+    // Edit mode shows every grid cell as an empty dashed slot (styled in css/pages/dashboard.css). The
+    // layer holds one slot per cell for the current grid height and is emptied again outside edit mode.
+    function syncSlots() {
+        if (!editingNow || !slotLayer) return;
+        const wanted = Math.max(0, Math.round($('wb-dashboard-grid').clientHeight / CELL_HEIGHT)) * grid.getColumn();
+        while (slotLayer.childElementCount > wanted) slotLayer.lastElementChild.remove();
+        const missing = wanted - slotLayer.childElementCount;
+        if (missing <= 0) return;
+        const slots = document.createDocumentFragment();
+        for (let i = 0; i < missing; i++) {
+            const slot = document.createElement('div');
+            slot.className = 'wb-dashboard-slot';
+            slots.append(slot);
+        }
+        slotLayer.append(slots);
+    }
+
+    function setSlots(editing) {
+        const root = $('wb-dashboard-grid');
+        if (editing && !slotLayer) {
+            slotLayer = document.createElement('div');
+            slotLayer.className = 'wb-dashboard-slots';
+            slotLayer.setAttribute('aria-hidden', 'true');
+            root.prepend(slotLayer);
+            // GridStack sets the grid height inline whenever a tile moves or grows.
+            if ('ResizeObserver' in window) new ResizeObserver(syncSlots).observe(root);
+        }
+        if (!slotLayer) return;
+        if (editing) syncSlots();
+        else slotLayer.replaceChildren();
+    }
+
     function setEditing(editing) {
         editingNow = editing;
         $('wb-dashboard-grid').classList.toggle('wb-dashboard-editing', editing);
+        setSlots(editing);
         document.querySelectorAll('.dashboard-widget-header').forEach((header) => header.classList.toggle('d-none', !editing));
         $('wb-dashboard-edit-toggle').classList.toggle('d-none', editing);
         $('wb-dashboard-add-widget').classList.toggle('d-none', !editing);
