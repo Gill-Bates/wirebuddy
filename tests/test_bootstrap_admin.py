@@ -4,9 +4,6 @@
 # Copyright (C) 2026 Gill-Bates http://github.com/Gill-Bates
 #
 
-# SPDX-License-Identifier: MIT
-#
-
 """The bootstrap admin password is printed once to stdout, never logged or stored."""
 
 from __future__ import annotations

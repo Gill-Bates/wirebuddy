@@ -53,7 +53,7 @@ Found a bug? Please open an issue on GitHub:
 
 **Example:**
 
-```markdown
+````markdown
 ### Bug: DNS queries not being blocked
 
 **Description:**
@@ -70,17 +70,17 @@ DNS ad-blocking is not working. All queries are allowed even with blocklists ena
 **Actual:** Query resolves to IP address
 
 **Environment:**
-- WireBuddy: 1.7.0
+- WireBuddy: 2.0.0
 - Docker: 24.0.7
 - Host OS: Ubuntu 22.04
 - Browser: Chrome 120
 
 **Logs:**
 ```
-[2026-03-15 14:30:00] DEBUG: DNS query from 10.8.0.2: ad.doubleclick.net A
-[2026-03-15 14:30:00] DEBUG: Blocklist check: not found in blocklist
+2026-03-15 14:30:00 UTC | DEBUG    | wirebuddy | DNS query from 10.8.0.2: ad.doubleclick.net A
+2026-03-15 14:30:00 UTC | DEBUG    | wirebuddy | Blocklist check: not found in blocklist
 ```
-```
+````
 
 ### Requesting Features
 
@@ -148,6 +148,7 @@ Ready to contribute code?
    ```bash
    pytest
    ruff check .
+   ruff format --check .
    ```
 
 5. **Commit:**
@@ -173,7 +174,7 @@ Ready to contribute code?
 
 7. **Create PR:**
    - Go to GitHub and create Pull Request
-   - Fill in PR template
+   - Describe the change and how you tested it
    - Link related issues
 
 **Pull request checklist:**
@@ -182,7 +183,7 @@ Ready to contribute code?
 - [ ] Tests added/updated (if applicable)
 - [ ] Documentation added/updated (if applicable)
 - [ ] All tests pass (`pytest`)
-- [ ] No linting errors (`ruff check .`)
+- [ ] No linting or formatting errors (`ruff check .`, `ruff format --check .`)
 - [ ] Commits follow conventional commit format
 - [ ] PR description is clear and complete
 
@@ -201,7 +202,7 @@ ruff format .
 ruff check .
 ```
 
-**Type hints:** Python 3.13+ style throughout — `|` unions instead of
+**Type hints:** Use `|` unions instead of
 `typing.Optional`/`typing.Union`, builtin generics (`list[str]`, `dict[str, int]`)
 instead of `typing.List`/`typing.Dict`.
 
@@ -249,15 +250,17 @@ def create_peer(name: str, ip: str) -> Peer:
 - const/let (no var)
 - Arrow functions preferred
 - Semicolons required
+- Indent with 4 spaces
+- JSON API calls go through `api()` from `api.js`, which adds the CSRF header,
+  handles `401`, and returns the `data` of the response envelope; use `fetch`
+  directly only where `api()` does not fit, such as binary downloads
 
 **Example:**
 
 ```javascript
 const fetchPeers = async () => {
     try {
-        const response = await fetch('/api/wireguard/peers');
-        const data = await response.json();
-        return data;
+        return await api('GET', '/api/wireguard/peers');
     } catch (error) {
         console.error('Failed to fetch peers:', error);
         throw error;
@@ -267,9 +270,10 @@ const fetchPeers = async () => {
 
 ### HTML/CSS
 
-- Indent with 2 spaces
+- Indent with 4 spaces
 - Bootstrap 5 classes preferred
-- Custom CSS in `wb-ui-system.css`
+- Put a rule in the lowest CSS layer that owns it and use the `var(--wb-*)` tokens
+  (see [CSS](setup.md#css))
 - Follow existing patterns
 
 ## Testing
@@ -317,6 +321,41 @@ pytest -v
 # Stop on first failure
 pytest -x
 ```
+
+### Browser regression suite
+`tests/layout/` is a Playwright suite that opens every page in a matrix of viewports and
+themes against a real, throwaway WireBuddy instance (random credentials, temporary data
+directory, no WireGuard interface or peer is created). It fails on page, console or CSP
+errors, 429/5xx responses, unintended horizontal overflow and serious axe findings, and it
+also covers navigation, the theme toggle, login and logout, and the modals.
+Prerequisites: Node.js 24, the Python venv with the dev extras, then once:
+```bash
+npm ci
+npx playwright install chromium webkit firefox
+```
+Run it from the repository root:
+```bash
+# PR profile: Chromium desktop and mobile, WebKit mobile cells
+node tests/layout/run.mjs --profile quick --browsers chromium,webkit
+# Full matrix: all viewports, both themes everywhere, Firefox too
+node tests/layout/run.mjs --profile full --browsers chromium,webkit,firefox
+# One page, one viewport; the audit self-test; list what a selection runs
+node tests/layout/run.mjs --pages dashboard --viewports phone-390x844
+node tests/layout/run.mjs --self-test
+node tests/layout/run.mjs --browsers webkit -- --list
+```
+`WIREBUDDY_LAYOUT_WORKERS` sets the worker count (default at most 2). A failing run keeps
+screenshots and traces in `WIREBUDDY_LAYOUT_OUTPUT` and the server logs in
+`WIREBUDDY_LAYOUT_LOGS`; open a trace with `npx playwright show-trace <trace.zip>`.
+To add a page or viewport, add one entry to `PAGES` or `VIEWPORTS` in
+`tests/layout/harness.mjs`. Do not add fixed waits or raise timeouts to get a run green, and
+give every allow-list entry a reason (`tests/layout/AGENTS.md` has the rules).
+
+CI runs the suite as job `layout` of `ci.yml` on UI-relevant changes. The job needs the
+`RELEASE_TOKEN` secret to install the private `gillbates-*` packages, which GitHub does not
+hand to pull requests from forks, so the job cannot run for them; the workflow deliberately
+does not use `pull_request_target`, because that would run untrusted code with the secret.
+The job is currently non-blocking (see `.github/workflows/AGENTS.md`).
 
 ## Documentation
 
@@ -409,12 +448,21 @@ git rebase main
 
 All PRs are reviewed by maintainers:
 
-1. **Automated checks:** `ruff check .`, `pytest`, `bash -n docker/entrypoint.sh`,
-   and `docker build --check -f docker/Dockerfile .` — all gated by
-   `.github/workflows/ci.yml`
+1. **Automated checks:** every job of `.github/workflows/ci.yml` (table below)
+   must pass; a PR that touches the documentation or its toolchain also runs
+   `.github/workflows/docs-build.yml` (build, link check, dependency scan)
 2. **Code review:** Maintainer reviews code
 3. **Feedback:** Maintainer may request changes
 4. **Approval:** Once approved, PR is merged
+
+| `ci.yml` job | Checks |
+|--------------|--------|
+| `manifest` | `pyproject.toml` is the only manifest, the version is release-shaped, tests of the `.github/scripts` helpers |
+| `workflows` | actionlint and shellcheck of the workflows |
+| `zizmor` | Workflow security lint |
+| `container` | `bash -n` and shellcheck of `docker/entrypoint.sh` and `docker/healthcheck.sh`, `docker build --check -f docker/Dockerfile .` |
+| `check` | `ruff check .`, `ruff format --check .`, `pytest` |
+| `source-scan` | Trivy secret scan of the source tree |
 
 ### Addressing Feedback
 
@@ -432,22 +480,36 @@ PR automatically updates.
 (For maintainers)
 
 1. Update the `version` field in `pyproject.toml` — this is the single source
-   of truth; `app/utils/version.py` reads it back at runtime
+   of truth; `app/utils/version.py` reads it back at runtime. The version is
+   `X.Y.Z` with an optional `-suffix`; a suffixed version is a prerelease and
+   never moves `latest`
 2. Update `CHANGELOG.md`
 3. Merge the release commit into `main`
 4. Tag that commit `v<version>` (must match `pyproject.toml` exactly) and push
    the tag: `git push origin v<version>`
-5. `docker-build.yml` validates tag/version/branch ancestry, then builds and
-   publishes the multi-arch Docker image
-6. Create a GitHub release with notes
+5. `docker-build.yml` validates tag/version/branch ancestry, runs the CI gate,
+   builds, smoke-tests and Trivy-scans both architectures, checks that both
+   were built with the same toolchain, pushes a candidate index, verifies it
+   and only then promotes it to the version tag (and `latest` for the newest
+   stable release)
+6. The workflow then creates the GitHub release: a draft with the Trivy reports
+   attached, published once name, size and SHA-256 of every report are
+   verified. GitHub marks the release "Latest" only when Docker `latest` moved
+
+Rerunning the release workflow for a tag republishes its version tag onto the
+newly built image and updates the published GitHub release to match.
+
+`security.yml` rescans the newest published stable image every week and opens
+a tracking issue when the rescan fails.
 
 ## Security Vulnerabilities
 
 **Do not open public issues for security vulnerabilities.**
 
-Email: [security contact - update as needed]
+See the [security policy](https://github.com/Gill-Bates/wirebuddy/blob/main/SECURITY.md)
+for how to reach the maintainer privately.
 
-Include:
+A report helps most with:
 
 - Vulnerability description
 - Steps to reproduce

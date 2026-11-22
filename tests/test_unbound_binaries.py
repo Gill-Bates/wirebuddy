@@ -4,9 +4,6 @@
 # Copyright (C) 2026 Gill-Bates http://github.com/Gill-Bates
 #
 
-# SPDX-License-Identifier: MIT
-#
-
 """Unbound binaries are resolved to absolute paths, never launched via PATH (P2.4).
 
 is_unbound_installed() must resolve unbound and unbound-checkconf to absolute
@@ -69,3 +66,27 @@ def test_candidate_lists_are_absolute():
 	for candidates in (up._UNBOUND_BIN_CANDIDATES, up._UNBOUND_CHECKCONF_BIN_CANDIDATES, up._PGREP_BIN_CANDIDATES, up._SS_BIN_CANDIDATES):
 		assert candidates
 		assert all(c.is_absolute() for c in candidates)
+
+
+def test_reload_validates_with_trusted_checkconf_path_and_refuses_without_one(monkeypatch):
+	import asyncio
+
+	calls: list[str] = []
+
+	async def fake_run_exec(binary, *_args, **_kwargs):
+		calls.append(binary)
+		return 1, "", "stop here"
+
+	monkeypatch.setattr(up, "run_exec", fake_run_exec)
+	_reset_cache()
+	monkeypatch.setattr(up, "first_executable", lambda candidates: str(next(iter(candidates))))
+	ok, _msg = asyncio.run(up._reload_impl())
+	assert ok is False
+	assert calls == [str(up._UNBOUND_CHECKCONF_BIN_CANDIDATES[0])]  # absolute, never the bare name
+
+	calls.clear()
+	_reset_cache()
+	monkeypatch.setattr(up, "first_executable", lambda _candidates: None)
+	ok, msg = asyncio.run(up._reload_impl())
+	assert ok is False and "trusted path" in msg
+	assert calls == []

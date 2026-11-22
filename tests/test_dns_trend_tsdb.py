@@ -4,9 +4,6 @@
 # Copyright (C) 2026 Gill-Bates http://github.com/Gill-Bates
 #
 
-# SPDX-License-Identifier: MIT
-#
-
 """DNS trend from the TSDB must cover the whole requested window.
 
 The per-minute DNS counters used to be read with ``tsdb.query()``, which
@@ -20,7 +17,9 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-from app.api.dns import _compute_trend_data_tsdb_sync, _make_bucket_start
+import pytest
+
+from app.api.dns import _blocklist_mtime, _compute_trend_data_tsdb_sync, _format_tsdb_timestamp, _make_bucket_start
 from app.db import tsdb
 from app.dns.ingestion_writer import DNS_METRIC_BLOCKED, DNS_METRIC_TOTAL, DNS_STATS_PEER_KEY
 
@@ -71,3 +70,25 @@ def test_long_range_is_not_capped_at_query_limit(tmp_path: Path):
 
 	assert sum(data["total"]) == 2 * minutes
 	assert sum(data["blocked"]) == len(range(0, minutes, 3))
+
+
+@pytest.mark.parametrize(
+	"raw",
+	["2026-05-01T14:03:07.250000+00:00", "2026-05-01T16:03:07+02:00", "2026-05-01T14:03:07Z"],
+)
+def test_query_log_timestamp_is_an_explicit_utc_instant(raw):
+	assert _format_tsdb_timestamp(raw) == "2026-05-01T14:03:07Z"
+
+
+@pytest.mark.parametrize("raw", ["", "garbage", "2026-05-01T14:03:07"])
+def test_query_log_timestamp_rejects_unusable_and_naive_values(raw):
+	assert _format_tsdb_timestamp(raw) == ""
+
+
+def test_blocklist_updated_at_is_a_z_instant(tmp_path, monkeypatch):
+	blocklist = tmp_path / "blocklist.conf"
+	blocklist.write_text("x")
+	monkeypatch.setattr("app.api.dns.unbound.get_blocklist_file", lambda: blocklist)
+	value = _blocklist_mtime()
+	assert value is not None and value.endswith("Z")
+	assert datetime.fromisoformat(value).utcoffset() == timedelta(0)

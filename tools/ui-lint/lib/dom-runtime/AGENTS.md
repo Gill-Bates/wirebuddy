@@ -1,5 +1,5 @@
 <!-- Parent: ../AGENTS.md -->
-<!-- Generated: 2026-09-21 | Updated: 2026-09-21 -->
+<!-- Generated: 2026-09-21 | Updated: 2026-11-22 -->
 # dom-runtime
 
 ## Purpose
@@ -31,7 +31,7 @@ DOM snapshot engine: collects a deterministic snapshot of the page (layout, rend
 
 ### Testing Requirements
 
-- Covered by `tests/runtime/dom-snapshot.spec.js`. Run `cd tools/ui-lint && npx playwright test <spec>` (no playwright.config file; defaults apply).
+- Covered by `tests/runtime/dom-snapshot.spec.js`. Run `cd tools/ui-lint && npx playwright test <spec>`.
 
 ### Common Patterns
 

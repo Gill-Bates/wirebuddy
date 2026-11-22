@@ -72,14 +72,14 @@ Administrators manage retention under **Settings → Logs**:
 
 | Data | Default | Available values |
 |---|---:|---|
-| Traffic TSDB | 7 days | Off, 7, 30, 90, 180, 365 days |
-| DNS logs/metrics | 7 days | Off, 7, 30, 90, 180, 365 days |
-| Speed-test history | 365 days | Off, 7, 30, 90, 180, 365 days |
+| Traffic TSDB | 7 days | 7, 30, 90, 180, 365 days |
+| DNS logs/metrics | 7 days | No Logs, 7, 30, 90, 180, 365 days |
+| Speed-test history | 365 days | No Logs, 7, 30, 90, 180, 365 days |
 
 The same page shows storage paths and sizes and provides explicit purge/reset
 actions for traffic, DNS, peer connection, and speed-test data.
 
-Setting retention to **Off** removes or suppresses the corresponding retained
+Setting DNS or speed-test retention to **No Logs** removes or suppresses the corresponding retained
 history; it does not disable unrelated WireGuard operation.
 
 ## Remote Nodes
@@ -121,8 +121,7 @@ If traffic history is empty:
 1. Confirm **Settings → WireGuard → Traffic Analysis** is enabled.
 2. Confirm interfaces and peers are active and transferring data.
 3. Verify `net.netfilter.nf_conntrack_acct=1` for country/ASN data.
-4. Check retention under **Settings → Logs** is not set to Off.
-5. Review `/ready` and container logs for scheduler or TSDB errors.
+4. Review `/ready` and container logs for scheduler or TSDB errors.
 
 ## Related
 

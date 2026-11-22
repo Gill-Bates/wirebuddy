@@ -4,9 +4,6 @@
 # Copyright (C) 2026 Gill-Bates http://github.com/Gill-Bates
 #
 
-# SPDX-License-Identifier: MIT
-#
-
 """Dashboard layout: Pydantic contract, cross-field validation, the dashboard_layouts table helpers and endpoints.
 
 The endpoint handlers are driven directly with the shared in-memory ``conn`` fixture and a stub
@@ -192,6 +189,21 @@ def test_helper_delete_clears(conn):
 	assert dash.delete_dashboard_layout(conn, 1) is True
 	assert dash.delete_dashboard_layout(conn, 1) is False
 	assert dash.get_dashboard_layout(conn, 1) is None
+
+
+@pytest.mark.parametrize("visible", ["false", "true", 0, 1, None])
+def test_set_layout_rejects_non_bool_visible(conn, visible):
+	_add_user(conn, 1)
+	with pytest.raises(ValueError):
+		dash.set_dashboard_layout(conn, 1, _layout({**_ONE, "visible": visible}))
+	assert dash.get_dashboard_layout(conn, 1) is None
+
+
+def test_set_layout_defaults_missing_visible_to_true(conn):
+	_add_user(conn, 1)
+	widget = {k: v for k, v in _ONE.items() if k != "visible"}
+	dash.set_dashboard_layout(conn, 1, _layout(widget))
+	assert dash.get_dashboard_layout(conn, 1)["widgets"][0]["visible"] is True
 
 
 def test_replace_is_atomic_on_failure(conn):

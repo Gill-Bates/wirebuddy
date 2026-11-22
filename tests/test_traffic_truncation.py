@@ -4,9 +4,6 @@
 # Copyright (C) 2026 Gill-Bates http://github.com/Gill-Bates
 #
 
-# SPDX-License-Identifier: MIT
-#
-
 """Country/ASN traffic covers the whole requested window.
 
 The endpoints stream every snapshot of the window through
@@ -151,3 +148,18 @@ def test_asn_name_comes_from_first_snapshot_and_totals_sum(tmp_path: Path):
 	assert data.asns[0].name == "Oldest"
 	assert (data.asns[0].rx, data.asns[0].tx) == (300.0, 150.0)
 	assert data.truncated is False
+
+
+def test_tsdb_query_failure_is_an_error_not_empty_traffic(tmp_path: Path, monkeypatch):
+	import pytest
+	from fastapi import HTTPException
+
+	def _boom(*_a, **_k):
+		raise OSError("tsdb unreadable")
+
+	monkeypatch.setattr(tsdb, "query_bucketed", _boom)
+	with pytest.raises(HTTPException) as exc:
+		_compute_country_traffic(tmp_path, hours=24)
+	assert exc.value.status_code == 503
+	with pytest.raises(HTTPException):
+		_compute_asn_traffic(tmp_path, hours=24)

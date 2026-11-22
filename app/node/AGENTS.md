@@ -1,5 +1,5 @@
 <!-- Parent: ../AGENTS.md -->
-<!-- Generated: 2026-09-21 | Updated: 2026-09-21 -->
+<!-- Generated: 2026-09-21 | Updated: 2026-11-22 -->
 # node
 
 ## Purpose
@@ -14,19 +14,17 @@ Minimal WireGuard runtime for remote cluster nodes plus the master-side helpers 
 | `notifier.py` | Master-side delivery of config-change, restart, speedtest and node-removed commands: persisted in SQLite (durable, ACK-based, replayable) with SSE as low-latency path; connection tracking |
 | `events.py` | Typed node event/command models and the process-local AnyIO `NodeEventBus` for ephemeral events (e.g. speedtest progress) |
 | `cert.py` | Self-signed node identity certificate: locked, atomic, symlink-safe creation, key/cert pair validation |
-| `firewall.py` | `check_firewall_dns_rules`: node-side check (fixes if possible) that DNS is allowed on the WireGuard interface; resolves `ip`/`iptables` via `first_executable`, fails closed |
 | `__init__.py` | Package docstring only |
 
 ## For AI Agents
 
 ### Working In This Directory
-- Use tabs for indentation and keep the standard file header block (path, copyright, SPDX MIT).
-- `daemon.py`, `wg_manager.py`, `cert.py`, `firewall.py` and `metrics_queue.py` run on the node; `notifier.py` and `events.py` run on the master. Keep that split.
+- `daemon.py`, `wg_manager.py`, `cert.py` and `metrics_queue.py` run on the node; `notifier.py` and `events.py` run on the master. Keep that split.
 - Security-sensitive: node IDs, config versions, SSE values and interface names are validated to prevent injection; WireGuard keys are redacted in errors; state and key files use restrictive permissions and atomic write plus fsync. Never log secrets or tokens.
-- Master URL must be HTTPS unless explicitly overridden; the enrollment token HMAC is verified locally by default.
+- Master URL must be HTTPS unless explicitly overridden; the enrollment token signature (v2 public key, or legacy v1 secret) is verified locally by default.
 
 ### Testing Requirements
-- Tests live in `/opt/wirebuddy/tests` (pytest, run `pytest` from the repo root). Relevant: `test_node_db.py`, `test_tls_material.py`, `test_audit_hardening.py`.
+- Run `pytest` from the repo root. Node-side coverage: `test_node_db.py` (`wg_manager` apply/rollback with fake binaries, `metrics_queue`; a node apply issues no `iptables`), `test_audit_hardening.py` (node config secrets and private dirs). `notifier.py` and `events.py` have no direct tests; `test_node_delete.py` covers their caller in `app/api/nodes.py` with the notifier mocked.
 - Add tests for new validation or queue behaviour; avoid tests that require real WireGuard or root.
 
 ### Common Patterns
@@ -37,9 +35,9 @@ Minimal WireGuard runtime for remote cluster nodes plus the master-side helpers 
 ## Dependencies
 
 ### Internal
-- `app/utils/` (`config`, `node_token`, `subprocess`-style helpers, `speedtest_window`, `version`, `banner`, `async_utils`, `binaries`), `app/db/sqlite_nodes` and `sqlite_runtime`, `app/speedtest/` (`tester`, `guard`).
+- `app/utils/` (`config`, `node_token`, `fs`, `logging_setup`, `geoip`, `speedtest_window`, `version`, `banner`, `async_utils`, `binaries`), `app/db/sqlite_nodes` and `sqlite_runtime`.
 
 ### External
-- `httpx`, `anyio`, `pydantic`, `cryptography`, stdlib `sqlite3`/`ssl`/`fcntl`; `wg`, `wg-quick`, `ip` binaries.
+- `gillbates-speedtest` (`run_speedtest`, run-guard lease), `gillbates-shutdown-handler` (`install_loop_handlers` for SIGINT/SIGTERM in `daemon.py`), `httpx`, `anyio`, `pydantic`, `cryptography`, stdlib `sqlite3`/`ssl`/`fcntl`; `wg`, `wg-quick`, `ip` binaries.
 
 <!-- MANUAL: Any manually added notes below this line are preserved on regeneration -->

@@ -1,5 +1,5 @@
 <!-- Parent: ../AGENTS.md -->
-<!-- Generated: 2026-09-21 | Updated: 2026-09-21 -->
+<!-- Generated: 2026-09-21 | Updated: 2026-11-22 -->
 # runtime
 
 ## Purpose
@@ -34,7 +34,7 @@ Modular browser runtime behind `lib/browser-utils.mjs`: login and session bootst
 
 ### Testing Requirements
 
-- Covered by `tests/runtime/browser-runtime.spec.js`, `tests/run-ui-lint.spec.js`. Run `cd tools/ui-lint && npx playwright test <spec>` (no playwright.config file; defaults apply).
+- Covered by `tests/runtime/browser-runtime.spec.js`, `tests/run-ui-lint.spec.js`. Run `cd tools/ui-lint && npx playwright test <spec>`.
 
 ### Common Patterns
 

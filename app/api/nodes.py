@@ -59,7 +59,8 @@ from ..node import notifier as node_notifier
 from ..utils.config import WG_CONFIG_PATH, get_config
 from ..utils.crypto import hash_token
 from ..utils.deps import get_conn
-from ..utils.node_token import generate_enrollment_token
+from ..utils.enrollment_keys import EnrollmentKeyError, get_public_key_info, issue_token, rotate_signing_key
+from ..utils.network import is_unsafe_outbound_address
 from ..utils.rate_limit import RATE_LIMIT_CRITICAL, RATE_LIMIT_HEAVY, rate_limit
 from ..utils.tsdb_helpers import build_latest_by_node
 from .wireguard_config import sync_interface_config
@@ -174,13 +175,12 @@ def _sanitize_host_chars(host: str) -> str:
 
 
 def _is_private_ip(addr: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
-	"""Return True if addr is private/loopback/link-local/ULA (Python-version-safe)."""
-	if addr.is_private or addr.is_loopback or addr.is_link_local:
-		return True
-	# ULA (fc00::/7) — not marked as private in Python < 3.11
-	if isinstance(addr, ipaddress.IPv6Address):
-		return addr in ipaddress.ip_network("fc00::/7")
-	return False
+	"""Return True for every address class the shared SSRF guard rejects, except CGNAT.
+
+	The host only ends up in an enrollment/config URL and no request is made
+	here, so a master behind Tailscale (100.64.0.0/10) stays usable.
+	"""
+	return is_unsafe_outbound_address(addr, allow_cgnat=True)
 
 
 def _format_host_for_url(host: str) -> str:
@@ -326,13 +326,29 @@ def _generate_node_token(
 	"""
 	cfg = get_config()
 	master_url = _get_master_url(conn)
-	token, api_secret = generate_enrollment_token(
-		master_url=master_url,
-		node_id=node_id,
-		node_name=node_name,
-		secret_key=cfg.secret_key,
-	)
+	try:
+		token, api_secret = issue_token(
+			conn,
+			cfg.secret_key,
+			version=cfg.enrollment_token_version,
+			master_url=master_url,
+			node_id=node_id,
+			node_name=node_name,
+		)
+	except EnrollmentKeyError as exc:
+		raise HTTPException(status_code=500, detail=str(exc)) from exc
 	return token, hash_token(api_secret)
+
+
+def _enrollment_verify_key(conn: sqlite3.Connection) -> str | None:
+	"""Public verification key the operator pins on a node; None while issuing legacy v1 tokens."""
+	cfg = get_config()
+	if cfg.enrollment_token_version != 2:
+		return None
+	try:
+		return get_public_key_info(conn, cfg.secret_key)["verify_key"]
+	except EnrollmentKeyError as exc:
+		raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
 def _get_latest_speedtests_by_node(
@@ -480,8 +496,42 @@ def create_node_endpoint(
 		data={
 			"node_id": node_id,
 			"enrollment_token": token,
+			"enrollment_verify_key": _enrollment_verify_key(conn),
 		},
 		message="Node created. Copy the enrollment token — it will not be shown again.",
+	)
+
+
+@router.get("/enrollment-key")
+def get_enrollment_key_endpoint(
+	conn: sqlite3.Connection = Depends(get_conn),
+	_: sqlite3.Row = Depends(require_admin),
+) -> dict[str, Any]:
+	"""Return the public enrollment verification key nodes must pin (not secret)."""
+	cfg = get_config()
+	try:
+		info = get_public_key_info(conn, cfg.secret_key)
+	except EnrollmentKeyError as exc:
+		raise HTTPException(status_code=500, detail=str(exc)) from exc
+	return ok_response(data=info)
+
+
+@router.post("/enrollment-key/rotate", dependencies=[Depends(rate_limit(RATE_LIMIT_CRITICAL))])
+def rotate_enrollment_key_endpoint(
+	conn: sqlite3.Connection = Depends(get_conn),
+	user: sqlite3.Row = Depends(require_admin),
+) -> dict[str, Any]:
+	"""Replace the enrollment signing key. Unused v2 tokens become invalid; enrolled nodes are unaffected."""
+	cfg = get_config()
+	try:
+		rotate_signing_key(conn, cfg.secret_key)
+		info = get_public_key_info(conn, cfg.secret_key)
+	except EnrollmentKeyError as exc:
+		raise HTTPException(status_code=500, detail=str(exc)) from exc
+	_log.warning("Enrollment signing key rotated (kid=%s, by user=%s)", info["kid"], user["username"])
+	return ok_response(
+		data=info,
+		message="Enrollment key rotated. Regenerate pending tokens and give nodes that are not enrolled yet the new key.",
 	)
 
 
@@ -691,7 +741,7 @@ async def regenerate_token(
 	_log.info("Node token regenerated: id=%s (by user=%s)", node_id, user["username"])
 
 	return ok_response(
-		data={"enrollment_token": token},
+		data={"enrollment_token": token, "enrollment_verify_key": _enrollment_verify_key(conn)},
 		message="New enrollment token generated. The node must re-enroll.",
 	)
 

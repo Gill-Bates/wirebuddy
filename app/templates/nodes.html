@@ -2,7 +2,7 @@
 
 {% block title %}Nodes – WireBuddy{% endblock %}
 
-{% set flag_icon_base_url = "https://cdn.jsdelivr.net/npm/flag-icons@7.3.2/flags/4x3" %}
+{% set flag_icon_base_url = flag_base_url %}
 {% macro country_flag(code, alt_prefix='Country flag') -%}
 {% set cc = (code or '')|lower %}
 {% if cc|length == 2 and cc[0].isalpha() and cc[1].isalpha() %}
@@ -15,7 +15,7 @@
 {% endblock %}
 
 {% block content %}
-<div class="container-fluid wb-page" id="nodesPageRoot" data-flag-icon-base-url="{{ flag_icon_base_url }}">
+<div class="container-fluid wb-page">
 <div class="wb-page-header flex-wrap gap-2">
     <h1 class="page-title"><span class="material-icons me-2" aria-hidden="true">hub</span>Remote Nodes</h1>
     <button type="button" class="btn btn-primary nodes-primary-trigger" data-bs-toggle="modal" data-bs-target="#addNodeModal">
@@ -104,12 +104,12 @@
                                 <div class="d-flex gap-1 flex-wrap">
                                 {% if node.last_speedtest.download_mbit %}
                                 <span class="badge bg-secondary" title="Download" data-bs-toggle="tooltip">
-                                    ↓ {{ node.last_speedtest.download_mbit|format_bandwidth_mbit(1, 1) }}
+                                    ↓ <span data-wb-number="bandwidth" data-wb-value="{{ node.last_speedtest.download_mbit }}" data-wb-digits="1">{{ node.last_speedtest.download_mbit }} Mbit/s</span>
                                 </span>
                                 {% endif %}
                                 {% if node.last_speedtest.upload_mbit %}
                                 <span class="badge bg-secondary" title="Upload" data-bs-toggle="tooltip">
-                                    ↑ {{ node.last_speedtest.upload_mbit|format_bandwidth_mbit(1, 1) }}
+                                    ↑ <span data-wb-number="bandwidth" data-wb-value="{{ node.last_speedtest.upload_mbit }}" data-wb-digits="1">{{ node.last_speedtest.upload_mbit }} Mbit/s</span>
                                 </span>
                                 {% endif %}
                                 </div>

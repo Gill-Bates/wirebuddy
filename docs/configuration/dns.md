@@ -132,9 +132,21 @@ Apply rules to specific clients by appending an IP/CIDR scope to each rule:
 2. Custom rules override blocklist entries
 3. More specific rules (exact domain) don't override less specific (wildcard)
 
+!!! warning "Wildcard and regex block rules are log-only"
+    Exact-domain block rules are enforced by the resolver. Wildcard and regex
+    **block** rules, and wildcard or regex rules with `$client=`, only mark
+    matching queries in the query log; the domains still resolve. Global
+    wildcard and regex **allow** rules do lift matching blocklist entries.
+
 ### Maximum Size
 
 Custom rules text is limited to 100 KB.
+
+### Regex Limits
+
+Regex rules that could stall DNS processing through catastrophic backtracking
+are rejected: nested quantifiers, quantified alternation, and more than 3
+unbounded or 8 repetition operators in total.
 
 ## Dual-Stack Configuration
 
@@ -258,18 +270,18 @@ The UI computes block rate from these raw counters, which is more precise than s
 !!! note
     The DNS trend chart prefers TSDB aggregates and only falls back to JSONL scans when filtered by client or when no TSDB data exists yet.
 
-## Ad-Blocker Mode
+## DNS Ad-Blocking Mode
 
 ### Temporary Disable
 
-Programmatically disable the ad-blocker:
+Programmatically disable DNS ad-blocking:
 
 | Mode | Behavior |
 |------|----------|
 | `enable` | Enable immediately, clear any timer |
 | `disable` | Disable indefinitely |
 | `disable_1h` | Disable for 1 hour, then auto-enable |
-| `disable_today` | Disable until midnight (server time) |
+| `disable_today` | Disable until the next 00:00 UTC |
 
 ### Timer Behavior
 
@@ -339,9 +351,11 @@ If DNS settings don't apply:
    docker compose --env-file .env -f docker/docker-compose.yml logs wirebuddy | grep -i unbound
    ```
 
-2. Validate configuration:
+2. Validate configuration (WireBuddy runs the same check before every reload
+   and skips the reload if it fails):
    ```bash
-   unbound-checkconf /etc/unbound/unbound.conf
+   docker compose --env-file .env -f docker/docker-compose.yml exec wirebuddy \
+     unbound-checkconf /etc/unbound/unbound.conf
    ```
 
 3. Restart DNS:
@@ -349,7 +363,7 @@ If DNS settings don't apply:
 
 ### High Memory Usage
 
-The blocklist file can be large (~10-50 MB). To reduce memory:
+Large blocklists increase Unbound's memory use. To reduce memory:
 
 1. Disable aggressive blocklists (HaGeZi Pro)
 2. Use fewer blocklists
@@ -361,7 +375,7 @@ The blocklist file can be large (~10-50 MB). To reduce memory:
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
-| `/api/dns/adblocker/status` | GET | Read current ad-blocker state and active disable timer |
+| `/api/dns/adblocker/status` | GET | Read current DNS ad-blocking state and active disable timer |
 | `/api/dns/status` | GET | DNS status and statistics |
 | `/api/dns/config` | GET/POST | DNS configuration |
 | `/api/dns/test-upstream` | POST | Validate upstream DNS-over-TLS server reachability |
@@ -370,7 +384,7 @@ The blocklist file can be large (~10-50 MB). To reduce memory:
 | `/api/dns/blocklist/update` | POST | Trigger a blocklist refresh |
 | `/api/dns/custom-rules` | GET/PATCH | Custom rules management |
 | `/api/dns/custom-rules/actions` | POST | Apply bulk custom-rule actions |
-| `/api/dns/adblocker/mode` | POST | Change ad-blocker mode |
+| `/api/dns/adblocker/mode` | POST | Change DNS ad-blocking mode |
 | `/api/dns/logs` | GET | Query log data |
 | `/api/dns/logs` | DELETE | Purge stored DNS query logs |
 | `/api/dns/storage` | GET | Inspect DNS log and TSDB storage usage |

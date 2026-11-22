@@ -4,8 +4,6 @@
 # Copyright (C) 2026 Gill-Bates http://github.com/Gill-Bates
 #
 
-# SPDX-License-Identifier: MIT
-#
 """Regression coverage for the retained Settings frontend helpers."""
 
 import shutil
@@ -73,20 +71,22 @@ for (const prefix of ['tsdb', 'dnsMetrics']) {
     const index = api[`${prefix}RetentionIndexForDays`];
     const days = api[`${prefix}RetentionDaysFromSlider`];
     const preview = api[`update${prefix[0].toUpperCase()}${prefix.slice(1)}RetentionPreview`];
-    if (label(0) !== 'No Logs' || label(365) !== '1 Year' || label(30) !== '30 Days') throw new Error(`${prefix} labels`);
-    const defaultIndex = prefix === 'tsdb' ? 5 : 2;
-    const defaultDays = prefix === 'tsdb' ? 365 : 30;
-    if (index(30) !== 2 || index(999) !== defaultIndex || days(-1) !== 0
-        || days(99) !== 365 || days('bad') !== defaultDays) throw new Error(`${prefix} mapping`);
+    if (label(365) !== '1 Year' || label(30) !== '30 Days') throw new Error(`${prefix} labels`);
+    if (prefix === 'dnsMetrics' && label(0) !== 'No Logs') throw new Error(`${prefix} off label`);
+    const hasOff = prefix !== 'tsdb';
+    const defaultIndex = 1;
+    const defaultDays = 7;
+    if (index(30) !== (hasOff ? 2 : 1) || index(999) !== (hasOff ? defaultIndex : 0)
+        || days(-1) !== (hasOff ? 0 : 7) || days(99) !== 365
+        || days('bad') !== (hasOff ? defaultDays : 7)) throw new Error(`${prefix} mapping`);
     const valueId = `${prefix === 'tsdb' ? 'tsdb' : 'dns-metrics'}-retention-value`;
-    if (preview(0) !== 0 || labels.get(valueId).className !== 'badge text-bg-danger') {
+    if (hasOff && (preview(0) !== 0 || labels.get(valueId).className !== 'badge text-bg-danger')) {
         throw new Error(`${prefix} preview off`);
     }
-    if (preview(5) !== 365 || labels.get(valueId).className !== 'badge text-bg-secondary') {
+    if (preview(hasOff ? 5 : 4) !== 365 || labels.get(valueId).className !== 'badge text-bg-secondary') {
         throw new Error(`${prefix} preview on`);
     }
 }
-
 for (const id of ['tsdb-retention-slider', 'dns-metrics-retention-slider']) {
     if (!template.includes(`id="${id}"`)) throw new Error(`missing ${id}`);
 }

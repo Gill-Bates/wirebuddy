@@ -1,5 +1,5 @@
 <!-- Parent: ../AGENTS.md -->
-<!-- Generated: 2026-09-21 | Updated: 2026-09-21 -->
+<!-- Generated: 2026-09-21 | Updated: 2026-11-22 -->
 # tests
 
 ## Purpose
@@ -18,18 +18,18 @@ Playwright test specs for the linter itself (`npm test`). Most specs mount fixtu
 
 | Directory | Purpose |
 |---|---|
-| `accessibility/` | see `accessibility/AGENTS.md` |
-| `component/` | see `component/AGENTS.md` |
-| `config/` | see `config/AGENTS.md` |
-| `entity-layout/` | see `entity-layout/AGENTS.md` |
-| `findings/` | see `findings/AGENTS.md` |
-| `layout/` | see `layout/AGENTS.md` |
-| `mobile/` | see `mobile/AGENTS.md` |
-| `orchestration/` | see `orchestration/AGENTS.md` |
-| `overflow/` | see `overflow/AGENTS.md` |
-| `rules/` | see `rules/AGENTS.md` |
-| `runtime/` | see `runtime/AGENTS.md` |
-| `support/` | Shared fixtures, see `support/AGENTS.md` |
+| `accessibility/` | Accessibility rules and the touch-target contract (see `accessibility/AGENTS.md`) |
+| `component/` | Component rules (see `component/AGENTS.md`) |
+| `config/` | Configuration and token runtime platforms (see `config/AGENTS.md`) |
+| `entity-layout/` | Mobile peer/node entity card layout (see `entity-layout/AGENTS.md`) |
+| `findings/` | Findings policies (see `findings/AGENTS.md`) |
+| `layout/` | Layout rules (see `layout/AGENTS.md`) |
+| `mobile/` | Scroll-trap rule (see `mobile/AGENTS.md`) |
+| `orchestration/` | Audit-runner facade (see `orchestration/AGENTS.md`) |
+| `overflow/` | Horizontal-overflow rule on mobile fixtures (see `overflow/AGENTS.md`) |
+| `rules/` | Rule manifest and registry orchestration (see `rules/AGENTS.md`) |
+| `runtime/` | Runtime modules, view planning, and contract specs that load the app's dashboard and modal scripts (see `runtime/AGENTS.md`) |
+| `support/` | Shared fixtures, `mountContractPage` (see `support/AGENTS.md`) |
 
 ## For AI Agents
 

@@ -16,7 +16,6 @@ from .peers import (
 from .users import (
 	LoginRequest,
 	PasswordChangeRequest,
-	TokenResponse,
 	UserCreate,
 	UserPublic,
 	UserUpdate,
@@ -32,7 +31,6 @@ __all__ = [
 	"PeerPublic",
 	"PeerStats",
 	"PeerUpdate",
-	"TokenResponse",
 	"UserCreate",
 	"UserPublic",
 	"UserUpdate",

@@ -4,9 +4,6 @@
 # Copyright (C) 2026 Gill-Bates http://github.com/Gill-Bates
 #
 
-# SPDX-License-Identifier: MIT
-#
-
 """Anti-drift guard: the JS widget registry and the Python allowlist must stay in sync.
 
 This test is the ONLY code that reads dashboard_widgets.js; runtime never does. It implements the

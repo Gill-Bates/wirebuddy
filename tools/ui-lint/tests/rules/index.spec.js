@@ -5,6 +5,11 @@
 
 import { expect, test } from '@playwright/test';
 
+import {
+    createExecutionGraphWithState,
+    createRuleRegistryState,
+    registerRuleWithState,
+} from '../../lib/rule-orchestration/index.mjs';
 import { RULE_MANIFEST } from '../../rules/manifest.mjs';
 import {
     getAllRules,
@@ -58,4 +63,31 @@ test('rule manifest and catalog stay aligned', async () => {
         executionMode: 'parallel',
         tags: expect.arrayContaining(['dashboard', 'light-mode']),
     });
+});
+
+function planRule(id, extra = {}) {
+    return { id, run: async () => [], meta: { id, ...extra } };
+}
+
+test('planner filters rules by view scope and rejects dependency cycles', async () => {
+    await loadRules();
+    const catalog = getRuleCatalog();
+    expect(catalog.find((entry) => entry.id === 'changelog-details')?.scopes).toEqual(['about']);
+
+    const state = createRuleRegistryState();
+    registerRuleWithState(state, planRule('about-only', { scopes: ['about'] }));
+    registerRuleWithState(state, planRule('everywhere'));
+    const idsFor = (scope) => createExecutionGraphWithState(state, undefined, { scope }).plannedRuleIds.sort();
+    expect(idsFor('about')).toEqual(['about-only', 'everywhere']);
+    expect(idsFor('dashboard')).toEqual(['everywhere']);
+
+    const selfState = createRuleRegistryState();
+    registerRuleWithState(selfState, planRule('self', { dependencies: ['self'] }));
+    expect(() => createExecutionGraphWithState(selfState, undefined, {})).toThrow('dependency cycle');
+
+    const cycleState = createRuleRegistryState();
+    registerRuleWithState(cycleState, planRule('a', { dependencies: ['b'] }));
+    registerRuleWithState(cycleState, planRule('b', { dependencies: ['a'] }));
+    registerRuleWithState(cycleState, planRule('free'));
+    expect(() => createExecutionGraphWithState(cycleState, undefined, {})).toThrow(/cycle.*a, b/);
 });

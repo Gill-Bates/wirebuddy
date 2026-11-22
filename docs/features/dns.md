@@ -14,7 +14,7 @@ The DNS module provides:
 - 🔒 **DNS-over-TLS** - Encrypt upstream DNS queries (DoT)
 - 📊 **Query Logging** - Real-time DNS query monitoring
 - 🎯 **Custom Rules** - Per-client and global blocking rules (AdGuard syntax)
-- ⏰ **Temporary Disable** - Pause blocking for 1 hour or until midnight
+- ⏰ **Temporary Disable** - Pause blocking for 1 hour or until 00:00 UTC
 - 🔍 **DNSSEC Validation** - Cryptographic DNS authentication
 - 👤 **Per-Peer Blocklists** - Assign different blocklist profiles to each peer
 
@@ -39,9 +39,11 @@ The DNS module provides:
 
 Update your WireGuard peers to use WireBuddy DNS:
 
-**Navigate to:** Peers → Edit → DNS Settings
+**Navigate to:** Peers → Edit Peer → DNS & Filtering
 
-Set DNS to your VPN server IP (e.g., `10.13.13.1`)
+Enable **Use Ad-blocking DNS (WireBuddy)**. Generated configurations then use the
+interface address (e.g., `10.13.13.1`) as DNS; download or scan the
+configuration again on the client.
 
 ### 3. Monitor Queries
 
@@ -66,7 +68,7 @@ WireBuddy includes four curated blocklists:
 
 - Toggle desired blocklists on/off
 - Changes trigger automatic download and rebuild
-- The ad-blocker is auto-enabled when blocklists are selected
+- DNS ad-blocking is auto-enabled when blocklists are selected
 
 ??? info "Blocklist Update Schedule"
     WireBuddy updates enabled blocklists about every 24 hours with scheduling
@@ -88,11 +90,11 @@ This is useful for privacy-sensitive devices or to reduce log volume for high-tr
 
 Assign different blocklist combinations to individual peers:
 
-**Peers → Edit Peer → DNS & Filtering**
+**Peers → Edit Peer → DNS & Filtering → Active Blocklists**
 
-- **Default:** Use globally enabled blocklists
-- **Custom:** Select specific blocklists for this peer only
-- **None:** Disable ad-blocking for this peer
+- **All checked (default):** Use all globally enabled blocklists
+- **Some checked:** Use only the selected blocklists for this peer
+- **None checked:** Disable ad-blocking for this peer while it keeps using WireBuddy DNS
 
 This allows different filtering levels for different devices (e.g., strict filtering for kids' devices, relaxed for work laptops).
 
@@ -111,6 +113,13 @@ Custom rules use **AdGuard syntax** to block or allow individual domains.
 | `\|\|ads*.domain^` | Wildcard block | `\|\|ads*.example.com^` |
 | `/regex/` | Regex match (substring, case-insensitive) | `/tracking[0-9]+/` |
 | `!` or `#` | Comment line | `! This is a comment` |
+
+!!! warning "Wildcard and regex block rules"
+    The resolver enforces exact-domain rules (global and per client), and global
+    wildcard or regex allow rules lift matching blocklist entries. Wildcard and
+    regex **block** rules, and wildcard or regex rules with `$client=`, only
+    mark matching queries in the query log; the domains still resolve. Regex
+    rules that could stall DNS processing are rejected, see [Regex Limits](../configuration/dns.md#regex-limits).
 
 ### Block a Domain
 
@@ -160,12 +169,12 @@ Directly block/allow domains from the DNS query log:
 
 1. Navigate to **DNS** page
 2. Find query in the log
-3. Click the action menu (⋮)
+3. Click the log entry (admins only)
 4. Select:
-   - **Block (Global):** Add to global blocklist
-   - **Block (Client):** Add to client-specific rules
-   - **Allow (Global):** Whitelist globally
-   - **Allow (Client):** Whitelist for this client only
+   - **Block:** Add a global block rule (allowed queries)
+   - **Block for this Client:** Add a block rule for this client only (allowed queries)
+   - **Unblock:** Add a global allow rule (blocked queries)
+   - **Unblock for this Client:** Add an allow rule for this client only (blocked queries)
 
 ## DNS Query Log
 
@@ -176,23 +185,24 @@ The **DNS** page shows live queries:
 | Column | Description |
 |--------|-------------|
 | **Time** | Query timestamp |
-| **Client** | Peer name and IP that made the query |
-| **Domain** | Queried domain name |
+| **Domain** | Queried domain name, with the peer name and IP that made the query |
 | **Type** | DNS record type (A, AAAA, etc.) |
-| **Status** | Allowed 🟢 or Blocked 🔴 |
+
+Blocked queries are highlighted in red; the **All / Blocked only / Allowed only**
+filter narrows the list.
 
 ### Client Filtering
 
 Filter queries by specific peer:
 
-- Use the client dropdown to show queries from a single peer
+- Use the **All Peers** dropdown to show queries from a single peer
 - Useful for troubleshooting or monitoring specific devices
 
 ### Log Retention
 
 Configure how long DNS logs are kept:
 
-**Settings → Logs → DNS Log Retention**
+**Settings → Logs → DNS Metrics → Retention Period**
 
 Options: 7 days, 30 days, 90 days, 180 days, 1 year, or No Logs
 
@@ -236,16 +246,16 @@ Toggle **DNSSEC** to enable validation.
 
 Temporarily disable ad-blocking for troubleshooting:
 
-**DNS Page → Ad-Blocker Dropdown**
+**DNS Page → DNS ad-blocking dropdown**
 
 Options:
 
 | Mode | Description |
 |------|-------------|
-| **Enabled** | Ad-blocking active (default) |
-| **Disable 1 Hour** | Pause for 1 hour, then auto-enable |
-| **Disable Until Midnight** | Pause until end of day (server time) |
-| **Disabled** | Indefinitely disabled |
+| **Enable** | Ad-blocking active (default) |
+| **Disable for 1h** | Pause for 1 hour, then auto-enable |
+| **Disable until 00:00 UTC** | Pause until the next 00:00 UTC |
+| **Disable** | Indefinitely disabled |
 
 Use cases:
 
@@ -264,7 +274,7 @@ Use cases:
 
 The dashboard shows:
 
-- **KPI Cards:** Total queries, blocked count, block percentage, blocklist size
+- **KPI Cards:** Resolver status, total queries, blocked count, block percentage, unique domains, blocklist size
 - **Trend Chart:** Queries over time with block rate
 - **Top Domains:** Most queried and most blocked domains
 
@@ -287,11 +297,10 @@ The DNS trend chart supports multiple time ranges:
 | **180 d** | Last 180 days |
 | **1 y** | Last year (365 days) |
 
-The chart automatically adjusts data granularity based on the selected range to ensure optimal readability:
+The chart adjusts its bucket size to the viewport and the selected range:
 
-- **7-30 days:** Hourly or 12-24h buckets depending on viewport
-- **90-180 days:** Daily buckets
-- **1 year:** Weekly buckets
+- **7 and 30 days:** 12 h buckets on phones, 18 h on tablets, 24 h on desktops
+- **Longer ranges:** these buckets grow with the range (3× for 90 days, 6× for 180 days, 13× for 1 year)
 
 For unfiltered chart requests, WireBuddy reads pre-aggregated buckets from the TSDB. If you apply a client filter, WireBuddy falls back to raw JSONL logs because the TSDB stores global aggregates only.
 
@@ -346,7 +355,7 @@ Select specific peers to view their individual DNS statistics:
    sudo dscacheutil -flushcache
    
    # Linux
-   sudo systemd-resolve --flush-caches
+   sudo resolvectl flush-caches
    ```
 
 ### False Positives

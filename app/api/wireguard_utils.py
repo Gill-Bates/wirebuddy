@@ -31,6 +31,7 @@ __all__ = [
 	"WgPeerDump",
 	"bytes_to_unit",
 	"derive_public_key",
+	"effective_use_adblocker",
 	"filter_peer_blocklist_ids",
 	"generate_keypair",
 	"generate_preshared_key",
@@ -45,6 +46,7 @@ __all__ = [
 	"validate_interface_name",
 	"validate_keypair",
 	"wg_set_peer_with_psk",
+	"write_secret_temp_file",
 ]
 
 # Interface name validation regex.
@@ -136,7 +138,7 @@ def safe_int(value: str, default: int = 0) -> int:
 	"""Safely convert string to int, returning default on failure."""
 	try:
 		return int(value) if value else default
-	except (ValueError, TypeError):
+	except ValueError, TypeError:
 		return default
 
 
@@ -338,6 +340,24 @@ async def _run_wg_or_raise(
 	return out.strip()
 
 
+def write_secret_temp_file(directory: str | os.PathLike[str] | None, data: bytes, *, prefix: str = "tmp", suffix: str = ".tmp") -> str:
+	"""Write ``data`` to a new 0600 temp file and return its path.
+
+	The write is complete or raises; on any failure the file is removed again,
+	so no key material is left behind.
+	"""
+	fd, path = tempfile.mkstemp(dir=directory, prefix=prefix, suffix=suffix)
+	try:
+		with os.fdopen(fd, "wb") as fh:
+			os.fchmod(fh.fileno(), 0o600)
+			fh.write(data)
+	except BaseException:
+		with contextlib.suppress(OSError):
+			Path(path).unlink()
+		raise
+	return path
+
+
 async def wg_set_peer_with_psk(
 	interface: str,
 	public_key: str,
@@ -352,22 +372,9 @@ async def wg_set_peer_with_psk(
 	than reading from the actual stdin pipe. This function uses a secure
 	temporary file with restrictive permissions instead.
 	"""
-
-	def _write_psk_temp(key: str) -> str:
-		fd, path = tempfile.mkstemp(prefix="wg_psk_", suffix=".key")
-		try:
-			Path(path).chmod(0o600)
-			os.write(fd, key.encode("utf-8"))
-			os.close(fd)
-			return path
-		except Exception:
-			with contextlib.suppress(OSError):
-				os.close(fd)
-			raise
-
 	tmp_path: str | None = None
 	try:
-		tmp_path = await asyncio.to_thread(_write_psk_temp, preshared_key)
+		tmp_path = await asyncio.to_thread(write_secret_temp_file, None, preshared_key.encode("utf-8"), prefix="wg_psk_", suffix=".key")
 		return await run_wg_command(
 			"wg",
 			"set",
@@ -426,6 +433,11 @@ async def derive_public_key(private_key: str) -> str:
 	)
 
 
+def effective_use_adblocker(value: object) -> bool:
+	"""Return the effective ad-blocker flag; NULL means the schema default (on)."""
+	return True if value is None else bool(value)
+
+
 def is_valid_wg_key(key: str) -> bool:
 	"""Validate WireGuard key format: base64-encoded 32-byte key.
 
@@ -467,7 +479,7 @@ def parse_blocklist_ids(raw: str | None) -> list[str] | None:
 	try:
 		parsed = json.loads(raw)
 		return parsed if isinstance(parsed, list) else None
-	except (json.JSONDecodeError, TypeError):
+	except json.JSONDecodeError, TypeError:
 		return None
 
 
@@ -475,5 +487,5 @@ def safe_row_get(row: sqlite3.Row, key: str, default: Any = None) -> Any:
 	"""Safely get a column from a Row, returning default if missing."""
 	try:
 		return row[key]
-	except (KeyError, IndexError):
+	except KeyError, IndexError:
 		return default

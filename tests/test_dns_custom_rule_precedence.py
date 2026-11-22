@@ -4,9 +4,6 @@
 # Copyright (C) 2026 Gill-Bates http://github.com/Gill-Bates
 #
 
-# SPDX-License-Identifier: MIT
-#
-
 """One precedence rule for custom DNS rules, shared by config and parser.
 
 ``resolve_effective_action`` is the single source of truth for "ALLOW wins
@@ -127,6 +124,8 @@ def test_config_overlapping_allow_suppresses_block(_client_rules_file):
 		"/(a|a)+b/",
 		"/(a|aa){25}b/",
 		"/((ab)*)*c/",  # nested groups
+		"/a+a+a+a+a+a+a+a+b/",  # group-free polynomial blow-up
+		"/a?a?a?a?a?a?a?a?a?aaaaaaaaa/",  # group-free exponential blow-up
 	],
 )
 def test_catastrophic_regex_rejected_quickly(pattern):

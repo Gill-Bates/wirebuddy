@@ -4,6 +4,7 @@
 //
 
 import crypto from 'node:crypto';
+import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
@@ -125,6 +126,30 @@ export function buildRunPaths({ scriptDir, sessionId, outputDir, screenshotDir =
             profile: profile.name,
         },
     };
+}
+
+export const SCREENSHOT_DIR_MARKER = '.ui-lint-screenshots';
+
+const OWN_SCREENSHOT_FILE = /^(?:screenshot|diff)-.*\.png$/;
+
+// Only a missing, empty, marked or own-PNG-only directory (pre-marker runs) is
+// wiped; anything else is foreign data and aborts the run.
+export function resetScreenshotDir(screenshotDir) {
+    if (fs.existsSync(screenshotDir)) {
+        const stat = fs.lstatSync(screenshotDir);
+        if (!stat.isDirectory()) {
+            throw new Error(`Refusing to reuse screenshot path that is not a directory: ${screenshotDir}`);
+        }
+        const entries = fs.readdirSync(screenshotDir);
+        const owned = entries.every((name) => name === SCREENSHOT_DIR_MARKER
+            || (OWN_SCREENSHOT_FILE.test(name) && fs.lstatSync(path.join(screenshotDir, name)).isFile()));
+        if (!owned && !entries.includes(SCREENSHOT_DIR_MARKER)) {
+            throw new Error(`Refusing to delete ${screenshotDir}: it is not empty and has no ${SCREENSHOT_DIR_MARKER} marker. Point UI_LINT_OUTPUT_DIR/UI_LINT_SCREENSHOT_DIR at a dedicated directory.`);
+        }
+        fs.rmSync(screenshotDir, { recursive: true, force: true });
+    }
+    fs.mkdirSync(screenshotDir, { recursive: true });
+    fs.writeFileSync(path.join(screenshotDir, SCREENSHOT_DIR_MARKER), 'created by wirebuddy ui-lint\n');
 }
 
 export function createRuntimeContext({

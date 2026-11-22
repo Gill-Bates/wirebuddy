@@ -144,7 +144,7 @@ function setTrafficMetric(el, bytes, direction) {
 function formatDashboardCount(online, total) {
     return online === 0 && total === 0
         ? EMPTY_DASHBOARD_METRIC
-        : `${online} / ${total}`;
+        : `${window.WBFormat.number(online)} / ${window.WBFormat.number(total)}`;
 }
 
 function setBandwidthMetric(downloadMbit, uploadMbit) {
@@ -203,8 +203,8 @@ function setSpeedtestChartDensity() {
     scales.y.title.display = !compact;
     scales.y.ticks.maxTicksLimit = compact ? 5 : 11;
     scales.y.ticks.callback = compact
-        ? (value) => Number(value) >= 1000 ? `${Number(value) / 1000}k` : value
-        : undefined;
+        ? (value) => window.WBFormat.compact(value, { maximumFractionDigits: 1 })
+        : (value) => window.WBFormat.number(value);
     scales.y1.title.display = !compact;
     scales.y1.ticks.maxTicksLimit = compact ? 5 : 11;
     speedtestChart.update('none');
@@ -249,7 +249,7 @@ function createCountryFlagElement(countryCode) {
     img.alt = `${code.toUpperCase()} flag`;
     img.loading = 'eager';
     img.decoding = 'async';
-    img.src = `https://cdn.jsdelivr.net/npm/flag-icons@7.3.2/flags/4x3/${code}.svg`;
+    img.src = window.WB.flags.url(code);
     img.addEventListener('error', () => img.remove());
     return img;
 }
@@ -273,7 +273,7 @@ function setMapBadge(badge, text, variant = 'secondary') {
 }
 
 function makeMarkerKey(lat, lon) {
-    return `${Number(lat).toFixed(6)}_${Number(lon).toFixed(6)}`;
+    return `${Math.round(Number(lat) * 1e6)}_${Math.round(Number(lon) * 1e6)}`;
 }
 
 function buildMapPopupContent(p, isConnected, peerTitle, locText, asnText, peerCount, totalCount) {
@@ -344,9 +344,9 @@ function buildMapPopupContent(p, isConnected, peerTitle, locText, asnText, peerC
         const count = document.createElement('div');
         count.className = 'map-popup-count text-muted';
         if (effectiveTotal > peerCount) {
-            count.textContent = `${peerCount} of ${effectiveTotal} peers connected`;
+            count.textContent = `${window.WBFormat.number(peerCount)} of ${window.WBFormat.number(effectiveTotal)} peers connected`;
         } else {
-            count.textContent = `${peerCount} peers at this location`;
+            count.textContent = `${window.WBFormat.number(peerCount)} peers at this location`;
         }
         container.appendChild(count);
     } else if (!isConnected && effectiveTotal > 1) {
@@ -778,14 +778,14 @@ async function refreshPeerLocations(signal) {
             if (connectedNames.length > 1) {
                 peerTitle = connectedNames.length <= 2
                     ? connectedNames.join(' & ')
-                    : `${connectedNames.length} Peers`;
+                    : `${window.WBFormat.number(connectedNames.length)} Peers`;
             } else if (!isConnected) {
                 // Offline: show first peer name
                 peerTitle = (p.names && p.names[0]) || p.name || 'Peer';
                 if (p.names && p.names.length > 1) {
                     peerTitle = p.names.length <= 2
                         ? p.names.join(' & ')
-                        : `${p.names.length} Peers`;
+                        : `${window.WBFormat.number(p.names.length)} Peers`;
                 }
             }
 
@@ -858,9 +858,9 @@ async function refreshPeerLocations(signal) {
         const uniqueCountries = new Set(locs.map(p => p.country).filter(Boolean)).size;
 
         // Update KPIs
-        if (mapKpiOnline) mapKpiOnline.textContent = connectedCount;
-        if (mapKpiTotal) mapKpiTotal.textContent = locs.length;
-        if (mapKpiCountries) mapKpiCountries.textContent = uniqueCountries;
+        if (mapKpiOnline) mapKpiOnline.textContent = window.WBFormat.number(connectedCount);
+        if (mapKpiTotal) mapKpiTotal.textContent = window.WBFormat.number(locs.length);
+        if (mapKpiCountries) mapKpiCountries.textContent = window.WBFormat.number(uniqueCountries);
 
         setMapBadge(
             badge,
@@ -1255,6 +1255,7 @@ function initSpeedtestChart() {
         options: {
             responsive: false,
             maintainAspectRatio: false,
+            locale: window.WBFormat.resolved().locale,
             interaction: {
                 mode: 'index',
                 intersect: false,
@@ -1313,7 +1314,7 @@ function initSpeedtestChart() {
                                 return `${ctx.dataset.label}: ${formatBandwidthMetric(ctx.parsed.y, 2)}`;
                             }
                             if (ctx.dataset.label?.includes('RTT')) {
-                                return `${ctx.dataset.label}: ${ctx.parsed.y?.toFixed(2) ?? '–'} ms`;
+                                return `${ctx.dataset.label}: ${ctx.parsed.y == null ? '–' : window.WBFormat.fixed(ctx.parsed.y, 2)} ms`;
                             }
                             return `${ctx.dataset.label}: ${formatBandwidthMetric(ctx.parsed.y, 2)}`;
                         },
@@ -1404,17 +1405,13 @@ async function refreshSpeedtestChart(signal) {
         if (showAllNodes) {
             const allNodeChart = buildAllNodeDatasets(okHistory);
             labels = allNodeChart.labels.map((ts) => {
-                const d = new Date(ts);
-                return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })
-                    + ' ' + d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
+                return window.WBFormat.format(ts, 'datetime-short');
             });
             datasets = allNodeChart.datasets;
             _speedtestServers = [];
         } else {
             labels = okHistory.map(h => {
-                const d = new Date(h.ts);
-                return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })
-                    + ' ' + d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
+                return window.WBFormat.format(h.ts, 'datetime-short');
             });
 
             // Store server names for tooltip
@@ -1487,9 +1484,7 @@ async function refreshSpeedtestChart(signal) {
         const lastRunEl = document.getElementById('speedtest-last-run');
         const lastTsEl = document.getElementById('speedtest-last-ts');
         if (latest && lastRunEl && lastTsEl) {
-            const d = new Date(latest.ts);
-            lastTsEl.textContent = d.toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' })
-                + ' ' + d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
+            lastTsEl.textContent = window.WBFormat.format(latest.ts, 'datetime');
             lastRunEl.classList.remove('d-none');
         }
 

@@ -560,7 +560,6 @@
 
 
 @media (width <=575.98px) {
-
     /* Mirror Traffic page layout: header column, controls row */
     .dns-header {
         flex-direction: column;

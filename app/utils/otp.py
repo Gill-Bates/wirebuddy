@@ -104,7 +104,7 @@ def deserialize_recovery_codes(raw: str | None) -> list[str]:
 		return []
 	try:
 		loaded = json.loads(raw)
-	except (json.JSONDecodeError, TypeError):
+	except json.JSONDecodeError, TypeError:
 		return []
 	if not isinstance(loaded, list):
 		return []

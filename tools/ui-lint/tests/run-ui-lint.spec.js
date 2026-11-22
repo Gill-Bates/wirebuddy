@@ -3,12 +3,16 @@
 // Copyright (C) 2026 Gill-Bates http://github.com/Gill-Bates
 //
 
+import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 
 import { expect, test } from '@playwright/test';
 
 import {
     buildRunPaths,
+    resetScreenshotDir,
+    SCREENSHOT_DIR_MARKER,
     getAuthenticatedContextOptions,
     getLoginFailureContextOptions,
 } from '../lib/runtime-config.mjs';
@@ -80,4 +84,30 @@ test('login failure contexts stay unauthenticated', async () => {
         userAgent: 'tablet-agent',
     });
     expect(options).not.toHaveProperty('storageState');
+});
+
+test('resetScreenshotDir wipes only empty, marked or own-artifact directories', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'ui-lint-reset-'));
+    try {
+        const foreign = path.join(root, 'foreign');
+        fs.mkdirSync(foreign);
+        fs.writeFileSync(path.join(foreign, 'notes.txt'), 'keep me');
+        expect(() => resetScreenshotDir(foreign)).toThrow('has no .ui-lint-screenshots marker');
+        expect(fs.existsSync(path.join(foreign, 'notes.txt'))).toBe(true);
+
+        const own = path.join(root, 'own');
+        fs.mkdirSync(own);
+        fs.writeFileSync(path.join(own, 'screenshot-a.png'), 'x');
+        resetScreenshotDir(own);
+        expect(fs.readdirSync(own)).toEqual([SCREENSHOT_DIR_MARKER]);
+
+        fs.writeFileSync(path.join(own, 'extra.txt'), 'x');
+        resetScreenshotDir(own);
+        expect(fs.readdirSync(own)).toEqual([SCREENSHOT_DIR_MARKER]);
+
+        resetScreenshotDir(path.join(root, 'new', 'nested'));
+        expect(fs.existsSync(path.join(root, 'new', 'nested', SCREENSHOT_DIR_MARKER))).toBe(true);
+    } finally {
+        fs.rmSync(root, { recursive: true, force: true });
+    }
 });

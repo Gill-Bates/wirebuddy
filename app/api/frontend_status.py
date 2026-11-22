@@ -21,9 +21,9 @@ from datetime import UTC, datetime
 from pathlib import Path
 from urllib.parse import urlparse
 
-import httpx
 from fastapi import Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse
+from gillbates_public_ip import PublicIPDetector
 
 from ..db import tsdb
 from ..db.sqlite_interfaces import list_interfaces
@@ -31,11 +31,12 @@ from ..db.sqlite_settings import get_setting
 from ..dns import ingestion as dns_ingestion
 from ..dns import unbound
 from ..utils.coerce import BOOL_TRUE_VALUES
-from ..utils.config import get_config, parse_proxy_cidrs
+from ..utils.config import TRUSTED_PROXIES_ENV, get_config, get_explicit_trusted_proxy_networks
 from ..utils.deps import get_conn
 from ..utils.formatting import format_optional_bandwidth_mbit
-from ..utils.network import parse_ip
+from ..utils.network import parse_ip, walk_forwarded_chain
 from ..utils.rate_limit import RATE_LIMIT_DEFAULT, rate_limit
+from ..utils.socket_peer import socket_peer_ip
 from .auth import _get_client_ip, get_current_user_optional
 from .frontend_shared import extract_geo_fields, lookup_ip_cached, router, templates
 
@@ -43,22 +44,16 @@ _log = logging.getLogger(__name__)
 
 _STATUS_ENABLE_KEY = "enable_status_page"
 _STATUS_PROBE_DOMAIN = "cloudflare.com"
-_STATUS_OUTBOUND_IP_URLS = (
-	"https://api64.ipify.org?format=text",
-	"https://ifconfig.me/ip",
-)
 _STATUS_OUTBOUND_CACHE_TTL = 300.0
+_public_ip_detector = PublicIPDetector(cache_ttl=_STATUS_OUTBOUND_CACHE_TTL, timeout=3.0, budget=6.0)
 _STATUS_DNS_PROBE_CACHE_TTL = 60.0
 _STATUS_DNS_LEAK_CACHE_TTL = 60.0
 _STATUS_DNS_LEAK_VERIFY_WINDOW_SECONDS = 900
 _STATUS_DNS_LEAK_VERIFY_MAX_QUERIES = 5000
 _STATUS_DNS_LEAK_CACHE_MAX_SIZE = 2000
-_STATUS_TRUSTED_PROXY_CIDRS_ENV = "WIREBUDDY_TRUSTED_PROXIES"
 
-_outbound_ip_cache: tuple[str | None, str, float] | None = None
 _dns_probe_cache: tuple[bool, str, float, tuple[str, ...]] | None = None
 _dns_leak_cache: dict[tuple[str, str], tuple[str, str, float]] = {}
-_outbound_ip_cache_lock = asyncio.Lock()
 _dns_probe_cache_lock = asyncio.Lock()
 _dns_leak_cache_lock = asyncio.Lock()
 
@@ -96,32 +91,6 @@ def _parse_interface_network(raw: str | None) -> ipaddress.IPv4Network | ipaddre
 		return ipaddress.ip_interface(text).network
 	except ValueError:
 		return None
-
-
-def _load_status_trusted_proxy_networks() -> tuple[ipaddress.IPv4Network | ipaddress.IPv6Network, ...]:
-	"""Load explicitly trusted proxy CIDRs for /status header trust.
-
-	Resolved lazily (on first call, not at import time) so settings.env values
-	are respected regardless of module import order — settings.env is only
-	loaded once something calls get_config(), which may happen after this
-	module is imported. See auth._is_trusted_proxy_ip() for the same pattern.
-	"""
-	get_config()  # Ensure settings.env is loaded before reading the env var below.
-	value = str(os.environ.get(_STATUS_TRUSTED_PROXY_CIDRS_ENV, "")).strip()
-	if not value:
-		return ()
-	return parse_proxy_cidrs(value, _STATUS_TRUSTED_PROXY_CIDRS_ENV)
-
-
-_status_trusted_proxy_networks_cache: tuple[ipaddress.IPv4Network | ipaddress.IPv6Network, ...] | None = None
-
-
-def _get_status_trusted_proxy_networks() -> tuple[ipaddress.IPv4Network | ipaddress.IPv6Network, ...]:
-	"""Return the (lazily loaded, then cached) trusted proxy CIDRs for /status."""
-	global _status_trusted_proxy_networks_cache
-	if _status_trusted_proxy_networks_cache is None:
-		_status_trusted_proxy_networks_cache = _load_status_trusted_proxy_networks()
-	return _status_trusted_proxy_networks_cache
 
 
 def _iter_peer_vpn_ips(peer_address: str | None) -> tuple[ipaddress.IPv4Address | ipaddress.IPv6Address, ...]:
@@ -196,22 +165,17 @@ def _pick_forwarded_client_ip(
 	string form of the current socket peer) or matches the same CIDR trust
 	rules used for the socket hop. Comparing only against the socket peer would
 	stop at the first internal proxy in a multi-proxy chain and report that
-	proxy as the client.
+	proxy as the client. An unparseable hop ends the walk with ``None``.
 	"""
-	if not x_forwarded_for:
-		return None
-	chain: list[ipaddress.IPv4Address | ipaddress.IPv6Address] = []
-	for raw in x_forwarded_for.split(","):
-		ip_obj = parse_ip(raw.strip())
-		if ip_obj is not None:
-			chain.append(ip_obj)
-	for ip_obj in reversed(chain):
-		if str(ip_obj) in trusted_proxies:
-			continue
-		if _is_trusted_status_proxy_hop(ip_obj):
-			continue
-		return ip_obj
-	return None
+	return walk_forwarded_chain(
+		x_forwarded_for,
+		lambda ip: str(ip) in trusted_proxies or _is_trusted_status_proxy_hop(ip),
+	)
+
+
+def _is_non_public(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
+	"""True for private, loopback and link-local addresses (not a public client IP)."""
+	return ip.is_private or ip.is_loopback or ip.is_link_local
 
 
 def _find_peer_public_ip_for_vpn_ip(
@@ -242,7 +206,7 @@ def _find_peer_public_ip_for_vpn_ip(
 			candidate = parse_ip(str(row["last_client_ip"] or "").strip())
 			if candidate is None:
 				return None
-			if candidate.is_private or candidate.is_loopback or candidate.is_link_local:
+			if _is_non_public(candidate):
 				return None
 			return str(candidate)
 
@@ -291,7 +255,7 @@ def _find_node_outbound_ip(
 				if not tunnel or not tunnel["last_client_ip"]:
 					return None
 				candidate = parse_ip(str(tunnel["last_client_ip"]).strip())
-				if candidate and not (candidate.is_private or candidate.is_loopback or candidate.is_link_local):
+				if candidate and not _is_non_public(candidate):
 					return str(candidate)
 				return None
 
@@ -305,11 +269,11 @@ def _resolve_public_client_ip(
 	forwarded_ip_value: str | None,
 ) -> str | None:
 	"""Best-effort public client IP for GeoIP/ASN display on status page."""
-	if not (client_ip.is_private or client_ip.is_loopback or client_ip.is_link_local):
+	if not _is_non_public(client_ip):
 		return str(client_ip)
 
 	forwarded_ip = parse_ip(forwarded_ip_value)
-	if forwarded_ip and not (forwarded_ip.is_private or forwarded_ip.is_loopback or forwarded_ip.is_link_local):
+	if forwarded_ip and not _is_non_public(forwarded_ip):
 		return str(forwarded_ip)
 
 	if matched_iface is not None:
@@ -417,43 +381,13 @@ async def _resolve_geo(ip_text: str | None) -> dict[str, str | None]:
 	return extract_geo_fields(await asyncio.to_thread(lookup_ip_cached, ip_text))
 
 
-async def _detect_outbound_ip() -> tuple[str | None, str]:
-	"""Detect outbound/public IP with small timeout and fallback endpoints."""
-	timeout = httpx.Timeout(3.0, connect=3.0)
-	async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
-		for url in _STATUS_OUTBOUND_IP_URLS:
-			try:
-				resp = await client.get(url)
-				resp.raise_for_status()
-				lines = (resp.text or "").strip().splitlines()
-				if not lines:
-					_log.debug("Outbound IP probe %s returned empty response", url)
-					continue
-				candidate = lines[0].strip()
-				ip_obj = ipaddress.ip_address(candidate)
-				if isinstance(ip_obj, ipaddress.IPv6Address) and ip_obj.ipv4_mapped:
-					candidate = str(ip_obj.ipv4_mapped)
-				return candidate, "Detected via external probe"
-			except httpx.HTTPStatusError as exc:
-				_log.debug("Outbound IP probe %s failed: %s", url, exc)
-				continue
-			except (httpx.RequestError, ValueError) as exc:
-				_log.debug("Outbound IP probe %s error: %s", url, exc)
-				continue
-	return None, "Outbound IP probe unavailable"
-
-
 async def _detect_outbound_ip_cached() -> tuple[str | None, str]:
-	"""Detect outbound IP with TTL cache to reduce latency and external calls."""
-	global _outbound_ip_cache
-
-	async with _outbound_ip_cache_lock:
-		now = time.monotonic()
-		if _outbound_ip_cache and (now - _outbound_ip_cache[2]) < _STATUS_OUTBOUND_CACHE_TTL:
-			return _outbound_ip_cache[0], _outbound_ip_cache[1]
-		result = await _detect_outbound_ip()
-		_outbound_ip_cache = (result[0], result[1], now)
-		return result
+	"""Detect the outbound IP via the shared detector (TTL-cached, IPv6 preferred like a dual-stack probe)."""
+	result = await _public_ip_detector.adetect_all()
+	address = result.ipv6.address or result.ipv4.address
+	if address:
+		return address, "Detected via external probe"
+	return None, "Outbound IP probe unavailable"
 
 
 def _dns_config_indicator(
@@ -524,7 +458,6 @@ async def _dns_leak_indicator(
 	now_mono = time.monotonic()
 
 	async with _dns_leak_cache_lock:
-		# Check cache
 		cached = _dns_leak_cache.get(cache_key)
 		if cached and (now_mono - cached[2]) < _STATUS_DNS_LEAK_CACHE_TTL:
 			return cached[0], cached[1]
@@ -660,21 +593,23 @@ def _latest_speedtest_check() -> dict[str, object]:
 		download = data.get("download_mbit")
 		upload = data.get("upload_mbit")
 		rtt = data.get("rtt_ms")
-		detail_parts: list[str] = []
+		# Numbers are emitted raw (data-wb-*) so the browser formats them in its locale;
+		# "text" is only the no-JavaScript fallback.
+		detail_parts: list[dict[str, object]] = []
 		download_label = format_optional_bandwidth_mbit(download, gbit_digits=2, mbit_digits=2)
 		upload_label = format_optional_bandwidth_mbit(upload, gbit_digits=2, mbit_digits=2)
 		if download_label:
-			detail_parts.append(f"{download_label} down")
+			detail_parts.append({"kind": "bandwidth", "value": download, "digits": 2, "text": download_label, "suffix": " down"})
 		if upload_label:
-			detail_parts.append(f"{upload_label} up")
-		if isinstance(rtt, (int, float)):
-			detail_parts.append(f"{rtt:.2f} ms RTT")
-		detail_parts.append(server_label)
+			detail_parts.append({"kind": "bandwidth", "value": upload, "digits": 2, "text": upload_label, "suffix": " up"})
+		if isinstance(rtt, (int, float)) and not isinstance(rtt, bool):
+			detail_parts.append({"kind": "fixed", "value": rtt, "digits": 2, "text": f"{rtt:.2f}", "suffix": " ms RTT"})
+		detail_parts.append({"text": server_label})
 		return {
 			"title": "Last Speedtest",
 			"state": CheckState.OK,
 			"label": "OK",
-			"detail": " \u2022 ".join([*detail_parts, age_label]),
+			"detail": " \u2022 ".join([f"{part['text']}{part.get('suffix', '')}" for part in detail_parts] + [age_label]),
 			"detail_parts": detail_parts,
 			"age_label": age_label,
 		}
@@ -710,7 +645,7 @@ def _is_trusted_status_proxy_hop(
 		return False
 	if socket_ip_obj.is_loopback:
 		return True
-	trusted_networks = _get_status_trusted_proxy_networks()
+	trusted_networks = get_explicit_trusted_proxy_networks()
 	if trusted_networks:
 		return _ip_in_networks(socket_ip_obj, trusted_networks)
 	# Security: Don't auto-trust private IPs - require explicit configuration
@@ -730,8 +665,7 @@ async def _resolve_status_client_context(
 
 	auth_ip_source = "direct"
 	forwarded_ip_value: str | None = None
-	scope_client = request.scope.get("client")
-	socket_ip_obj = parse_ip(scope_client[0] if scope_client else None)
+	socket_ip_obj = parse_ip(socket_peer_ip(request.scope))
 
 	_log.debug(
 		"/status: client_ip=%s socket_ip=%s user=%s",
@@ -786,7 +720,7 @@ async def _resolve_status_client_context(
 				_log.warning(
 					"/status: ignoring proxy headers from untrusted source %s (set %s to trust this proxy)",
 					socket_ip_obj,
-					_STATUS_TRUSTED_PROXY_CIDRS_ENV,
+					TRUSTED_PROXIES_ENV,
 				)
 
 	if matched_iface is None and user and user["is_admin"]:

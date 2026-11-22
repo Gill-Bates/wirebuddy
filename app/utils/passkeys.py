@@ -218,7 +218,6 @@ def _parse_registration_credential(credential_json: dict[str, Any]) -> Registrat
 			raise ValueError("Missing rawId")
 		_validate_base64url(str(cred_id), "credential id")
 
-		# Parse response
 		client_data_json = response.get("clientDataJSON") or response.get("client_data_json")
 		attestation_object = response.get("attestationObject") or response.get("attestation_object")
 
@@ -227,7 +226,6 @@ def _parse_registration_credential(credential_json: dict[str, Any]) -> Registrat
 		if not attestation_object:
 			raise ValueError("Missing attestationObject")
 
-		# Parse transports if present
 		transports = response.get("transports")
 		parsed_transports = None
 		if transports:
@@ -246,7 +244,6 @@ def _parse_registration_credential(credential_json: dict[str, Any]) -> Registrat
 				except ValueError:
 					_log.warning("Unknown transport: %s", t)
 
-		# Build the response object
 		attestation_response = AuthenticatorAttestationResponse(
 			client_data_json=_decode_base64url_field(client_data_json, "clientDataJSON"),
 			attestation_object=_decode_base64url_field(attestation_object, "attestationObject"),
@@ -291,7 +288,6 @@ def _parse_authentication_credential(credential_json: dict[str, Any]) -> Authent
 			raise ValueError("Missing rawId")
 		_validate_base64url(str(cred_id), "credential id")
 
-		# Parse response
 		client_data_json = response.get("clientDataJSON") or response.get("client_data_json")
 		authenticator_data = response.get("authenticatorData") or response.get("authenticator_data")
 		signature = response.get("signature")
@@ -304,7 +300,6 @@ def _parse_authentication_credential(credential_json: dict[str, Any]) -> Authent
 		if not signature:
 			raise ValueError("Missing signature")
 
-		# Build the response object
 		assertion_response = AuthenticatorAssertionResponse(
 			client_data_json=_decode_base64url_field(client_data_json, "clientDataJSON"),
 			authenticator_data=_decode_base64url_field(authenticator_data, "authenticatorData"),

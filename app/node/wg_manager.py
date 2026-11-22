@@ -28,11 +28,11 @@ from pathlib import Path
 from typing import Any
 
 from ..utils.binaries import first_executable
+from ..utils.fs import fsync_dir
 
 __all__ = [
 	"apply_config",
 	"get_wg_dump",
-	"has_running_interfaces",
 	"shutdown_all_interfaces",
 ]
 
@@ -42,6 +42,8 @@ WG_CONFIG_DIR = Path("/etc/wireguard")
 _MANAGED_HEADER = "# Managed by WireBuddy Node Daemon - do not edit manually"
 _INTERFACE_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_-]{0,14}$")
 _WG_KEY_RE = re.compile(r"^[A-Za-z0-9+/]{43}=$")
+# Unanchored variant for redacting keys embedded in command lines / error messages.
+_WG_KEY_EMBEDDED_RE = re.compile(r"(?<![A-Za-z0-9+/])[A-Za-z0-9+/]{43}=")
 # Strict hostname: labels of alnum+hyphen, no leading/trailing hyphen, max 253 chars
 _HOSTNAME_RE = re.compile(
 	r"^(?=.{1,253}$)(?!-)([a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.)*"
@@ -145,7 +147,7 @@ class PeerState:
 
 def _redact_keys(text: str) -> str:
 	"""Truncate WireGuard keys in error messages to first 8 chars."""
-	return _WG_KEY_RE.sub(lambda m: m.group()[:8] + "...", text)
+	return _WG_KEY_EMBEDDED_RE.sub(lambda m: m.group()[:8] + "...", text)
 
 
 def _run(cmd: list[str], timeout: int = 30) -> tuple[int, str, str]:
@@ -370,18 +372,6 @@ def _read_managed_config(path: Path) -> str | None:
 	return None
 
 
-def _fsync_dir(path: Path) -> None:
-	"""Fsync a directory so file replacement is durable across crashes."""
-	flags = os.O_RDONLY
-	if hasattr(os, "O_DIRECTORY"):
-		flags |= os.O_DIRECTORY
-	dir_fd = os.open(str(path), flags)
-	try:
-		os.fsync(dir_fd)
-	finally:
-		os.close(dir_fd)
-
-
 def _write_raw_managed_config(conf_path: Path, content: str, *, suffix: str = ".tmp") -> None:
 	"""Atomically write managed config content with durability guarantees."""
 	fd = -1
@@ -399,7 +389,7 @@ def _write_raw_managed_config(conf_path: Path, content: str, *, suffix: str = ".
 			handle.flush()
 			os.fsync(handle.fileno())
 		Path(tmp_path).replace(conf_path)
-		_fsync_dir(conf_path.parent)
+		fsync_dir(conf_path.parent)
 	finally:
 		if fd != -1:
 			os.close(fd)
@@ -549,11 +539,15 @@ def _remove_interface_config(name: str) -> None:
 
 
 def _get_running_interfaces() -> set[str]:
-	"""Return set of currently running WireGuard interfaces."""
+	"""Return set of currently running WireGuard interfaces.
+
+	Raises RuntimeError when the query fails: an unknown runtime state must
+	not be mistaken for "nothing is running" (that would trigger wg-quick up
+	for interfaces that are already active).
+	"""
 	code, stdout, stderr = _run([_WG_BIN, "show", "interfaces"], timeout=_TIMEOUT_WG_SHOW)
 	if code != 0:
-		_log.warning("Failed to query running WireGuard interfaces: %s", stderr.strip() or "unknown error")
-		return set()
+		raise RuntimeError(f"Failed to query running WireGuard interfaces: {_redact_keys(stderr.strip() or 'unknown error')}")
 	interfaces: set[str] = set()
 	for item in stdout.strip().split():
 		if _INTERFACE_RE.fullmatch(item):
@@ -561,11 +555,6 @@ def _get_running_interfaces() -> set[str]:
 		else:
 			_log.warning("Ignoring invalid WireGuard interface name from runtime: %r", item)
 	return interfaces
-
-
-def has_running_interfaces() -> bool:
-	"""Check if any WireGuard interfaces are currently running."""
-	return len(_get_running_interfaces()) > 0
 
 
 def apply_config(config: dict[str, Any]) -> str:
@@ -635,6 +624,9 @@ def _parse_and_validate(config: dict[str, Any]) -> tuple[str, list[InterfaceConf
 		peers_by_interface[master_peer.interface].append(master_peer)
 
 	all_peer_keys: set[str] = set()
+	# Host routes are installed with `ip route replace`, so a duplicate would
+	# silently move the route to the last peer; reject it before any change.
+	host_routes: set[ipaddress.IPv4Network | ipaddress.IPv6Network] = set()
 	for iface_peers in peers_by_interface.values():
 		if len(iface_peers) > _MAX_PEERS_PER_INTERFACE + 1:  # +1 for master
 			raise ValueError("Interface exceeds maximum peer limits")
@@ -642,6 +634,11 @@ def _parse_and_validate(config: dict[str, Any]) -> tuple[str, list[InterfaceConf
 			if peer.public_key in all_peer_keys:
 				raise ValueError(f"Duplicate peer public key across interfaces: {peer.public_key[:8]}...")
 			all_peer_keys.add(peer.public_key)
+			for item in peer.peer_address.split(","):
+				route = ipaddress.ip_interface(item.strip()).network
+				if route in host_routes:
+					raise ValueError(f"Duplicate peer host route {route} in config payload")
+				host_routes.add(route)
 
 	return version, interfaces, peers_by_interface
 
@@ -655,12 +652,13 @@ def _write_interface_configs(interfaces: list[InterfaceConfig]) -> dict[str, boo
 	return changed_map
 
 
-def _restore_interface_runtime(name: str, backup_content: str | None) -> None:
+def _restore_interface_runtime(name: str, backup_content: str | None, peers: dict[str, PeerState] | None = None) -> None:
 	"""Best-effort restore of an interface's previous config and runtime state.
 
 	Used both for a single interface's own reload failure and for rolling
 	back interfaces that already succeeded when a later interface in the
-	same apply_config() call fails.
+	same apply_config() call fails. wg-quick down/up drops the runtime peers
+	and their routes, so the pre-change peer snapshot is re-applied.
 	"""
 	conf_path = _get_interface_conf_path(name)
 	_run([_WG_QUICK_BIN, "down", name], timeout=_TIMEOUT_WG_QUICK)
@@ -670,25 +668,35 @@ def _restore_interface_runtime(name: str, backup_content: str | None) -> None:
 	try:
 		_write_raw_managed_config(conf_path, backup_content, suffix=".restore.tmp")
 		_run_checked([_WG_QUICK_BIN, "up", name], timeout=_TIMEOUT_WG_QUICK)
+		if peers:
+			_restore_peer_state(name, peers)
 		_log.warning("Successfully restored previous config for %s", name)
 	except Exception as restore_exc:
-		_log.critical("Failed to restore %s (interface offline): %s", name, restore_exc)
+		_log.critical("Failed to restore %s (interface offline or peers incomplete): %s", name, restore_exc)
 
 
-def _sync_one_interface_state(name: str, changed: bool, running: set[str], backup_content: str | None) -> None:
+def _sync_one_interface_state(
+	name: str,
+	changed: bool,
+	running: set[str],
+	backup_content: str | None,
+	peers: dict[str, PeerState] | None = None,
+) -> str | None:
 	"""Start or reload a single interface. Restores itself on reload failure.
 
-	Bringing up a not-yet-running interface for the first time has nothing
-	to restore to, so only the reload path (an already-running interface
-	with a changed config) rolls itself back on failure.
+	Returns "started" or "reloaded" when the runtime state was modified and
+	None when nothing was touched (running and unchanged). Bringing up a
+	not-yet-running interface for the first time has nothing to restore to,
+	so only the reload path (an already-running interface with a changed
+	config) rolls itself back on failure.
 	"""
 	if name not in running:
 		_log.info("Bringing up interface %s...", name)
 		_run_checked([_WG_QUICK_BIN, "up", name], timeout=_TIMEOUT_WG_QUICK)
 		_log.info("Interface %s is up", name)
-		return
+		return "started"
 	if not changed:
-		return
+		return None
 	_log.info("Reloading interface %s (config changed)...", name)
 	try:
 		_run_checked([_WG_QUICK_BIN, "down", name], timeout=_TIMEOUT_WG_QUICK)
@@ -697,38 +705,65 @@ def _sync_one_interface_state(name: str, changed: bool, running: set[str], backu
 	except RuntimeError as exc:
 		_log.critical("Interface reload failed for %s: %s", name, exc)
 		_log.warning("Attempting to restore previous config for %s...", name)
-		_restore_interface_runtime(name, backup_content)
+		_restore_interface_runtime(name, backup_content, peers)
 		raise
+	return "reloaded"
 
 
 def _sync_interface_states(
 	interfaces: list[InterfaceConfig],
 	changed_map: dict[str, bool],
 	backups: dict[str, str],
+	running: set[str],
+	peer_snapshots: dict[str, dict[str, PeerState]],
 ) -> None:
-	"""Phase 2: Start or reload interfaces, rolling back completed ones on failure.
+	"""Phase 2: Start or reload interfaces, rolling back modified ones on failure.
 
-	_sync_one_interface_state() already restores itself when its own reload
-	fails, but earlier interfaces in this loop that already succeeded were
-	previously left on the new config, mixing old and new runtime state
-	when a later interface fails. Track every interface already brought to
-	the new state so all of them (except the one that just failed and
-	already restored itself) can be rolled back together.
+	_sync_one_interface_state() restores itself when its own reload fails.
+	Interfaces that were started or reloaded earlier in this loop are rolled
+	back as well: reloaded ones go back to their old config and peers, newly
+	started ones are brought down again. Interfaces that were running and
+	unchanged were never touched and are never bounced.
 	"""
-	running = _get_running_interfaces()
-	completed: list[str] = []
+	modified: list[tuple[str, str]] = []
 	try:
 		for iface in interfaces:
 			name = iface.name
-			_sync_one_interface_state(name, changed_map.get(name, False), running, backups.get(name))
-			completed.append(name)
+			action = _sync_one_interface_state(name, changed_map.get(name, False), running, backups.get(name), peer_snapshots.get(name))
+			if action is not None:
+				modified.append((name, action))
 	except Exception:
-		for name in reversed(completed):
+		for name, action in reversed(modified):
 			try:
-				_restore_interface_runtime(name, backups.get(name))
+				if action == "reloaded":
+					_restore_interface_runtime(name, backups.get(name), peer_snapshots.get(name))
+				else:
+					_run([_WG_QUICK_BIN, "down", name], timeout=_TIMEOUT_WG_QUICK)
 			except Exception:
 				_log.exception("Failed to restore interface %s during cross-interface rollback", name)
 		raise
+
+
+def _restore_interface_files(interfaces: list[InterfaceConfig], backups: dict[str, str]) -> None:
+	"""Best-effort restore of every interface config file to its pre-apply state.
+
+	Covers interfaces whose runtime was never touched (a later interface
+	failed first): files that did not exist before are removed, others get
+	their previous content back.
+	"""
+	for iface in interfaces:
+		name = iface.name
+		try:
+			backup = backups.get(name)
+			if backup is None:
+				_remove_interface_config(name)
+			else:
+				conf_path = _get_interface_conf_path(name)
+				if _read_managed_config(conf_path) != backup:
+					_write_raw_managed_config(conf_path, backup, suffix=".restore.tmp")
+					_log.warning("Restored previous config file for %s", name)
+		except Exception:
+			_log.exception("Failed to restore config file for %s", name)
 
 
 def _remove_orphaned_interfaces(desired_ifaces: set[str]) -> None:
@@ -745,11 +780,21 @@ def _apply_config_locked(config: dict[str, Any]) -> str:
 	"""Inner apply_config orchestration."""
 	version, interfaces, peers_by_interface = _parse_and_validate(config)
 
-	backups = {iface.name: managed_config for iface in interfaces if (managed_config := _read_managed_config(_get_interface_conf_path(iface.name))) is not None}
+	# Runtime state and snapshots are read before the first change, so a failing
+	# query aborts the apply with nothing modified.
+	running = _get_running_interfaces()
+	desired_names = [iface.name for iface in interfaces]
+	peer_snapshots = {name: _get_current_peer_state(name) for name in desired_names if name in running}
+	backups = {name: managed_config for name in desired_names if (managed_config := _read_managed_config(_get_interface_conf_path(name))) is not None}
 
-	# Phase 1 & 2: Interfaces
-	changed_map = _write_interface_configs(interfaces)
-	_sync_interface_states(interfaces, changed_map, backups)
+	# Phase 1 & 2: Interfaces. A failure restores the files of all interfaces
+	# (also the not yet processed ones) after the runtime rollback.
+	try:
+		changed_map = _write_interface_configs(interfaces)
+		_sync_interface_states(interfaces, changed_map, backups, running, peer_snapshots)
+	except Exception:
+		_restore_interface_files(interfaces, backups)
+		raise
 
 	# Phase 3: Peers (handles normal node peers + master peer)
 	_sync_peers_for_interfaces(interfaces, peers_by_interface)

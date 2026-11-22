@@ -4,9 +4,6 @@
 # Copyright (C) 2026 Gill-Bates http://github.com/Gill-Bates
 #
 
-# SPDX-License-Identifier: MIT
-#
-
 """Peer policy invariants must hold against the effective persisted state.
 
 PeerUpdate's Pydantic validators only see fields present in a single

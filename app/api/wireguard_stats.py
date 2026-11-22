@@ -68,8 +68,8 @@ def _bucket_counter_delta(
 ) -> dict[str, float]:
 	"""Aggregate counter deltas into time buckets (consumption per bucket).
 
-	Points are sorted defensively (TSDB contract guarantees chronological
-	order, but we guard against future regressions). If consecutive points
+	Points must already be chronological (TSDB contract; only a debug-mode
+	assertion checks it, nothing is re-sorted). If consecutive points
 	have a time gap wider than ``2 * bucket_seconds``, we reset the baseline.
 	The delta spanning that gap is discarded to avoid unreliable spikes.
 
@@ -413,7 +413,6 @@ async def get_traffic_stats(
 	if range_key:
 		hours = TRAFFIC_RANGE_TO_HOURS[range_key]
 
-	# Check if logging is disabled (retention_days = 0)
 	retention_days = await run_in_threadpool(get_tsdb_retention_days, conn)
 	if retention_days == 0:
 		return ok_response(data=_empty_traffic_response(hours, range_key))

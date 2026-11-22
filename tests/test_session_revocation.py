@@ -4,9 +4,6 @@
 # Copyright (C) 2026 Gill-Bates http://github.com/Gill-Bates
 #
 
-# SPDX-License-Identifier: MIT
-#
-
 """Changing an authentication factor or account status must invalidate sessions.
 
 A token issued before MFA was enabled, before a passkey was reset, or before an

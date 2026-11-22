@@ -24,7 +24,7 @@
     data-enable-blocklist='{{ enable_blocklist | tojson }}'
     data-dns-unavailable='{{ dns_unavailable | default(false) | tojson }}'>
 <div class="wb-page-header flex-wrap gap-2 dns-header">
-    <h1 class="page-title"><span class="material-icons me-2" aria-hidden="true">dns</span>DNS Ad-Blocker</h1>
+    <h1 class="page-title"><span class="material-icons me-2" aria-hidden="true">dns</span>DNS ad-blocking</h1>
     <div class="d-flex gap-2 align-items-center flex-wrap dns-toolbar">
         <div class="dns-quickfilters">
             <!-- Global Peer Filter -->
@@ -42,10 +42,10 @@
                 <option value="y1">1 y</option>
             </select>
         </div>
-        <!-- Ad-Blocker Toggle -->
-        <div class="dropdown adblocker-dropdown" id="adblocker-dropdown-wrap">
+        <!-- Ad-blocking toggle -->
+        <div class="dropdown adblocker-dropdown">
             <button class="btn btn-sm dropdown-toggle {% if dns_unavailable %}btn-adblocker-disabled{% elif enable_blocklist %}btn-adblocker-enabled{% else %}btn-adblocker-disabled{% endif %}" type="button" id="adblocker-btn" data-bs-toggle="dropdown" aria-expanded="false"{% if not is_admin or dns_unavailable %} disabled{% endif %}{% if dns_unavailable %} title="Unbound not installed"{% endif %}>
-                <span id="adblocker-btn-text">{% if dns_unavailable %}Ad-Blocker: Unavailable{% elif enable_blocklist %}Ad-Blocker: Enabled{% else %}Ad-Blocker: Disabled{% endif %}</span>
+                <span id="adblocker-btn-text">{% if dns_unavailable %}DNS ad-blocking: Unavailable{% elif enable_blocklist %}DNS ad-blocking: Enabled{% else %}DNS ad-blocking: Disabled{% endif %}</span>
                 <span id="adblocker-countdown" class="adblocker-countdown ms-1 d-none"></span>
             </button>
             <ul class="dropdown-menu dropdown-menu-end" aria-labelledby="adblocker-btn">
@@ -53,7 +53,7 @@
                 <li><button type="button" class="dropdown-item" data-adblocker-mode="disable"><span class="material-icons me-2" aria-hidden="true">cancel</span>Disable</button></li>
                 <li><hr class="dropdown-divider"></li>
                 <li><button type="button" class="dropdown-item" data-adblocker-mode="disable_1h"><span class="material-icons me-2" aria-hidden="true">timer</span>Disable for 1h</button></li>
-                <li><button type="button" class="dropdown-item" data-adblocker-mode="disable_today"><span class="material-icons me-2" aria-hidden="true">nights_stay</span>Disable for Today</button></li>
+                <li><button type="button" class="dropdown-item" data-adblocker-mode="disable_today"><span class="material-icons me-2" aria-hidden="true">nights_stay</span>Disable until 00:00 UTC</button></li>
             </ul>
         </div>
     </div>
@@ -143,8 +143,8 @@
                         </div>
                         <div id="top-blocked-disabled" class="chart-empty-state d-none flex-grow-1 d-flex flex-column align-items-center justify-content-center" role="status" aria-live="polite">
                             <span class="material-icons" aria-hidden="true">block</span>
-                            <span class="chart-empty-state-text">Ad-Blocker Disabled</span>
-                            <span class="chart-empty-state-text small">Enable the Ad-Blocker to see blocked domains.</span>
+                            <span class="chart-empty-state-text">DNS ad-blocking disabled</span>
+                            <span class="chart-empty-state-text small">Enable DNS ad-blocking to see blocked domains.</span>
                         </div>
                         {{ dns_unavailable_state('flex-grow-1', 'top-blocked-unavailable') }}
                     </div>
@@ -169,8 +169,8 @@
                         <div id="trend-empty" class="chart-empty-state d-none trend-chart-height" role="status" aria-live="polite"></div>
                         <div id="trend-disabled" class="chart-empty-state d-none trend-chart-height" role="status" aria-live="polite">
                             <span class="material-icons" aria-hidden="true">block</span>
-                            <span class="chart-empty-state-text">Ad-Blocker Disabled</span>
-                            <span class="chart-empty-state-text small">Enable the Ad-Blocker to see blockrate trends.</span>
+                            <span class="chart-empty-state-text">DNS ad-blocking disabled</span>
+                            <span class="chart-empty-state-text small">Enable DNS ad-blocking to see blockrate trends.</span>
                         </div>
                         {{ dns_unavailable_state('trend-chart-height', 'trend-unavailable') }}
                     </div>
@@ -220,8 +220,6 @@
                     </table>
                 </div>
                 <div id="log-action-menu" class="dropdown-menu"></div>
-                <!-- Screen reader announcement for search results -->
-                <div id="log-sr-announce" class="visually-hidden" aria-live="polite" aria-atomic="true"></div>
                 <div id="log-row-action-help" class="visually-hidden">Press Enter or Space for rule actions.</div>
                 <!-- DNS unavailable overlay (z-index higher than sticky header) -->
                 {{ dns_unavailable_state('wb-empty-state-overlay bg-body', 'log-unavailable') }}

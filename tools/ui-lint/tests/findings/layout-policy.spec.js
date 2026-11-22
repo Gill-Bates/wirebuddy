@@ -118,3 +118,21 @@ test('overlapping visible dashboard widgets produce a layout finding', async () 
         expect.objectContaining({ id: 'dashboard-widget-overlap', count: 1, severity: 'error' }),
     ]));
 });
+
+test('a screenshot size mismatch is reported on its own and as drift', async () => {
+    const summarized = summarizeFindings({
+        name: 'dashboard-desktop',
+        metrics: {},
+        network: {},
+        diff: {
+            ratio: 0.2,
+            sizeMismatch: true,
+            dimensions: { img1: { width: 100, height: 100 }, img2: { width: 100, height: 120 } },
+        },
+    });
+
+    expect(summarized.structuredFindings).toEqual(expect.arrayContaining([
+        expect.objectContaining({ id: 'visual-size-mismatch', severity: 'error' }),
+        expect.objectContaining({ id: 'visual-drift' }),
+    ]));
+});

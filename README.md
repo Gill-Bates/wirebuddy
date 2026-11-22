@@ -8,19 +8,15 @@
 <p align="center">
   <a href="https://github.com/Gill-Bates/wirebuddy/releases"><img src="https://img.shields.io/github/v/release/Gill-Bates/wirebuddy?logo=github&logoColor=white" alt="GitHub Release"></a>
   <a href="https://hub.docker.com/r/giiibates/wirebuddy"><img src="https://img.shields.io/docker/pulls/giiibates/wirebuddy?logo=docker&logoColor=white" alt="Docker Pulls"></a>
-  <a href="https://hub.docker.com/r/giiibates/wirebuddy"><img src="https://img.shields.io/docker/image-size/giiibates/wirebuddy?logo=docker&logoColor=white" alt="Docker Image Size"></a>
-  <br>
+  <a href="https://hub.docker.com/r/giiibates/wirebuddy"><img src="https://img.shields.io/badge/Platform-linux%2Famd64%20%7C%20linux%2Farm64-lightgrey?logo=linux&logoColor=white" alt="Supported Platforms"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="License"></a>
-  <img src="https://img.shields.io/badge/Platform-linux%2Famd64%20|%20linux%2Farm64-lightgrey?logo=linux&logoColor=white" alt="Platform">
 </p>
-
 <p align="center">
-  <a href="https://gill-bates.github.io/wirebuddy/"><img src="https://img.shields.io/badge/Documentation-2ea44f?style=for-the-badge&logo=readthedocs&logoColor=white" alt="Documentation"></a>
-  <a href="https://gill-bates.github.io/wirebuddy/getting-started/quick-start/"><img src="https://img.shields.io/badge/Quick%20Start-0a7bbb?style=for-the-badge&logo=docker&logoColor=white" alt="Quick Start"></a>
-  <a href="https://gill-bates.github.io/wirebuddy/changelog/"><img src="https://img.shields.io/badge/Changelog-6f42c1?style=for-the-badge&logo=keepachangelog&logoColor=white" alt="Changelog"></a>
+  <a href="https://gill-bates.github.io/wirebuddy/getting-started/quick-start/"><img src="https://img.shields.io/badge/Quick%20Start-168B75?style=for-the-badge&logo=docker&logoColor=white" alt="Quick Start"></a>
+  <a href="https://gill-bates.github.io/wirebuddy/"><img src="https://img.shields.io/badge/Documentation-34495E?style=for-the-badge&logo=readthedocs&logoColor=white" alt="Documentation"></a>
+  <a href="https://gill-bates.github.io/wirebuddy/changelog/"><img src="https://img.shields.io/badge/Changelog-34495E?style=for-the-badge&logo=keepachangelog&logoColor=white" alt="Changelog"></a>
 </p>
 
----
 
 ## Screenshots
 
@@ -34,15 +30,15 @@
   <br>
   <p align="center">
     <img src=".github/img/screen_1.jpeg" alt="WireBuddy login screen" width="800"><br>
-    <em>Login — dark/light theme toggle, no account enumeration on failed attempts.</em>
+    <em>Login — Auto/Light/Dark theme toggle, no account enumeration on failed attempts.</em>
   </p>
   <p align="center">
     <img src=".github/img/screen_3.jpeg" alt="WireBuddy traffic page: per-peer chart plus destination breakdown by country and ASN" width="800"><br>
     <em>Traffic — per-peer RX/TX charts with destination breakdown by country and ASN.</em>
   </p>
   <p align="center">
-    <img src=".github/img/screen_4.jpeg" alt="WireBuddy DNS ad-blocker: query stats, top blocked domains, block-rate trend, and live query log" width="800"><br>
-    <em>DNS Ad-Blocker — live query log, top blocked domains, and block-rate trend.</em>
+    <img src=".github/img/screen_4.jpeg" alt="WireBuddy DNS ad-blocking: query stats, top blocked domains, block-rate trend, and live query log" width="800"><br>
+    <em>DNS ad-blocking — live query log, top blocked domains, and block-rate trend.</em>
   </p>
   <p align="center">
     <img src=".github/img/screen_5.jpeg" alt="WireBuddy WireGuard settings: global MTU/keepalive/PSK options, interfaces, and traffic analysis toggle" width="800"><br>
@@ -66,7 +62,7 @@
 |  **Monitoring** | Built-in time-series database, per-peer traffic charts, traffic analysis by country & ASN |
 |  **GeoIP** | MaxMind GeoLite2 integration, interactive heatmap, country flags & ASN badges |
 |  **HTTPS & Certificates** | Built-in HTTPS with self-signed or Let's Encrypt certificates, HTTP-01 validation, and certificate management |
-|  **User Management** | Multi-user roles, Passkeys (WebAuthn) & MFA (TOTP), login tracking |
+|  **User Management** | Multi-user roles, Passkeys (WebAuthn) & two-factor authentication (2FA, TOTP), login tracking |
 |  **Web UI** | Customizable drag-and-drop dashboard, responsive Bootstrap 5, dark/light/auto theme, Material Icons |
 
 ---
@@ -82,7 +78,8 @@ For production Docker deployments, WireBuddy expects Linux with `network_mode: h
 The default setup serves the GUI over HTTP. To use WireBuddy's built-in HTTPS,
 enable **Settings → General → Serve GUI over HTTPS**, then restart the
 container. It uses a self-signed certificate until you obtain a Let's Encrypt
-certificate in **Settings → Let's Encrypt**.
+certificate in **Settings → Let's Encrypt**, and falls back to it whenever that
+certificate is expired, not yet valid, or does not cover the host name.
 
 For installation, configuration, and security setup, see the **[Documentation](https://gill-bates.github.io/wirebuddy/)**.
 

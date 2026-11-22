@@ -37,7 +37,7 @@ TOTP parameters:
 
 - 6 digits
 - 30-second period
-- Verification window: plus/minus one step
+- Verification window: current step only; each code is accepted once
 
 Recovery codes are generated for MFA recovery and stored hashed.
 
@@ -69,8 +69,12 @@ Authorization: Bearer <auth_token>
 This is the same session-token model as browser auth, not a separate API-token
 product.
 
-Node sync endpoints use dedicated node auth (node secret + certificate
-fingerprint) and are separate from user session auth.
+Node sync endpoints use dedicated node auth (a per-node bearer session secret)
+and are separate from user session auth. A client-certificate fingerprint is
+checked additionally only when an mTLS proxy listed in
+`WIREBUDDY_TRUSTED_PROXIES` injects it. With built-in HTTPS or
+`WIREBUDDY_REQUIRE_HTTPS_AUTH`, node authentication over plain HTTP is rejected
+(loopback excepted), as for logins and enrollment.
 
 ## CSRF Protection
 

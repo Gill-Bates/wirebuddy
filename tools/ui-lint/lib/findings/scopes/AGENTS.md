@@ -1,5 +1,5 @@
 <!-- Parent: ../../AGENTS.md -->
-<!-- Generated: 2026-09-21 | Updated: 2026-09-21 -->
+<!-- Generated: 2026-09-21 | Updated: 2026-11-22 -->
 # scopes
 
 ## Purpose
@@ -16,26 +16,14 @@ Predicates deciding whether an audit entry belongs to a page scope (route/device
 
 ## For AI Agents
 
-### Working In This Directory
-
-- No special constraints beyond the parent directory guidance.
-
 ### Testing Requirements
 
-- Covered by `tests/findings/layout-policy.spec.js`. Run `cd tools/ui-lint && npx playwright test <spec>` (no playwright.config file; defaults apply).
-
-### Common Patterns
-
-- No special constraints beyond the parent directory guidance.
+- Covered by `tests/findings/layout-policy.spec.js`. Run `cd tools/ui-lint && npx playwright test <spec>`.
 
 ## Dependencies
 
 ### Internal
 
 - Used by `../policies/`
-
-### External
-
-- No special constraints beyond the parent directory guidance.
 
 <!-- MANUAL: Any manually added notes below this line are preserved on regeneration -->

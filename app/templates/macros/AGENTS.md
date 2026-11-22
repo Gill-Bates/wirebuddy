@@ -1,5 +1,5 @@
 <!-- Parent: ../AGENTS.md -->
-<!-- Generated: 2026-09-21 | Updated: 2026-09-21 -->
+<!-- Generated: 2026-09-21 | Updated: 2026-11-22 -->
 # macros
 
 ## Purpose
@@ -16,17 +16,17 @@ Jinja macros shared by several pages, keeping repeated markup consistent.
 
 ## For AI Agents
 ### Working In This Directory
-- Import with `{% from 'macros/x.html' import y %}`; `base.html` and `status.html` use `with context`. Keep signatures backward compatible.
+- Import with `{% from 'macros/x.html' import y %}`; add `with context` when the macro reads page context (`base.html`, `status.html` and `peers.html` do). Keep signatures backward compatible.
 
 ### Testing Requirements
-`node tools/ui-lint/run-ui-lint.mjs`
+See `../../static/AGENTS.md`.
 
 ### Common Patterns
 - Macros take IDs as parameters so JS can target them; use `{%- -%}` whitespace control.
 
 ## Dependencies
 ### Internal
-- `../base.html`, `../dashboard.html`, `../dns.html`, `../peers.html`, `../users.html`, `../status.html`; `../../static/css/components/kpi-card.css`.
+- Importers: `../base.html` (`nav`), `../dns.html` (`kpi`), `../peers.html` (`peer_form`, `geo`), `../users.html` (`geo`, `password`), `../change_password.html` (`password`), `../status.html` (`geo`); `../../static/css/components/kpi-card.css`.
 ### External
 - Jinja2.
 

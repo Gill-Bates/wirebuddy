@@ -62,7 +62,7 @@ def parse_utc(s: str) -> datetime | None:
 		if not _is_aware(dt):
 			return None
 		return dt.astimezone(UTC)
-	except (ValueError, TypeError):
+	except ValueError, TypeError:
 		return None
 
 
@@ -126,7 +126,7 @@ def is_peer_stale(last_seen: object, stale_months: int, now: datetime | None = N
 			return False
 		try:
 			seen = datetime.fromtimestamp(last_seen, UTC)
-		except (OverflowError, OSError, ValueError):
+		except OverflowError, OSError, ValueError:
 			return False
 	else:
 		seen = parse_db_timestamp(last_seen)

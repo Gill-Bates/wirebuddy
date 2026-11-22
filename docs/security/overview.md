@@ -21,9 +21,9 @@ Accounts have one of two roles:
 | `user` | Read-only access to permitted UI and API views |
 
 Passwords are stored with PBKDF2-SHA256 using 600,000 iterations and a random
-salt. New passwords must be at least eight characters and at most 72 UTF-8
-bytes, must not be in the built-in common-password list, and must satisfy at
-least three of the uppercase, lowercase, digit, and special-character groups.
+salt. New passwords must be 8 to 256 characters long, must not be in the
+built-in common-password list, and must satisfy at least three of the
+uppercase, lowercase, digit, and special-character groups.
 
 TOTP uses six-digit, 30-second codes and produces eight one-time recovery codes
 during enrollment. Passkeys store public credential material; private keys stay
@@ -53,8 +53,10 @@ clients.
 TLS can be terminated either by a trusted reverse proxy or by WireBuddy itself
 via **Settings → General → Serve GUI over HTTPS**. With the built-in listener
 the request scheme is `https` directly, so `Secure` cookies do not depend on
-forwarded-header trust, and logins and node enrollments over plain HTTP are
-rejected. See
+forwarded-header trust, and logins, node enrollment, and node authentication
+over plain HTTP are rejected (loopback peers excepted).
+`WIREBUDDY_REQUIRE_HTTPS_AUTH` enforces the same rejection when TLS terminates
+at a reverse proxy. See
 [Built-in HTTPS Listener](../configuration/security.md#built-in-https-listener).
 
 ## Secrets at rest
@@ -72,6 +74,10 @@ ACME account and certificate private keys are files under
 `/app/data/certs/` with mode `0600`; they are not wrapped by the application
 vault. Protect and back up the whole data volume accordingly.
 
+At startup WireBuddy restricts the data directory and its `tsdb/` subdirectory
+to mode `0700`. It refuses to start when either is a symlink or remains group-
+or world-writable.
+
 !!! danger
     Losing or changing `WIREBUDDY_SECRET_KEY` makes existing vault-encrypted
     values unreadable. Keep it outside the repository and retain a secure backup.
@@ -86,9 +92,19 @@ Defaults trust loopback only. Configure the exact proxy address or CIDR and
 never use a wildcard. Incorrect trust can let clients spoof addresses used by
 rate limiting, audit logs, secure-cookie decisions, or status-page access.
 
-`WIREBUDDY_ALLOWED_HOSTS` can add Host-header validation. The public status page
-uses the same variable, but with its own trust rules (loopback plus the
-configured CIDRs) and is intended only for WireGuard-internal clients.
+The node mTLS fingerprint header `X-Client-Cert-Fingerprint` is trusted only
+from the proxies in `WIREBUDDY_MTLS_PROXIES` (empty by default), independent of
+`WIREBUDDY_TRUSTED_PROXIES`. Every proxy in front must strip a client-supplied
+copy of that header.
+
+Nodes that held the master's `WIREBUDDY_SECRET_KEY` for legacy v1 enrollment
+keep that knowledge. Removing it from `.env` does not undo the exposure; rotate
+the key if node hosts are less trusted than the master.
+
+The public status page reads `WIREBUDDY_TRUSTED_PROXIES` with its own trust
+rules (loopback plus the explicitly configured CIDRs) and is intended only for
+WireGuard-internal clients. `WIREBUDDY_ALLOWED_HOSTS` can add Host-header
+validation.
 
 ## Rate limiting and lockout
 
@@ -118,17 +134,20 @@ cap_add:
   - SETGID
   - CHOWN              # hands the DNS query log to that user
   - DAC_OVERRIDE       # root writes into the unbound-owned log directory
+  - KILL               # root signals the unbound process (reload, stop)
+init: true
+pids_limit: 512
 security_opt:
   - no-new-privileges:true
-devices:
-  - /dev/net/tun:/dev/net/tun
 ```
 
 The capability set is deliberately explicit rather than a single `NET_ADMIN`:
 `cap_drop: ALL` also strips root's DAC and ID-change privileges, so the
-bundled Unbound resolver cannot bind port 53, drop to the `unbound` user, or
-write its query log without the four additional capabilities above. Removing
-any of them makes DNS fail at startup.
+bundled Unbound resolver cannot bind port 53, drop to the `unbound` user,
+write its query log, or be reloaded and stopped without the six additional
+capabilities above. Removing any of them breaks DNS: at startup, or on reload
+and stop for `KILL` (Unbound runs as the `unbound` user, and root may only
+signal another user's process with `CAP_KILL`).
 
 The process runs as root inside the container because WireGuard and iptables
 management require network administration. It does not run as an unprivileged
@@ -148,7 +167,9 @@ ports with the host and upstream firewalls.
   derived from `WIREBUDDY_SECRET_KEY`; transport/storage encryption is the
   operator's responsibility.
 - The built-in ACME client stores certificates and, when **Serve GUI over HTTPS**
-  is enabled, WireBuddy presents them on its own TLS listener. It does not renew
+  is enabled, WireBuddy presents them on its own TLS listener; a certificate
+  that is not yet valid or does not cover the host name is skipped in favor of
+  the self-signed one. It does not renew
   them automatically, and a restart is required to pick up a new certificate.
 
 ## Current product boundaries

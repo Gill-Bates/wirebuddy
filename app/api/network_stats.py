@@ -91,7 +91,7 @@ def _get_primary_interface() -> str | None:
 				if len(parts) >= 8 and parts[1] == "00000000" and parts[7] == "00000000":
 					primary = parts[0]
 					break
-	except (OSError, StopIteration, IndexError):
+	except OSError, StopIteration, IndexError:
 		_log.debug("Could not detect default route interface")
 
 	_primary_iface_cache = primary
@@ -104,6 +104,14 @@ def _is_physical_or_wg(name: str) -> bool:
 	return all(not name.startswith(prefix) for prefix in _SKIP_PREFIXES)
 
 
+def _counter_delta(current: int, previous: int) -> int:
+	"""Return the byte delta between two readings; a decrease is a reset and yields 0.
+
+	Linux counters are 64-bit, so a wrap correction would invent a spike.
+	"""
+	return max(0, current - previous)
+
+
 def _read_interface_stats(name: str) -> tuple[int, int] | None:
 	"""Read RX/TX bytes from /sys/class/net/<name>/statistics/."""
 	stats_dir = Path(f"/sys/class/net/{name}/statistics")
@@ -111,7 +119,7 @@ def _read_interface_stats(name: str) -> tuple[int, int] | None:
 		rx_bytes = int((stats_dir / "rx_bytes").read_text().strip())
 		tx_bytes = int((stats_dir / "tx_bytes").read_text().strip())
 		return rx_bytes, tx_bytes
-	except (FileNotFoundError, ValueError, PermissionError):
+	except FileNotFoundError, ValueError, PermissionError:
 		return None
 
 
@@ -126,7 +134,7 @@ def _is_wg_interface(name: str) -> bool:
 		content = uevent_path.read_text()
 		if "DEVTYPE=wireguard" in content:
 			return True
-	except (FileNotFoundError, PermissionError):
+	except FileNotFoundError, PermissionError:
 		pass
 
 	# Fallback for older kernels: wg* naming + no physical device
@@ -168,7 +176,6 @@ def _collect_interface_stats(wg_visibility: dict[str, bool] | None = None) -> di
 	if not net_path.is_dir():
 		return {"interfaces": [], "error": "Network stats unavailable"}
 
-	# Get primary interface for marking
 	primary_iface = _get_primary_interface()
 
 	results: list[dict[str, Any]] = []
@@ -207,22 +214,8 @@ def _collect_interface_stats(wg_visibility: dict[str, bool] | None = None) -> di
 				elapsed = now - prev_ts
 
 				if elapsed > 0.1:  # At least 100ms between samples
-					# Calculate deltas
-					rx_delta = rx_bytes - prev_rx
-					tx_delta = tx_bytes - prev_tx
-
-					# A negative delta is far more likely to be a counter reset
-					# (interface restart/recreate) than a 32-bit wrap: modern
-					# kernels report 64-bit counters, which would take 584
-					# years to wrap at 1 Gbps. Only apply the wrap correction
-					# when the deficit is actually explainable as a 32-bit
-					# wrap (i.e. small enough to fit in a 32-bit range);
-					# otherwise treat it as a reset and report zero instead of
-					# a fabricated multi-GB/s spike.
-					if rx_delta < 0:
-						rx_delta = rx_delta + 2**32 if -rx_delta <= 2**32 and prev_rx >= 2**32 else 0
-					if tx_delta < 0:
-						tx_delta = tx_delta + 2**32 if -tx_delta <= 2**32 and prev_tx >= 2**32 else 0
+					rx_delta = _counter_delta(rx_bytes, prev_rx)
+					tx_delta = _counter_delta(tx_bytes, prev_tx)
 
 					rx_rate = rx_delta / elapsed  # bytes/sec
 					tx_rate = tx_delta / elapsed  # bytes/sec

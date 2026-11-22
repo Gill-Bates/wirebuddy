@@ -14,8 +14,10 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import threading
 import time
-from collections import OrderedDict
+from collections import OrderedDict, deque
+from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -23,8 +25,10 @@ from ..db import tsdb
 from ..db.sqlite_runtime import db_call
 from ..models.peers import WG_KEY_RE
 from ..utils.binaries import first_executable
+from ..utils.speedtest_window import seconds_until_next_day_window as _seconds_until_next_day_window
 from ..utils.speedtest_window import seconds_until_night_window as _seconds_until_night_window
 from ..utils.subprocess import run_command
+from ..utils.time import utcnow
 from .db_inputs import (
 	check_adblocker_timer_sync,
 	load_blocklist_update_inputs_sync,
@@ -33,8 +37,7 @@ from .db_inputs import (
 	read_blocklist_enabled_sync,
 	read_country_traffic_inputs_sync,
 	read_dns_retention_days_sync,
-	read_speedtest_retention_days_sync,
-	read_tsdb_retention_days_sync,
+	read_tsdb_retention_plan_sync,
 	reload_unbound_for_adblocker_async,
 	should_unbound_run_sync,
 )
@@ -48,8 +51,10 @@ _log = logging.getLogger(__name__)
 _PEER_CONNECTION_THRESHOLD_SECONDS = 180
 _SPEEDTEST_EXECUTION_TIMEOUT_SECONDS = 600.0
 _WG_CHECK_TIMEOUT_SECONDS = 5.0
+_GEOIP_RETRY_SECONDS = 3600.0
+# Set by update_geoip while a database is missing or unusable; read by geoip_next_delay.
+_geoip_retry_pending = False
 _PEER_STATE_MAX_SIZE = 100_000
-_NETWORK_STATS_RETENTION_DAYS = 7
 _WG_BINARY_CANDIDATES = (
 	Path("/usr/bin/wg"),
 	Path("/usr/local/bin/wg"),
@@ -70,15 +75,6 @@ def _evict_peer_state_entries(peer_connection_state: OrderedDict[str, bool]) -> 
 		peer_connection_state.popitem(last=False)
 		evicted += 1
 	return evicted
-
-
-async def sleep_with_cancellation_check(seconds: float) -> None:
-	"""Sleep for the given number of seconds.
-
-	``CancelledError`` propagates immediately via asyncio task cancellation.
-	This named wrapper keeps call sites explicit about intent.
-	"""
-	await asyncio.sleep(seconds)
 
 
 def _resolve_wg_binary() -> str | None:
@@ -108,12 +104,15 @@ async def update_blocklists(ctx: main.LifespanContext) -> None:
 		urls, custom_rules_text = inputs
 		ok, msg = await _unbound.update_blocklists(urls, custom_rules_text=custom_rules_text)
 		if not ok:
-			_log.warning("BLOCKLIST_UPDATE failed: %s", msg)
-			return
-		await _unbound.restart()
+			raise RuntimeError(f"blocklist update failed: {msg}")
+		restarted, restart_msg = await _unbound.restart()
+		if not restarted:
+			raise RuntimeError(f"Unbound restart after blocklist update failed: {restart_msg}")
 		_log.info("BLOCKLIST_UPDATE %s", msg)
 	except Exception as exc:
+		# Re-raised so the scheduler records a failure (fail_count, backoff, no last_success).
 		_log.error("BLOCKLIST_UPDATE failed: %s", exc, exc_info=True)
+		raise
 
 
 async def maintain_tsdb(ctx: main.LifespanContext) -> None:
@@ -124,20 +123,11 @@ async def maintain_tsdb(ctx: main.LifespanContext) -> None:
 
 		def _read_all_retention():
 			return (
-				read_tsdb_retention_days_sync(ctx.cfg.db_path),
-				read_speedtest_retention_days_sync(ctx.cfg.db_path),
+				*read_tsdb_retention_plan_sync(ctx.cfg.db_path),
 				read_dns_retention_days_sync(ctx.cfg.db_path),
 			)
 
-		tsdb_ret, speed_ret, dns_ret = await asyncio.to_thread(_read_all_retention)
-
-		synthetic_retention = {
-			"speedtest": speed_ret,
-			"geo_traffic": tsdb_ret,
-			"asn_traffic": tsdb_ret,
-			"network": _NETWORK_STATS_RETENTION_DAYS,
-		}
-
+		tsdb_ret, synthetic_retention, dns_ret = await asyncio.to_thread(_read_all_retention)
 		stats = await asyncio.to_thread(tsdb.run_maintenance, ctx.cfg.tsdb_dir, tsdb_ret, synthetic_retention)
 		dns_retention = await asyncio.to_thread(dns_ingestion.enforce_dns_log_retention, ctx.cfg.dns_dir, dns_ret)
 
@@ -150,6 +140,7 @@ async def maintain_tsdb(ctx: main.LifespanContext) -> None:
 		)
 	except Exception as exc:
 		_log.error("TSDB_MAINTENANCE failed: %s", exc, exc_info=True)
+		raise
 
 
 async def sample_tsdb_metrics(ctx: main.LifespanContext) -> None:
@@ -220,6 +211,52 @@ async def sample_tsdb_metrics(ctx: main.LifespanContext) -> None:
 		_log.error("TSDB_SAMPLE failed: %s", exc, exc_info=True)
 
 
+# ASN points whose write failed after the country point was stored; retried with
+# their original timestamp. Process-local: a crash loses them (undercount), never doubles.
+_PENDING_ASN_MAX = 100
+_pending_asn_points: deque[tuple[datetime, dict]] = deque(maxlen=_PENDING_ASN_MAX)
+_pending_asn_lock = threading.Lock()
+
+
+def _flush_pending_asn_points(tsdb_dir: Path) -> None:
+	"""Retry ASN points that failed earlier; stop at the first failure to keep order."""
+	from ..utils.conntrack import ASN_TRAFFIC_KEY, ASN_TRAFFIC_METRIC
+
+	with _pending_asn_lock:
+		while _pending_asn_points:
+			at, value = _pending_asn_points[0]
+			try:
+				tsdb.append_point(tsdb_dir, peer_key=ASN_TRAFFIC_KEY, metric=ASN_TRAFFIC_METRIC, value=value, at=at)
+			except Exception as exc:
+				_log.warning("COUNTRY_TRAFFIC pending ASN point still not writable: %s", exc)
+				return
+			_pending_asn_points.popleft()
+
+
+def _persist_country_sample(tsdb_dir: Path, sample, commit) -> None:
+	"""Write a country/ASN sample so a partial failure cannot double-count bytes.
+
+	The country point is the first durable write; once it is stored the baseline is
+	advanced even if the ASN write fails, because re-delivering the same deltas would
+	count the country bytes twice. A failed ASN point is queued and retried with its
+	original timestamp. If the country write itself fails nothing is stored and the
+	baseline stays put, so the whole sample is re-delivered.
+	"""
+	from ..utils.conntrack import ASN_TRAFFIC_KEY, ASN_TRAFFIC_METRIC, GEO_TRAFFIC_KEY, GEO_TRAFFIC_METRIC
+
+	at = utcnow()
+	if sample.country:
+		tsdb.append_point(tsdb_dir, peer_key=GEO_TRAFFIC_KEY, metric=GEO_TRAFFIC_METRIC, value=sample.country, at=at)
+	try:
+		if sample.asn:
+			tsdb.append_point(tsdb_dir, peer_key=ASN_TRAFFIC_KEY, metric=ASN_TRAFFIC_METRIC, value=sample.asn, at=at)
+	except Exception as exc:
+		_log.warning("COUNTRY_TRAFFIC ASN write failed, queued for retry: %s", exc, exc_info=True)
+		with _pending_asn_lock:
+			_pending_asn_points.append((at, sample.asn))
+	commit(sample.checkpoint)
+
+
 async def sample_country_traffic(ctx: main.LifespanContext) -> None:
 	"""Scheduled task: sample conntrack -> country + ASN traffic -> TSDB.
 
@@ -228,10 +265,6 @@ async def sample_country_traffic(ctx: main.LifespanContext) -> None:
 	Every other worker returns early.
 	"""
 	from ..utils.conntrack import (
-		ASN_TRAFFIC_KEY,
-		ASN_TRAFFIC_METRIC,
-		GEO_TRAFFIC_KEY,
-		GEO_TRAFFIC_METRIC,
 		acquire_sampler_leadership,
 		commit_country_traffic,
 		prepare_country_traffic,
@@ -248,30 +281,52 @@ async def sample_country_traffic(ctx: main.LifespanContext) -> None:
 			# Two-phase: write durably first, then advance the baseline. A failed
 			# TSDB write leaves the baseline untouched so the traffic is
 			# re-delivered on the next sample instead of being lost.
+			_flush_pending_asn_points(ctx.cfg.tsdb_dir)
 			sample = prepare_country_traffic(peer_ip_map)
 			if sample.is_empty:
 				return
-			if sample.country:
-				tsdb.append_point(ctx.cfg.tsdb_dir, peer_key=GEO_TRAFFIC_KEY, metric=GEO_TRAFFIC_METRIC, value=sample.country)
-			if sample.asn:
-				tsdb.append_point(ctx.cfg.tsdb_dir, peer_key=ASN_TRAFFIC_KEY, metric=ASN_TRAFFIC_METRIC, value=sample.asn)
-			commit_country_traffic(sample.checkpoint)
+			_persist_country_sample(ctx.cfg.tsdb_dir, sample, commit_country_traffic)
 
 		await asyncio.to_thread(_run)
 	except Exception as exc:
 		_log.warning("COUNTRY_TRAFFIC sample failed: %s", exc, exc_info=True)
 
 
-async def update_geoip(ctx: main.LifespanContext) -> None:
-	"""Scheduled task: check for GeoIP database updates."""
-	try:
-		from ..utils.geoip import eager_init, ensure_geoip_databases
+async def update_geoip(ctx: main.LifespanContext) -> None:  # noqa: ARG001 - uniform scheduler signature
+	"""Scheduled task: check for GeoIP database updates.
 
-		result = await asyncio.to_thread(ensure_geoip_databases, ctx.cfg.data_dir)
-		_log.info("GEOIP_UPDATE city=%s asn=%s", result["city"], result["asn"])
-		await asyncio.to_thread(eager_init)
+	A missing or unusable database is logged as a warning and makes
+	``geoip_next_delay`` shorten the wait. A usable pair whose remote check
+	was only unconfirmed is warned about but keeps the regular interval.
+	"""
+	global _geoip_retry_pending
+	try:
+		from ..utils.geoip import eager_init, refresh_geoip_databases
+
+		usable, confirmed = await asyncio.to_thread(refresh_geoip_databases)
+		complete = all(usable.values())
+		_geoip_retry_pending = not complete
+		if not complete:
+			_log.warning(
+				"GEOIP_UPDATE incomplete city=%s asn=%s; retrying in %.0fs",
+				usable["city"],
+				usable["asn"],
+				_GEOIP_RETRY_SECONDS,
+			)
+		elif not confirmed:
+			_log.warning("GEOIP_UPDATE remote check unconfirmed; serving the existing databases")
+		else:
+			_log.info("GEOIP_UPDATE city=%s asn=%s", usable["city"], usable["asn"])
+		if any(usable.values()):
+			await asyncio.to_thread(eager_init)
 	except Exception as exc:
+		_geoip_retry_pending = True
 		_log.error("GEOIP_UPDATE failed: %s", exc, exc_info=True)
+
+
+def geoip_next_delay(regular_seconds: float) -> float:
+	"""Seconds until the next GeoIP update: short while data is missing, else ``regular_seconds``."""
+	return min(regular_seconds, _GEOIP_RETRY_SECONDS) if _geoip_retry_pending else regular_seconds
 
 
 async def dns_watchdog(ctx: main.LifespanContext) -> None:
@@ -300,6 +355,17 @@ async def check_adblocker_timer(ctx: main.LifespanContext) -> None:
 			await reload_unbound_for_adblocker_async(ctx.cfg.db_path)
 	except Exception as exc:
 		_log.warning("ADBLOCKER_TIMER check failed: %s", exc, exc_info=True)
+
+
+def seconds_until_next_speedtest(now_ts: float | None = None) -> float:
+	"""Seconds until the next speedtest slot, asked by the scheduler after every run.
+
+	Inside the night window the run that just happened counts for today, so the
+	next slot is the following day's window start. Outside the window the next
+	window start is returned. Both include the jitter of the window helpers.
+	"""
+	delay = _seconds_until_night_window(now_ts=now_ts)
+	return delay if delay > 0 else _seconds_until_next_day_window(now_ts=now_ts)
 
 
 async def get_speedtest_initial_delay(db_path: str) -> tuple[float, float | None, bool]:
@@ -377,14 +443,16 @@ async def _execute_scheduled_speedtest_run(ctx: main.LifespanContext) -> None:
 	even for failures so the scheduler does not immediately retry on the next
 	tick.
 	"""
-	from ..api.speedtest import SPEEDTEST_TSDB_KEY, SPEEDTEST_TSDB_METRIC
-	from ..speedtest.guard import (
+	from gillbates_speedtest import (
 		DEFAULT_SPEEDTEST_COOLDOWN_SECONDS,
 		SpeedtestBusyError,
 		SpeedtestCooldownError,
 		acquire_speedtest_run_lease_async,
+		run_speedtest,
 	)
-	from ..speedtest.tester import run_speedtest
+
+	from ..api.speedtest import SPEEDTEST_TSDB_KEY, SPEEDTEST_TSDB_METRIC
+	from ..utils.geoip import resolve_speedtest_server_country
 
 	try:
 		lease = await acquire_speedtest_run_lease_async(
@@ -395,10 +463,11 @@ async def _execute_scheduled_speedtest_run(ctx: main.LifespanContext) -> None:
 			_log.info("SPEEDTEST_SCHEDULED starting bandwidth measurement")
 			try:
 				async with asyncio.timeout(_SPEEDTEST_EXECUTION_TIMEOUT_SECONDS):
-					result = await run_speedtest()
+					result = await run_speedtest(country_resolver=resolve_speedtest_server_country)
 			except TimeoutError:
 				result = {"status": "error", "reason": "Timeout"}
 			except Exception as exc:
+				_log.warning("SPEEDTEST_SCHEDULED run failed: %s", exc, exc_info=True)
 				result = {"status": "error", "reason": str(exc)}
 
 			await asyncio.to_thread(
@@ -413,8 +482,6 @@ async def _execute_scheduled_speedtest_run(ctx: main.LifespanContext) -> None:
 			await asyncio.to_thread(_persist_last_run_to_db, ctx.cfg.db_path)
 			if result.get("status") == "ok":
 				lease.mark_success()
-
-			if result.get("status") == "ok":
 				_log.info(
 					"SPEEDTEST_SCHEDULED result: ↓%.2f ↑%.2f",
 					result.get("download_mbit"),
@@ -428,6 +495,9 @@ async def _execute_scheduled_speedtest_run(ctx: main.LifespanContext) -> None:
 				)
 	except (SpeedtestBusyError, SpeedtestCooldownError) as exc:
 		_log.info("SPEEDTEST_SCHEDULED skipped: %s", exc)
+	except Exception:
+		# Lease, TSDB write or last-run persistence failed; CancelledError is a BaseException and still propagates.
+		_log.exception("SPEEDTEST_SCHEDULED failed outside the measurement")
 
 
 def _persist_last_run_to_db(db_path: str) -> None:
@@ -462,6 +532,7 @@ async def run_scheduled_backup(ctx: main.LifespanContext) -> None:
 		_log.info("SCHEDULED_BACKUP completed: %s", result.get("filename"))
 	except Exception as exc:
 		_log.error("SCHEDULED_BACKUP failed: %s", exc, exc_info=True)
+		raise
 
 
 async def monitor_node_health(ctx: main.LifespanContext) -> None:

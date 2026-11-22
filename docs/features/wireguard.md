@@ -20,7 +20,8 @@ Open **Settings → WireGuard → Interfaces**. Administrators can:
 WireBuddy generates a keypair for new interfaces and writes the corresponding
 WireGuard configuration. If custom hooks are not supplied, it also creates
 iptables NAT, forwarding, and DNS rules based on the host's default route.
-Interface subnets and listen ports cannot overlap those of another interface.
+Interface subnets and listen ports cannot overlap those of another interface,
+and IPv4 subnets larger than `/16` are rejected.
 
 The dashboard reports interface state and network gauges for interfaces marked
 **Show on Dashboard**.
@@ -30,6 +31,13 @@ The dashboard reports interface state and network gauges for interfaces marked
 Open **Peers → Add Peer**. A peer represents one client device. WireBuddy
 generates its key material, allocates the next free tunnel address, and associates
 it with the selected local interface or node.
+
+`POST /api/wireguard/peers` answers `409` when the interface has no free peer
+address left (fixed message "No free peer address available on this interface")
+or the public key already exists. A failed `wg` call returns `500` with a
+generic message and no `wg` output; details are in the server log. If the
+rollback cannot remove the peer from WireGuard, the stored peer is kept so its
+address stays reserved, and an administrator can delete it.
 
 The peer form supports:
 
@@ -72,6 +80,9 @@ When disabled, the configured fallback DNS servers are used.
 
 **Client Isolation** installs server-side firewall rules that stop that peer from
 reaching other VPN clients while preserving internet and VPN-server access.
+The rule set is replaced as a whole: if an update fails, the previous rules stay
+in place, and if a peer edited into isolation cannot be protected, WireBuddy
+brings the interface down rather than leaving the peer unisolated.
 
 ## Status and traffic
 
@@ -83,16 +94,18 @@ retention is controlled under **Settings → Logs**.
 
 ## Global preshared key
 
-Under **Settings → WireGuard**, administrators can enable a global WireGuard
-preshared key for defense in depth. It is included in generated peer
-configurations. Regenerating it invalidates the old client configurations, so
-redistribute updated configurations immediately.
+Under **Settings → WireGuard**, **Use preshared key (PSK)** (on by default) adds a
+global WireGuard preshared key to new peers for defense in depth. It is included
+in generated peer configurations. Regenerating it invalidates the old client
+configurations, so redistribute updated configurations immediately. If the
+stored key cannot be decrypted, creating a peer fails instead of creating it
+without a preshared key.
 
 ## Limits and host responsibilities
 
 - WireBuddy implements routed VPN interfaces; there is no bridge-mode control.
-- The host must provide the WireGuard kernel support, `/dev/net/tun`, forwarding,
-  and the required firewall access.
+- The host must provide the WireGuard kernel support, forwarding, and the
+  required firewall access.
 - With the supplied host-network Compose deployment, expose each WireGuard UDP
   port on the host firewall rather than through Docker `ports:` mappings.
 

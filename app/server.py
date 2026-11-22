@@ -6,7 +6,7 @@
 
 """Start the web server, including the built-in HTTPS listener.
 
-The single start path for ``run.py`` (local runs) and the Docker entrypoint
+The single start path for local runs (``python -m app.server``) and the Docker entrypoint
 (``python -m app.server --host ... --port ...``). Only ``gui_https_enabled``
 decides whether the GUI port itself speaks TLS; a reverse proxy terminating
 HTTPS in front keeps it off. The entrypoint passes the bind address it already
@@ -24,56 +24,44 @@ from app.db.sqlite_runtime import connect
 from app.db.sqlite_schema import init_schema
 from app.db.sqlite_settings import get_gui_https_enabled, get_setting
 from app.utils.config import load_config
-
-_LOG_FORMAT = "%(asctime)s | %(levelname)-8s | %(name)s | %(message)s"
-_DATE_FORMAT = "%Y-%m-%d %H:%M:%S"
+from app.utils.logging_setup import setup_logging
 
 
 class UvicornMessageFilter(logging.Filter):
-	"""Filter to downgrade specific uvicorn messages from INFO to DEBUG."""
+	"""Filter that drops specific noisy uvicorn INFO messages."""
 
 	def filter(self, record: logging.LogRecord) -> bool:
 		# Drop the noisy shutdown message instead of mutating the shared record.
 		return not (record.levelno == logging.INFO and "Finished server process" in record.getMessage())
 
 
+# No handlers of its own: uvicorn records propagate to the root handler of
+# setup_logging, keeping the line format and the stdout/stderr split; levels stay as it set them.
 _UVICORN_LOG_CONFIG: dict = {
 	"version": 1,
 	"disable_existing_loggers": False,
-	"formatters": {
-		"default": {
-			"format": _LOG_FORMAT,
-			"datefmt": _DATE_FORMAT,
-		},
-		"access": {
-			"format": _LOG_FORMAT,
-			"datefmt": _DATE_FORMAT,
-		},
-	},
 	"filters": {
 		"uvicorn_filter": {
 			"()": "app.server.UvicornMessageFilter",
 		},
 	},
-	"handlers": {
-		"default": {
-			"formatter": "default",
-			"class": "logging.StreamHandler",
-			"stream": "ext://sys.stderr",
-			"filters": ["uvicorn_filter"],
-		},
-		"access": {
-			"formatter": "access",
-			"class": "logging.StreamHandler",
-			"stream": "ext://sys.stdout",
-		},
-	},
 	"loggers": {
-		"uvicorn": {"handlers": ["default"], "level": "INFO", "propagate": False},
-		"uvicorn.error": {"level": "INFO"},
-		"uvicorn.access": {"handlers": ["access"], "level": "INFO", "propagate": False},
+		"uvicorn": {"propagate": True},
+		"uvicorn.error": {"filters": ["uvicorn_filter"]},
+		"uvicorn.access": {"propagate": True},
 	},
 }
+
+
+def create_served_app():
+	"""Build the app with forwarded-header handling that keeps the real socket peer."""
+	from app import create_app
+	from app.utils.socket_peer import wrap_with_proxy_headers
+
+	# Same Config.trusted_proxies that resolve_client_ip() trusts, so both proxy-trust
+	# boundaries cannot diverge; loopback only when none parsed.
+	allow_ips = ",".join(str(network) for network in load_config().trusted_proxies) or "127.0.0.1,::1"
+	return wrap_with_proxy_headers(create_app(), allow_ips)
 
 
 def _log_https_startup(material, gui_port: int, wg_fqdn: str) -> None:
@@ -108,7 +96,6 @@ def _run_https_with_acme_listener(
 	gui_port: int,
 	ssl_certfile: str,
 	ssl_keyfile: str,
-	proxy_allow_ips: str,
 	certs_dir: Path,
 	acme_http_port: int,
 	public_origin: str,
@@ -117,19 +104,18 @@ def _run_https_with_acme_listener(
 	"""Serve the app over TLS while keeping a plaintext ACME/redirect listener."""
 	import asyncio
 
-	from app import create_app
 	from app.utils.acme_http import build_acme_http_app
 
 	log = logging.getLogger("wirebuddy")
 
 	https_server = uvicorn.Server(
 		uvicorn.Config(
-			create_app(),
+			create_served_app(),
 			host=host,
 			port=gui_port,
 			log_config=_UVICORN_LOG_CONFIG,
-			proxy_headers=True,
-			forwarded_allow_ips=proxy_allow_ips,
+			# Forwarded headers are applied by create_served_app() so the real peer is kept.
+			proxy_headers=False,
 			ssl_certfile=ssl_certfile,
 			ssl_keyfile=ssl_keyfile,
 			timeout_graceful_shutdown=graceful_timeout,
@@ -207,7 +193,8 @@ def _resolve_acme_http_port(raw: str | None, gui_port: int) -> int:
 	"""Validate ``gui_acme_http_port``; 0 means the plaintext listener stays off.
 
 	The listener is optional, so a bad value disables it with an error instead
-	of keeping the HTTPS GUI from starting.
+	of keeping the HTTPS GUI from starting. The setting is deliberately DB-only:
+	no UI or API field changes it, and a change applies on the next start.
 	"""
 	log = logging.getLogger("wirebuddy")
 	text = "80" if raw in (None, "") else str(raw).strip()
@@ -241,11 +228,8 @@ def main(host: str | None = None, port: int | None = None, graceful_timeout: int
 		return
 
 	cfg = load_config()
-
-	level = cfg.log_level.upper()
-
-	for logger in _UVICORN_LOG_CONFIG["loggers"].values():
-		logger["level"] = level
+	# Before the first log line: the HTTPS startup messages and the reloader run outside create_app().
+	setup_logging(cfg.log_level)
 
 	conn = connect(cfg.db_path)
 
@@ -253,14 +237,14 @@ def main(host: str | None = None, port: int | None = None, graceful_timeout: int
 		init_schema(conn)
 
 		gui_port_str = get_setting(conn, "gui_port", "8000")
-		gui_localhost_only_str = get_setting(conn, "gui_localhost_only", "true")
+		gui_localhost_only_str = get_setting(conn, "gui_localhost_only", "false")
 		gui_https_enabled = get_gui_https_enabled(conn)
 		wg_fqdn = (get_setting(conn, "wg_fqdn") or "").strip()
 		acme_http_port_raw = get_setting(conn, "gui_acme_http_port", "80")
 
 		try:
 			gui_port = int(gui_port_str)
-		except (ValueError, TypeError):
+		except ValueError, TypeError:
 			gui_port = 8000
 
 		gui_localhost_only = gui_localhost_only_str.lower() not in ("false", "0", "no")
@@ -298,12 +282,6 @@ def main(host: str | None = None, port: int | None = None, graceful_timeout: int
 		"true",
 		"yes",
 	)
-	# Single source of truth: uvicorn's forwarded-allow-ips come from the same
-	# parsed Config.trusted_proxies that resolve_client_ip() trusts, so the two
-	# proxy-trust boundaries can no longer diverge (e.g. uvicorn rejecting a peer
-	# the app would still trust). Fall back to loopback only if parsing yielded
-	# nothing.
-	proxy_allow_ips = ",".join(str(network) for network in cfg.trusted_proxies) or "127.0.0.1,::1"
 	public_origin = os.environ.get("WIREBUDDY_PUBLIC_ORIGIN", "").strip()
 	if not public_origin and wg_fqdn:
 		# The database FQDN is an explicit administrator setting and is safe to
@@ -328,7 +306,6 @@ def main(host: str | None = None, port: int | None = None, graceful_timeout: int
 			gui_port=gui_port,
 			ssl_certfile=ssl_certfile,
 			ssl_keyfile=ssl_keyfile,
-			proxy_allow_ips=proxy_allow_ips,
 			certs_dir=cfg.data_dir / "certs",
 			acme_http_port=acme_http_port,
 			public_origin=public_origin,
@@ -337,14 +314,13 @@ def main(host: str | None = None, port: int | None = None, graceful_timeout: int
 		return
 
 	uvicorn.run(
-		"app:create_app",
+		"app.server:create_served_app",
 		host=bind_host,
 		port=gui_port,
 		reload=reload_enabled,
 		factory=True,
 		log_config=_UVICORN_LOG_CONFIG,
-		proxy_headers=True,
-		forwarded_allow_ips=proxy_allow_ips,
+		proxy_headers=False,
 		ssl_certfile=ssl_certfile,
 		ssl_keyfile=ssl_keyfile,
 		timeout_graceful_shutdown=graceful_timeout,

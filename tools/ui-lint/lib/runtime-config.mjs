@@ -10,6 +10,8 @@ export {
     resolveRuntimeProfile,
     whyWasThisProfileChosen,
     buildRunPaths,
+    resetScreenshotDir,
+    SCREENSHOT_DIR_MARKER,
     createRuntimeContext,
     getBaseContextOptions,
     getAuthenticatedContextOptions,

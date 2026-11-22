@@ -32,7 +32,8 @@
                         <th>Role</th>
                         <th>Status</th>
                         <th>Last Login</th>
-                        <th>Created</th>
+                        <th scope="col">Connection</th>
+                        <th data-col="created">Created</th>
                         <th class="user-actions-head" aria-hidden="true"></th>
                     </tr>
                 </thead>
@@ -71,7 +72,7 @@
                                             data-otp-enabled="{{ 'true' if u['otp_enabled'] else 'false' }}"
                                             data-otp-secret="{{ 'true' if u['otp_secret'] else 'false' }}">
                                             <span class="material-icons icon-md me-2" aria-hidden="true">security</span>
-                                            OTP Settings
+                                            2FA Settings
                                         </button>
 
                                         <button type="button" class="dropdown-item btn-passkey-settings"
@@ -110,7 +111,7 @@
                                 <div class="users-mobile-meta">
                                     <span class="users-mobile-meta-label">Last Login:</span>
                                     {% if u['last_login_at'] %}
-                                    <span class="users-mobile-meta-value"><time datetime="{{ u['last_login_at']|utc_iso }}" data-wb-format="datetime">{{ u['last_login_at'].strftime('%Y-%m-%d %H:%M') }} UTC</time></span>
+                                    <span class="users-mobile-meta-value"><time datetime="{{ u['last_login_at']|utc_iso }}" data-wb-format="datetime">{{ u['last_login_at']|utc_iso }}</time></span>
                                     {% else %}
                                     <span class="users-mobile-meta-value text-muted">Never</span>
                                     {% endif %}
@@ -127,7 +128,7 @@
 
                                 <div class="users-mobile-meta">
                                     <span class="users-mobile-meta-label">Created:</span>
-                                    <span class="users-mobile-meta-value"><time datetime="{{ u['created_at']|utc_iso }}" data-wb-format="date">{{ u['created_at'].strftime('%Y-%m-%d') }}</time></span>
+                                    <span class="users-mobile-meta-value"><time datetime="{{ u['created_at']|utc_iso }}" data-wb-format="date">{{ u['created_at']|utc_iso }}</time></span>
                                 </div>
                             </div>
                         </td>
@@ -147,17 +148,19 @@
                         </td>
                         <td data-label="Last Login">
                             {% if u['last_login_at'] %}
-                            <div class="last-login">
-                                <div class="login-time"><time datetime="{{ u['last_login_at']|utc_iso }}" data-wb-format="datetime">{{ u['last_login_at'].strftime('%Y-%m-%d %H:%M') }} UTC</time></div>
-                                {% if u['last_login_ip'] %}
-                                {{ geo_ip_stack(u['last_login_ip'], u['last_login_country_code'], u['last_login_city'], u['last_login_as_org']) }}
-                                {% endif %}
-                            </div>
+                            <div class="login-time"><time datetime="{{ u['last_login_at']|utc_iso }}" data-wb-format="datetime">{{ u['last_login_at']|utc_iso }}</time></div>
                             {% else %}
                             <span class="text-muted">Never</span>
                             {% endif %}
                         </td>
-                        <td data-label="Created"><time datetime="{{ u['created_at']|utc_iso }}" data-wb-format="date">{{ u['created_at'].strftime('%Y-%m-%d') }}</time></td>
+                        <td data-label="Connection" class="login-connection">
+                            {% if u['last_login_at'] and u['last_login_ip'] %}
+                            {{ geo_ip_stack(u['last_login_ip'], u['last_login_country_code'], u['last_login_city'], u['last_login_as_org']) }}
+                            {% else %}
+                            <span class="text-muted">—</span>
+                            {% endif %}
+                        </td>
+                        <td data-label="Created"><time datetime="{{ u['created_at']|utc_iso }}" data-wb-format="date">{{ u['created_at']|utc_iso }}</time></td>
                         <td data-label="Actions" class="user-actions-cell wb-responsive-actions">
                             <div class="d-none d-lg-flex gap-1 justify-content-end users-desktop-actions">
                                 <button type="button" class="btn btn-sm btn-outline-secondary btn-edit-user users-action-btn"
@@ -173,8 +176,8 @@
                                     data-username="{{ u['username'] }}"
                                     data-otp-enabled="{{ 'true' if u['otp_enabled'] else 'false' }}"
                                     data-otp-secret="{{ 'true' if u['otp_secret'] else 'false' }}"
-                                    aria-label="Open OTP settings for {{ u['username'] }}"
-                                    data-bs-toggle="tooltip" data-bs-title="OTP Settings">
+                                    aria-label="Open 2FA settings for {{ u['username'] }}"
+                                    data-bs-toggle="tooltip" data-bs-title="2FA Settings">
                                     <span class="material-icons icon-md" aria-hidden="true">security</span>
                                 </button>
                                 <button type="button" class="btn btn-sm btn-outline-secondary btn-passkey-settings users-action-btn"
@@ -217,9 +220,9 @@
                 <div class="modal-body">
                     <div class="mb-3">
                         <label for="new-username" class="form-label">Username</label>
-                        <input type="text" class="form-control" id="new-username" required pattern="[a-zA-Z0-9_\-]+"
+                        <input type="text" class="form-control" id="new-username" required pattern="[a-zA-Z0-9]+([_\-][a-zA-Z0-9]+)*"
                             minlength="3" maxlength="64" autocomplete="username">
-                        <small class="text-muted">Letters, numbers, underscore, and dash only</small>
+                        <small class="text-muted">3&ndash;64 characters: letters, numbers, underscore and dash. Must start and end with a letter or number, no consecutive underscores or dashes. Stored in lowercase.</small>
                     </div>
                     <div class="mb-3">
                         <label for="new-password" class="form-label">Password</label>
@@ -279,20 +282,20 @@
     </div>
 </div>
 
-<!-- OTP Settings Modal -->
+<!-- 2FA Settings Modal -->
 <div class="modal fade" id="otpSettingsModal" tabindex="-1" aria-labelledby="otpSettingsModalTitle" aria-modal="true">
     <div class="modal-dialog">
         <div class="modal-content">
             <div class="modal-header">
                 <h5 class="modal-title" id="otpSettingsModalTitle">
                     <span class="material-icons align-middle me-2" aria-hidden="true">security</span>
-                    OTP Settings
+                    2FA Settings
                 </h5>
                 <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
             </div>
             <div class="modal-body">
                 <!-- Status display -->
-                <div id="otp-status-display" class="mb-4">
+                <div class="mb-4">
                     <div class="d-flex align-items-center justify-content-between">
                         <div>
                             <strong id="otp-modal-username"></strong>
@@ -302,11 +305,11 @@
                     </div>
                 </div>
 
-                <div id="otp-action-section">
-                    <p class="text-muted" id="otp-action-help">Enable or disable two-factor authentication for this user.</p>
+                <div>
+                    <p class="text-muted" id="otp-action-help">Enable or disable two-factor authentication (2FA) for this user.</p>
                     <button type="button" class="btn w-100" id="otp-toggle-btn">
                         <span class="material-icons align-middle me-1" id="otp-toggle-icon" aria-hidden="true">security</span>
-                        <span id="otp-toggle-label">Toggle OTP</span>
+                        <span id="otp-toggle-label">Toggle 2FA</span>
                     </button>
                 </div>
             </div>
@@ -341,7 +344,7 @@
                 </div>
 
                 <!-- Passkey list -->
-                <div id="passkey-list-container" class="mb-3">
+                <div class="mb-3">
                     <div id="passkey-list-loading" class="text-center py-3 d-none">
                         <div class="spinner-border spinner-border-sm"></div>
                         <span class="ms-2">Loading passkeys...</span>
@@ -356,7 +359,7 @@
                 </div>
 
                 <!-- Actions -->
-                <div id="passkey-action-section">
+                <div>
                     <div id="passkey-webauthn-warning" class="alert alert-warning mb-0 d-none">
                         Passkeys are not supported in this browser.
                     </div>

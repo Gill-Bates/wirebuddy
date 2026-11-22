@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import asyncio
+import ipaddress
 import logging
 import re
 import sqlite3
@@ -30,7 +31,7 @@ from ..utils.vault import decrypt as vault_decrypt
 from .auth import require_admin
 from .response import ok_response
 from .wireguard_settings import InterfaceConfigError, get_dns_for_peer, get_server_endpoint
-from .wireguard_utils import run_wg_command
+from .wireguard_utils import effective_use_adblocker, run_wg_command
 
 _log = logging.getLogger(__name__)
 
@@ -76,8 +77,11 @@ def _sanitize_peer_filename(name: str | None, default: str) -> str:
 	return safe_name[:_MAX_FILENAME_LENGTH]
 
 
-def _validate_hostname(hostname: str) -> None:
-	"""Validate hostname/FQDN format.
+def _validate_hostname(hostname: str) -> str:
+	"""Validate a node host and return its endpoint form.
+
+	IP literals are checked with ``ipaddress`` first (IPv6 is stored bracketed and
+	returned bracketed); only other values must be valid DNS names.
 
 	Rejects:
 	- Empty strings
@@ -93,9 +97,19 @@ def _validate_hostname(hostname: str) -> None:
 		raise ValueError("Hostname contains control characters")
 	if len(hostname) > 253:
 		raise ValueError("Hostname exceeds maximum length (253)")
+	bracketed = hostname.startswith("[") and hostname.endswith("]")
+	try:
+		addr = ipaddress.ip_address(hostname[1:-1] if bracketed else hostname)
+	except ValueError:
+		addr = None
+	if addr is not None:
+		if bracketed and addr.version != 6:
+			raise ValueError(f"Invalid hostname format: {hostname}")
+		return f"[{addr.compressed}]" if addr.version == 6 else addr.compressed
 	# Basic format check: should be alphanumeric with dots, hyphens
 	if not re.match(r"^[a-zA-Z0-9]([a-zA-Z0-9.-]*[a-zA-Z0-9])?$", hostname):
 		raise ValueError(f"Invalid hostname format: {hostname}")
+	return hostname
 
 
 async def _build_peer_config(
@@ -165,7 +179,7 @@ async def _build_peer_config(
 
 		# Validate node endpoint components for security
 		try:
-			_validate_hostname(node["fqdn"])
+			node_host = _validate_hostname(node["fqdn"])
 			_validate_port(int(node["wg_port"]))
 		except ValueError as e:
 			_log.error("Invalid node endpoint for node_id=%s: %s", node_id, e)
@@ -179,7 +193,7 @@ async def _build_peer_config(
 			)
 		node_name = node["name"]
 		server_public_key = node_pubkey
-		server_endpoint = f"{node['fqdn']}:{node['wg_port']}"
+		server_endpoint = f"{node_host}:{node['wg_port']}"
 	else:
 		# Local peer: get public key from running WireGuard interface
 		code, stdout, stderr = await run_wg_command("wg", "show", peer["interface"], "public-key")
@@ -197,9 +211,7 @@ async def _build_peer_config(
 		server_endpoint = await asyncio.to_thread(get_server_endpoint, conn, peer["interface"])
 
 	# Determine DNS based on adblocker setting.
-	# NULL (never explicitly set by user) defaults to True — ad-blocking is
-	# opt-out, matching the server-wide default when the feature is enabled.
-	use_adblocker = True if peer["use_adblocker"] is None else bool(peer["use_adblocker"])
+	use_adblocker = effective_use_adblocker(peer["use_adblocker"])
 	try:
 		dns_servers = await asyncio.to_thread(
 			get_dns_for_peer,

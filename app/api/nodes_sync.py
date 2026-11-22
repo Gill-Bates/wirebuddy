@@ -21,9 +21,9 @@ import hmac
 import ipaddress
 import itertools
 import logging
-import os
 import re
 import sqlite3
+import threading
 import time
 from collections.abc import Callable
 from datetime import datetime
@@ -33,6 +33,7 @@ from urllib.parse import urlsplit
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from fastapi.responses import StreamingResponse
+from gillbates_country_flags import normalize_country_code
 from pydantic import BaseModel, Field, JsonValue
 from starlette.concurrency import run_in_threadpool
 
@@ -56,24 +57,32 @@ from ..db.sqlite_nodes import (
 	get_node_by_api_secret,
 	get_node_config,
 	get_node_last_metric_seq,
+	get_node_peer_public_keys,
 	rotate_node_session_secret,
 	set_node_last_metric_seq,
 	set_node_tunnel_peer,
 	update_node_heartbeat,
 	update_node_sse_connected,
 )
-from ..db.sqlite_peers import allocate_peer_ip, get_peer_by_id, update_peers_last_seen_batch
+from ..db.sqlite_peers import (
+	allocate_peer_ip,
+	get_peer_by_id,
+	get_peer_by_public_key,
+	is_plausible_handshake,
+	update_peers_last_seen_batch,
+)
 from ..db.sqlite_peers_mutations import create_peer
 from ..db.sqlite_runtime import thread_connection, transaction
 from ..db.sqlite_settings import get_gui_https_enabled, set_node_speedtest_last_result
 from ..node import notifier as node_notifier
 from ..node.events import NodeCommandPayload, NodeCommandType, SpeedtestProgressPayload
-from ..utils.config import get_config, parse_proxy_cidrs
+from ..utils.config import MTLS_PROXIES_ENV, get_config, get_mtls_proxy_networks
 from ..utils.crypto import hash_token, new_token
 from ..utils.deps import get_conn, get_tsdb_dir
-from ..utils.network import parse_ip_str
-from ..utils.node_token import get_cert_fingerprint, verify_enrollment_token
+from ..utils.enrollment_keys import EnrollmentKeyError, record_v1_use, verify_any
+from ..utils.node_token import get_cert_fingerprint
 from ..utils.rate_limit import rate_limit
+from ..utils.socket_peer import socket_peer_ip
 from ..utils.time import parse_utc, utcnow
 
 _log = logging.getLogger(__name__)
@@ -88,53 +97,17 @@ _NODE_COMMAND_REPLAY_AFTER_SECONDS = 30
 _NODE_COMMAND_CLAIM_LIMIT = 20
 _CLIENT_CERT_FP_HEADER = "X-Client-Cert-Fingerprint"
 _CLIENT_CERT_FP_RE = re.compile(r"^[a-f0-9]{64}$")
-_NODE_MTLS_PROXY_CIDRS_ENV = "WIREBUDDY_TRUSTED_PROXIES"
 T = TypeVar("T")
 
 
-def _load_node_mtls_proxy_networks() -> tuple[ipaddress.IPv4Network | ipaddress.IPv6Network, ...]:
-	"""Load explicitly trusted proxy CIDRs for node mTLS certificate headers.
-
-	Shares the WIREBUDDY_TRUSTED_PROXIES variable with other proxy-trust
-	checks, but with a security-first empty default: unlike auth cookie
-	handling, mTLS fingerprint headers are never trusted from loopback
-	automatically.
-
-	Resolved lazily (on first call, not at import time) so settings.env
-	values are respected regardless of module import order — settings.env is
-	only loaded once something calls get_config(), which may happen after
-	this module is imported. See auth._is_trusted_proxy_ip() for the same
-	pattern.
-	"""
-	get_config()  # Ensure settings.env is loaded before reading the env var below.
-	raw = str(os.environ.get(_NODE_MTLS_PROXY_CIDRS_ENV, "")).strip()
-	if not raw:
-		return ()
-	return parse_proxy_cidrs(raw, _NODE_MTLS_PROXY_CIDRS_ENV)
-
-
-_node_mtls_proxy_networks_cache: tuple[ipaddress.IPv4Network | ipaddress.IPv6Network, ...] | None = None
-
-
-def _get_node_mtls_proxy_networks() -> tuple[ipaddress.IPv4Network | ipaddress.IPv6Network, ...]:
-	"""Return the (lazily loaded, then cached) trusted proxy CIDRs for node mTLS headers."""
-	global _node_mtls_proxy_networks_cache
-	if _node_mtls_proxy_networks_cache is None:
-		_node_mtls_proxy_networks_cache = _load_node_mtls_proxy_networks()
-	return _node_mtls_proxy_networks_cache
-
-
 def _get_socket_ip(request: Request) -> str | None:
-	"""Return the normalized socket peer IP for the current request."""
-	scope_client = request.scope.get("client")
-	if not scope_client or not scope_client[0]:
-		return None
-	return parse_ip_str(scope_client[0])
+	"""Return the normalized TCP peer IP, as captured before forwarded headers apply."""
+	return socket_peer_ip(request.scope)
 
 
 def _socket_ip_is_trusted_mtls_proxy(request: Request) -> bool:
 	"""Return True when the request came through an explicitly trusted mTLS proxy."""
-	trusted_networks = _get_node_mtls_proxy_networks()
+	trusted_networks = get_mtls_proxy_networks()
 	if not trusted_networks:
 		return False
 	socket_ip = _get_socket_ip(request)
@@ -158,9 +131,10 @@ def _get_verified_client_cert_fingerprint(request: Request) -> str | None:
 		return None
 	if not _socket_ip_is_trusted_mtls_proxy(request):
 		_log.warning(
-			"Ignoring %s from untrusted source ip=%s",
+			"Ignoring %s from untrusted source ip=%s (set %s to trust this proxy)",
 			_CLIENT_CERT_FP_HEADER,
 			_get_socket_ip(request) or "unknown",
+			MTLS_PROXIES_ENV,
 		)
 		return None
 	if not _CLIENT_CERT_FP_RE.fullmatch(header_value):
@@ -240,10 +214,7 @@ def _resolve_country_from_url(server_url: str) -> str | None:
 	if not labels:
 		return None
 
-	country_code = labels[-1]
-	if len(country_code) == 2 and country_code.isalpha():
-		return country_code
-	return None
+	return normalize_country_code(labels[-1])
 
 
 def node_session_is_current(conn: sqlite3.Connection, node_id: str, session_hash: str) -> bool:
@@ -325,6 +296,11 @@ async def _claim_pending_command_events(db_path: Path, node_id: str) -> list[str
 	return formatted
 
 
+def _https_required(conn: sqlite3.Connection) -> bool:
+	"""Return whether node credentials may only travel over HTTPS (GUI HTTPS or opt-in flag)."""
+	return get_gui_https_enabled(conn) or get_config().require_https_auth
+
+
 def _enforce_enrollment_transport(
 	conn: sqlite3.Connection,
 	request: Request,
@@ -344,10 +320,14 @@ def _enforce_enrollment_transport(
 		return
 
 	if _is_loopback_peer(request):
-		_log.error("%s delivered session_secret over loopback HTTP for node=%s", context, node_id)
+		_log.error(
+			"%s delivered session_secret over loopback HTTP for node=%s",
+			context,
+			node_id,
+		)
 		return
 
-	if get_gui_https_enabled(conn) or get_config().require_https_auth:
+	if _https_required(conn):
 		_log.warning(
 			"%s rejected: HTTPS required for session_secret delivery node=%s",
 			context,
@@ -358,7 +338,11 @@ def _enforce_enrollment_transport(
 			detail="This server requires HTTPS for node enrollment.",
 		)
 
-	_log.error("%s delivered session_secret over non-HTTPS transport for node=%s", context, node_id)
+	_log.error(
+		"%s delivered session_secret over non-HTTPS transport for node=%s",
+		context,
+		node_id,
+	)
 
 
 class PeerTrafficMetricData(BaseModel):
@@ -382,17 +366,35 @@ def _write_peer_traffic_metric(tsdb_dir: Path, data: dict[str, Any], at: datetim
 	parsed = PeerTrafficMetricData.model_validate(data)
 	if parsed.rx_bytes <= 0 and parsed.tx_bytes <= 0:
 		return 0
-	tsdb.append_point(tsdb_dir, peer_key=parsed.public_key, metric="rx_bytes", value=parsed.rx_bytes, at=at)
-	tsdb.append_point(tsdb_dir, peer_key=parsed.public_key, metric="tx_bytes", value=parsed.tx_bytes, at=at)
+	tsdb.append_point(
+		tsdb_dir,
+		peer_key=parsed.public_key,
+		metric="rx_bytes",
+		value=parsed.rx_bytes,
+		at=at,
+	)
+	tsdb.append_point(
+		tsdb_dir,
+		peer_key=parsed.public_key,
+		metric="tx_bytes",
+		value=parsed.tx_bytes,
+		at=at,
+	)
 	return 2
 
 
 def _write_peer_handshake_metric(tsdb_dir: Path, data: dict[str, Any], at: datetime) -> int:
 	"""Write peer handshake metric at the node-supplied time. Returns points written."""
 	parsed = PeerHandshakeMetricData.model_validate(data)
-	if not parsed.latest_handshake:
+	if not parsed.latest_handshake or not is_plausible_handshake(parsed.latest_handshake):
 		return 0
-	tsdb.append_point(tsdb_dir, peer_key=parsed.public_key, metric="latest_handshake", value=parsed.latest_handshake, at=at)
+	tsdb.append_point(
+		tsdb_dir,
+		peer_key=parsed.public_key,
+		metric="latest_handshake",
+		value=parsed.latest_handshake,
+		at=at,
+	)
 	return 1
 
 
@@ -450,7 +452,11 @@ def _enroll_pending_node_sync(
 					    dns_logging_enabled = 0
 					WHERE id = ?
 					""",
-					(first_pubkey, f"[Node] {node_name}", int(existing_tunnel_peer["id"])),
+					(
+						first_pubkey,
+						f"[Node] {node_name}",
+						int(existing_tunnel_peer["id"]),
+					),
 				)
 				set_node_tunnel_peer(conn, node_id, int(existing_tunnel_peer["id"]))
 				tunnel_info = (
@@ -488,7 +494,10 @@ def _enroll_pending_node_sync(
 						tunnel_address,
 					)
 				else:
-					_log.warning("Could not allocate tunnel address for node=%s (pool exhausted?)", node_id)
+					_log.warning(
+						"Could not allocate tunnel address for node=%s (pool exhausted?)",
+						node_id,
+					)
 
 		bump_node_config_version(conn, node_id)
 		rotate_node_session_secret(conn, node_id, hash_token(session_secret))
@@ -517,12 +526,14 @@ def get_current_node(
 	if scheme.lower() != "bearer" or not token:
 		raise HTTPException(status_code=401, detail="Invalid authorization header")
 
-	# Opt-in: never accept the node bearer secret over proven plaintext when
-	# WIREBUDDY_REQUIRE_HTTPS_AUTH is set, except on loopback for local dev.
-	# Rejected before the secret is used, so a MITM gains nothing.
-	if get_config().require_https_auth and not _is_https_best_effort(request) and not _is_loopback_peer(request):
+	# Same rule as enrollment: no bearer secret over proven plaintext when GUI
+	# HTTPS or WIREBUDDY_REQUIRE_HTTPS_AUTH is set (loopback exempt).
+	if _https_required(conn) and not _is_https_best_effort(request) and not _is_loopback_peer(request):
 		_log.warning("Node auth rejected: HTTPS required for bearer authentication")
-		raise HTTPException(status_code=400, detail="This server requires HTTPS for node authentication.")
+		raise HTTPException(
+			status_code=400,
+			detail="This server requires HTTPS for node authentication.",
+		)
 
 	api_secret = token
 	secret_hash = hash_token(api_secret)
@@ -540,7 +551,10 @@ def get_current_node(
 	if client_cert_fp is not None:
 		stored_cert_fp = (node["cert_fingerprint"] or "").strip().lower()
 		if not stored_cert_fp:
-			_log.error("Node %s is enrolled without a stored certificate fingerprint", node["id"])
+			_log.error(
+				"Node %s is enrolled without a stored certificate fingerprint",
+				node["id"],
+			)
 			raise HTTPException(status_code=500, detail="Node enrollment state is invalid")
 		if not hmac.compare_digest(client_cert_fp, stored_cert_fp):
 			_log.warning(
@@ -620,11 +634,21 @@ async def enroll_node_endpoint(
 	"""
 	cfg = get_config()
 
-	# Verify token
+	# Verify token (v1 HMAC or v2 Ed25519, decided by the token prefix)
 	try:
-		payload = verify_enrollment_token(body.enrollment_token, cfg.secret_key)
+		payload, token_ver = await run_in_threadpool(
+			verify_any,
+			conn,
+			body.enrollment_token,
+			cfg.secret_key,
+			accept_v1=cfg.enrollment_accept_v1,
+		)
 	except ValueError as exc:
 		raise HTTPException(status_code=401, detail=str(exc)) from exc
+	except EnrollmentKeyError as exc:
+		# Server-side key problem: fail closed without echoing details.
+		_log.error("Enrollment refused, signing key unusable: %s", exc)
+		raise HTTPException(status_code=500, detail="Enrollment is temporarily unavailable") from exc
 
 	node_id = payload["node_id"]
 	api_secret = payload["api_secret"]
@@ -639,7 +663,11 @@ async def enroll_node_endpoint(
 		cert_pem_bytes = body.cert_pem.encode("utf-8")
 		fingerprint = get_cert_fingerprint(cert_pem_bytes)
 	except (ValueError, UnicodeDecodeError) as exc:
-		_log.warning("Node enrollment rejected due to invalid certificate for node=%s: %s", node_id, exc)
+		_log.warning(
+			"Node enrollment rejected due to invalid certificate for node=%s: %s",
+			node_id,
+			exc,
+		)
 		raise HTTPException(status_code=422, detail="Invalid certificate") from exc
 
 	if node["status"] != "pending":
@@ -657,7 +685,6 @@ async def enroll_node_endpoint(
 	# Verify api_secret matches stored hash (only for pending nodes)
 	if not hmac.compare_digest(hash_token(api_secret), node["api_secret_hash"]):
 		raise HTTPException(status_code=401, detail="API secret mismatch")
-
 	# Transport check MUST run before the irreversible enroll mutation below.
 	# Otherwise a rejected plaintext request would already have consumed the
 	# enrollment token (status flips to non-pending, secret rotated) with no
@@ -687,6 +714,9 @@ async def enroll_node_endpoint(
 		keypairs,
 		session_secret,
 	)
+	# Count v1 use only for an accepted enrollment, not for rejected requests.
+	if token_ver == 1:
+		await run_in_threadpool(record_v1_use, conn, node_id)
 
 	# Add tunnel peer to master's WireGuard (outside transaction)
 	warning_msg = None
@@ -720,7 +750,11 @@ async def enroll_node_endpoint(
 			_log.error("Failed to add tunnel peer to WireGuard: %s", stderr.strip())
 			warning_msg = "Tunnel peer could not be activated; retry sync"
 		else:
-			_log.info("Added tunnel peer to master WireGuard: interface=%s, pubkey=%s...", iface_name, pubkey[:8])
+			_log.info(
+				"Added tunnel peer to master WireGuard: interface=%s, pubkey=%s...",
+				iface_name,
+				pubkey[:8],
+			)
 
 	_log.info("Rotated API secret for node=%s (enrollment token invalidated)", node_id)
 
@@ -743,7 +777,40 @@ async def enroll_node_endpoint(
 	)
 
 
+_node_heartbeat_locks: dict[str, threading.Lock] = {}
+_node_heartbeat_locks_guard = threading.Lock()
+
+
+def _node_heartbeat_lock(node_id: str) -> threading.Lock:
+	"""Return the per-node lock (single uvicorn worker, so in-process is enough)."""
+	with _node_heartbeat_locks_guard:
+		return _node_heartbeat_locks.setdefault(node_id, threading.Lock())
+
+
+def _log_foreign_peer(conn: sqlite3.Connection, node_id: str, public_key: str) -> None:
+	"""Log a reported peer the node may not report on; warn only if it exists for another node."""
+	if get_peer_by_public_key(conn, public_key) is not None:
+		_log.warning("Node %s reported data for a peer it is not assigned to; ignored", node_id)
+	else:
+		_log.debug("Node %s reported data for an unknown peer; ignored", node_id)
+
+
 def _process_heartbeat(
+	conn: sqlite3.Connection,
+	tsdb_dir: Path,
+	node: sqlite3.Row,
+	body: HeartbeatRequest,
+) -> dict:
+	"""Run :func:`_process_heartbeat_locked` serialized per node.
+
+	Two overlapping heartbeats (e.g. a retry after a timeout) would otherwise
+	read the same checkpoint and write the same metrics twice.
+	"""
+	with _node_heartbeat_lock(str(node["id"])):
+		return _process_heartbeat_locked(conn, tsdb_dir, node, body)
+
+
+def _process_heartbeat_locked(
 	conn: sqlite3.Connection,
 	tsdb_dir: Path,
 	node: sqlite3.Row,
@@ -768,10 +835,22 @@ def _process_heartbeat(
 	update_node_heartbeat(conn, node_id, metadata=metadata or None)
 
 	# Persist peer stats from node's wg dump (makes remote peers visible in UI)
+	allowed_keys: set[str] | None = None
 	if body.peer_stats:
+		allowed_keys = get_node_peer_public_keys(conn, node_id)
 		db_updates: list[tuple[str, int, str]] = []
 		for ps in body.peer_stats:
 			if not ps.latest_handshake or not ps.public_key:
+				continue
+			if not is_plausible_handshake(ps.latest_handshake):
+				_log.warning(
+					"Ignoring implausible handshake from node %s for peer %s",
+					node_id,
+					ps.public_key[:8],
+				)
+				continue
+			if ps.public_key not in allowed_keys:
+				_log_foreign_peer(conn, node_id, ps.public_key)
 				continue
 			client_ip = _parse_endpoint_ip(ps.endpoint or "")
 			if client_ip:
@@ -807,17 +886,31 @@ def _process_heartbeat(
 		# that must not advance the checkpoint silently.
 		all_seqs = [m.seq for m in batch.metrics]
 		if batch.seq_from is not None and batch.seq_from != all_seqs[0]:
-			_log.warning("Node %s metric batch seq_from=%s != first seq=%s", node_id, batch.seq_from, all_seqs[0])
+			_log.warning(
+				"Node %s metric batch seq_from=%s != first seq=%s",
+				node_id,
+				batch.seq_from,
+				all_seqs[0],
+			)
 			return {"acked_seq": None, "failed": True}
 		if batch.seq_to is not None and batch.seq_to != all_seqs[-1]:
-			_log.warning("Node %s metric batch seq_to=%s != last seq=%s", node_id, batch.seq_to, all_seqs[-1])
+			_log.warning(
+				"Node %s metric batch seq_to=%s != last seq=%s",
+				node_id,
+				batch.seq_to,
+				all_seqs[-1],
+			)
 			return {"acked_seq": None, "failed": True}
 		# The whole batch must be a gap-free run. Compare adjacent values
 		# instead of materialising the full range: seq is attacker-influenced
 		# and unbounded, so list(range(a, b)) would allocate arbitrarily much
 		# memory for a two-element batch.
 		if any(current != previous + 1 for previous, current in itertools.pairwise(all_seqs)):
-			_log.warning("Node %s submitted non-contiguous metric sequence: %s", node_id, all_seqs)
+			_log.warning(
+				"Node %s submitted non-contiguous metric sequence: %s",
+				node_id,
+				all_seqs,
+			)
 			return {"acked_seq": None, "failed": True}
 
 		if new_metrics:
@@ -872,7 +965,12 @@ def _process_heartbeat(
 			for m in new_metrics:
 				parsed_ts = parse_utc(m.ts)
 				if parsed_ts is None:
-					_log.warning("Node %s metric seq=%d has invalid timestamp %r; rejecting batch", node_id, m.seq, m.ts)
+					_log.warning(
+						"Node %s metric seq=%d has invalid timestamp %r; rejecting batch",
+						node_id,
+						m.seq,
+						m.ts,
+					)
 					return {"acked_seq": None, "failed": True}
 				observation_times.append(parsed_ts)
 
@@ -884,10 +982,16 @@ def _process_heartbeat(
 			# single metric's points on retry; the JSONL TSDB has no dedup key
 			# and adding one is out of scope for this fix.
 			points_written = 0
+			if allowed_keys is None:
+				allowed_keys = get_node_peer_public_keys(conn, node_id)
 			try:
 				for m, at in zip(new_metrics, observation_times, strict=True):
-					writer = _METRIC_WRITERS[m.type]
-					points_written += writer(tsdb_dir, m.data, at)
+					if str(m.data.get("public_key", "")) not in allowed_keys:
+						# Checkpoint anyway so the node's queue drains.
+						_log_foreign_peer(conn, node_id, str(m.data.get("public_key", "")))
+					else:
+						writer = _METRIC_WRITERS[m.type]
+						points_written += writer(tsdb_dir, m.data, at)
 					set_node_last_metric_seq(conn, node_id, m.seq)
 					acked_seq = m.seq
 			except Exception:
@@ -971,7 +1075,11 @@ def get_config_endpoint(
 
 	# ETag-style: skip full payload if version matches
 	if version is not None and node["config_version"] is not None and version == str(node["config_version"]):
-		_log.debug("NODE_CONFIG_UNCHANGED node=%s version=%s", node_id, version[:16] if version else "none")
+		_log.debug(
+			"NODE_CONFIG_UNCHANGED node=%s version=%s",
+			node_id,
+			version[:16] if version else "none",
+		)
 		return ok_response(data={"config_version": node["config_version"]}, message="Config unchanged")
 
 	config = get_node_config(conn, node["id"])
@@ -999,8 +1107,8 @@ async def node_events(
 	- ``run_speedtest``: trigger an on-demand speedtest
 
 	Event format:
-		event: <command_name>
-		data: <payload>
+	        event: <command_name>
+	        data: <payload>
 	"""
 	node_id = node["id"]
 	db_path = request.app.state.db_path
@@ -1043,7 +1151,10 @@ async def node_events(
 					# Token regeneration/re-enrollment must end the old session; the
 					# stream authenticated only once, so re-check on every keepalive.
 					if not await session_still_valid():
-						_log.info("SSE session for node %s is no longer valid; closing", node_id)
+						_log.info(
+							"SSE session for node %s is no longer valid; closing",
+							node_id,
+						)
 						yield close_event
 						break
 					now_monotonic = time.monotonic()
@@ -1110,7 +1221,10 @@ async def submit_node_speedtest_progress(
 	return ok_response(message="Progress update received")
 
 
-@router.post("/commands/{command_id}/ack", dependencies=[Depends(rate_limit(_NODE_RATE_LIMIT_POLL))])
+@router.post(
+	"/commands/{command_id}/ack",
+	dependencies=[Depends(rate_limit(_NODE_RATE_LIMIT_POLL))],
+)
 async def ack_node_command_endpoint(
 	command_id: int,
 	request: Request,
@@ -1135,7 +1249,11 @@ class SpeedtestSubmission(BaseModel):
 
 	status: str = Field(..., max_length=16, description="Result status: ok | error")
 	server: str | None = Field(None, max_length=256, description="Speedtest server name")
-	server_url: str | None = Field(None, max_length=512, description="Speedtest server URL (used for GeoIP fallback)")
+	server_url: str | None = Field(
+		None,
+		max_length=512,
+		description="Speedtest server URL (ccTLD country hint when country_code is missing)",
+	)
 	country_code: str | None = Field(None, min_length=2, max_length=2, description="ISO 3166-1 alpha-2 country code")
 	download_mbit: float | None = Field(None, ge=0, le=100000, description="Download speed in Mbit/s")
 	upload_mbit: float | None = Field(None, ge=0, le=100000, description="Upload speed in Mbit/s")
@@ -1162,7 +1280,12 @@ def submit_node_speedtest(
 
 	# Only persist successful results (don't pollute TSDB with errors)
 	if body.status != "ok":
-		_log.warning("NODE_SPEEDTEST node=%s name=%s status=error reason=%s", node_id, node_name, body.reason or "unknown")
+		_log.warning(
+			"NODE_SPEEDTEST node=%s name=%s status=error reason=%s",
+			node_id,
+			node_name,
+			body.reason or "unknown",
+		)
 		return ok_response(message="Speedtest error recorded (not persisted to history)")
 
 	# Build result payload with node_id tag
@@ -1185,6 +1308,7 @@ def submit_node_speedtest(
 		result["server"] = body.server
 
 	# Resolve country_code: prefer submitted value, otherwise use a hostname ccTLD hint.
+	# Needed: nodes load no GeoIP data and older nodes send no code at all.
 	country_code = (body.country_code or "").strip().lower() or None
 	if not country_code and body.server_url:
 		country_code = _resolve_country_from_url(body.server_url)

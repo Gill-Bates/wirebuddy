@@ -51,7 +51,8 @@ Current fixed scheduler intervals are:
 | WireGuard peer counters and handshakes | 30 seconds |
 | Country and ASN conntrack counters | 30 seconds |
 | Network-interface counters | 30 seconds |
-| TSDB maintenance | 6 hours |
+| TSDB maintenance | 6 hours, first run at startup |
+| TSDB retention cleanup | daily, first run at startup |
 | GeoIP update check | 7 days |
 
 Sampling intervals are not configurable in the current UI or through supported
@@ -79,16 +80,17 @@ Manage retention under **Settings → Logs**.
 
 | Series | Default | Choices |
 |---|---:|---|
-| Traffic metrics | 7 days | 0, 7, 30, 90, 180, 365 days |
+| Traffic metrics | 7 days | 7, 30, 90, 180, 365 days |
 | DNS query/trend data | 7 days | 0, 7, 30, 90, 180, 365 days |
 | Speed-test results | 365 days | 0, 7, 30, 90, 180, 365 days |
 
-`0` is presented as **No Logs/Off**. Maintenance enforces retention regularly;
+For DNS and speed-test data, `0` is presented as **No Logs**. Maintenance enforces retention regularly;
 the page also provides immediate purge actions.
 
 ## GeoIP Databases
 
-City and ASN databases are downloaded on first use and checked weekly. Default
+City and ASN databases are downloaded shortly after startup when missing and
+checked weekly; lookups use a new download without a restart. Default
 locations are:
 
 ```text
@@ -102,8 +104,9 @@ Custom paths and download sources are documented under
 ## Backups
 
 Application backups can include metric history for a selected time range.
-Configure scheduled backups under **Settings → Backup**. Large TSDB histories
-increase archive creation time and size.
+Configure scheduled backups under **Settings → Backup**; they run daily at
+03:00 UTC, and a failed run is retried with backoff. Large
+TSDB histories increase archive creation time and size.
 
 For a cold filesystem backup:
 
@@ -157,10 +160,9 @@ the `/health`/`/ready` probes or ingest container logs.
 
 ### No Historical Traffic
 
-1. Confirm retention is not Off under **Settings → Logs**.
-2. Confirm active peers have transferred data.
-3. Inspect container logs for `TSDB_SAMPLE` or scheduler errors.
-4. Verify the data volume is writable.
+1. Confirm active peers have transferred data.
+2. Inspect container logs for `TSDB_SAMPLE` or scheduler errors.
+3. Verify the data volume is writable.
 
 ### No Country or ASN Data
 

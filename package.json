@@ -1,0 +1,15 @@
+{
+  "name": "wirebuddy-frontend-tooling",
+  "private": true,
+  "type": "module",
+  "description": "Browser regression test tooling; nothing here is shipped.",
+  "scripts": {
+    "test:js": "node --test \"tests/js/*.test.mjs\"",
+    "test:layout": "node tests/layout/run.mjs"
+  },
+  "devDependencies": {
+    "@axe-core/playwright": "4.14.0",
+    "@playwright/test": "1.64.1",
+    "playwright": "1.64.1"
+  }
+}

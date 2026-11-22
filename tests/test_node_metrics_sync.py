@@ -13,6 +13,7 @@ Locks the sequence-gap handling (P2.2), the per-metric idempotent checkpoint
 from __future__ import annotations
 
 import sqlite3
+import threading
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -21,6 +22,7 @@ import pytest
 from app.api import nodes_sync
 from app.api.nodes_sync import HeartbeatRequest, MetricEntry, MetricsBatch, _process_heartbeat
 from app.db import tsdb
+from app.db.sqlite_interfaces import create_interface
 from app.db.sqlite_nodes import (
 	create_node,
 	enroll_node,
@@ -28,6 +30,7 @@ from app.db.sqlite_nodes import (
 	get_node_last_metric_seq,
 	set_node_last_metric_seq,
 )
+from app.db.sqlite_peers_mutations import create_peer
 
 _PEER_KEY = "A" * 43 + "="
 
@@ -35,6 +38,8 @@ _PEER_KEY = "A" * 43 + "="
 def _node(conn: sqlite3.Connection) -> sqlite3.Row:
 	create_node(conn, "n1", "N1", "example.com", 51820, "hash")
 	enroll_node(conn, "n1", "f" * 64)
+	create_interface(conn, name="wg0", private_key="enc", public_key="pub", address="10.0.0.1/24")
+	create_peer(conn, _PEER_KEY, "10.0.0.2/32", node_id="n1", allowed_ips_mode="custom")
 	return get_node(conn, "n1")
 
 
@@ -199,3 +204,85 @@ def test_invalid_timestamp_rejects_batch(conn, tmp_path):
 	assert get_node_last_metric_seq(conn, "n1") is None
 	# Nothing written when the batch is rejected up-front.
 	assert tsdb.query(tmp_path, peer_key=_PEER_KEY, metric="rx_bytes") == []
+
+
+def test_naive_timestamp_rejects_batch(conn, tmp_path):
+	"""A zone-less node timestamp is ambiguous: the batch is refused, never read as UTC."""
+	node = _node(conn)
+	result = _process_heartbeat(conn, tmp_path, node, _batch([_traffic(1, "2026-05-01T14:03:07")], seq_from=1, seq_to=1))
+	assert result == {"acked_seq": None, "failed": True}
+	assert tsdb.query(tmp_path, peer_key=_PEER_KEY, metric="rx_bytes") == []
+
+
+# ─── node-scoped peers and per-node serialization ────────────────────────────
+
+
+def test_metrics_for_foreign_peer_are_dropped_but_checkpointed(conn, tmp_path):
+	node = _node(conn)
+	foreign = MetricEntry(seq=1, ts=_now_iso(), type="peer_traffic", data={"public_key": "B" * 43 + "=", "rx_bytes": 5, "tx_bytes": 5})
+	own = _traffic(2, _now_iso())
+
+	result = _process_heartbeat(conn, tmp_path, node, _batch([foreign, own], seq_from=1, seq_to=2))
+
+	assert result == {"acked_seq": 2, "failed": False}
+	assert tsdb.query(tmp_path, peer_key="B" * 43 + "=", metric="rx_bytes") == []
+	assert len(tsdb.query(tmp_path, peer_key=_PEER_KEY, metric="rx_bytes")) == 1
+
+
+def test_peer_stats_for_foreign_peer_do_not_update_last_seen(conn, tmp_path):
+	node = _node(conn)
+	other = "C" * 43 + "="
+	create_peer(conn, other, "10.0.0.3/32", allowed_ips_mode="custom")
+	body = HeartbeatRequest(peer_stats=[nodes_sync.PeerStatEntry(public_key=other, endpoint="203.0.113.9:51820", latest_handshake=1_700_000_000)])
+
+	_process_heartbeat(conn, tmp_path, node, body)
+
+	row = conn.execute("SELECT last_handshake_at FROM peers WHERE public_key = ?", (other,)).fetchone()
+	assert row["last_handshake_at"] is None
+
+
+def test_concurrent_heartbeats_do_not_double_write(threadsafe_conn, tmp_path, monkeypatch):
+	node = _node(threadsafe_conn)
+	real_writer = nodes_sync._write_peer_traffic_metric
+	entered = threading.Event()
+
+	def slow(tsdb_dir: Path, data: dict, at: datetime) -> int:
+		entered.set()
+		threading.Event().wait(0.2)
+		return real_writer(tsdb_dir, data, at)
+
+	monkeypatch.setitem(nodes_sync._METRIC_WRITERS, "peer_traffic", slow)
+	ts = _now_iso()
+	results: list[dict] = []
+
+	def run() -> None:
+		results.append(_process_heartbeat(threadsafe_conn, tmp_path, node, _batch([_traffic(1, ts)], seq_from=1, seq_to=1)))
+
+	first = threading.Thread(target=run)
+	first.start()
+	entered.wait(2)
+	second = threading.Thread(target=run)
+	second.start()
+	first.join()
+	second.join()
+
+	assert len(tsdb.query(tmp_path, peer_key=_PEER_KEY, metric="rx_bytes")) == 1
+	assert all(r["failed"] is False for r in results)
+
+
+def test_peer_stats_update_own_and_roaming_peers_but_skip_future_handshake(conn, tmp_path):
+	node = _node(conn)
+	roaming = "R" * 43 + "="
+	create_peer(conn, roaming, "10.0.0.4/32", allowed_ips_mode="custom", allow_all_nodes=True)
+	now = int(datetime.now(UTC).timestamp())
+	body = HeartbeatRequest(
+		peer_stats=[
+			nodes_sync.PeerStatEntry(public_key=_PEER_KEY, endpoint="203.0.113.9:51820", latest_handshake=now + 30 * 86400),
+			nodes_sync.PeerStatEntry(public_key=roaming, endpoint="203.0.113.10:51820", latest_handshake=now - 5),
+		]
+	)
+	assert _process_heartbeat(conn, tmp_path, node, body) == {"acked_seq": None, "failed": False}
+	own = conn.execute("SELECT last_handshake_at FROM peers WHERE public_key = ?", (_PEER_KEY,)).fetchone()
+	assert not own["last_handshake_at"]
+	row = conn.execute("SELECT last_handshake_at, last_client_ip FROM peers WHERE public_key = ?", (roaming,)).fetchone()
+	assert (row["last_handshake_at"], row["last_client_ip"]) == (now - 5, "203.0.113.10")

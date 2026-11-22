@@ -349,7 +349,7 @@ void (async function () {
         return trimmed.includes('*');
     }
 
-    function setPskValidationState(invalid, message = 'Invalid PSK format (must be 44-char WireGuard key)') {
+    function setPskValidationState(invalid, message = 'Invalid preshared key (PSK) format (must be 44-char WireGuard key)') {
         const input = document.getElementById('wg-psk-display');
         const feedback = document.getElementById('wg-psk-feedback');
         if (!input || !feedback) return;
@@ -382,7 +382,7 @@ void (async function () {
         if (!isValidWgPsk(psk)) {
             setPskValidationState(true);
             if (!silentInvalid) {
-                wbToast('Invalid PSK format (must be 44-char WireGuard key)', 'warning');
+                wbToast('Invalid preshared key (PSK) format (must be 44-char WireGuard key)', 'warning');
             }
             return false;
         }
@@ -397,11 +397,11 @@ void (async function () {
             cachedMaskedPsk = maskedValue;
             setPskValidationState(false);
             if (!silentSuccess) {
-                wbToast('PresharedKey saved', 'success');
+                wbToast('Preshared key (PSK) saved', 'success');
             }
             return true;
         } catch (error) {
-            wbToast('Failed to save PSK: ' + error.message, 'danger');
+            wbToast('Failed to save preshared key (PSK): ' + error.message, 'danger');
             return false;
         }
     }
@@ -689,10 +689,10 @@ void (async function () {
                             display.value = maskedValue;
                             display.type = 'password';
                             cachedMaskedPsk = maskedValue;
-                            wbToast('PresharedKey generated', 'success');
+                            wbToast('Preshared key (PSK) generated', 'success');
                         }
                     } catch (err) {
-                        wbToast('Failed to initialize PSK: ' + err.message, 'danger');
+                        wbToast('Failed to initialize preshared key (PSK): ' + err.message, 'danger');
                         this.checked = false;
                         togglePskDetails(false);
                         return;
@@ -767,7 +767,7 @@ void (async function () {
             try {
                 await navigator.clipboard.writeText(keyToCopy);
                 keyToCopy = '';
-                wbToast('PresharedKey copied to clipboard', 'success');
+                wbToast('Preshared key (PSK) copied to clipboard', 'success');
             } catch (e) {
                 wbToast('Failed to copy to clipboard', 'danger');
             }
@@ -790,7 +790,7 @@ void (async function () {
         pskGenBtn.addEventListener('click', async function () {
             if (!requireAdminAction()) return;
             if (!await wbConfirm(
-                'Generate a new PresharedKey? Existing client configurations will need to be re-downloaded.',
+                'Generate a new preshared key (PSK)? Existing client configurations will need to be re-downloaded.',
                 'warning'
             )) return;
 
@@ -804,9 +804,9 @@ void (async function () {
                 display.type = 'password';
                 cachedMaskedPsk = maskedValue;
                 setPskValidationState(false);
-                wbToast('New PresharedKey generated', 'success');
+                wbToast('New preshared key (PSK) generated', 'success');
             } catch (err) {
-                wbToast('Failed to generate PSK: ' + err.message, 'danger');
+                wbToast('Failed to generate preshared key (PSK): ' + err.message, 'danger');
             }
         });
     }
@@ -832,7 +832,7 @@ void (async function () {
             if (!requireAdminAction() || !pskDisplayInput) return;
             const candidate = pskDisplayInput.value.trim();
             if (pskDisplayInput.type === 'password' || isMaskedPskValue(candidate)) {
-                wbToast('Reveal or enter a complete PSK before saving', 'warning');
+                wbToast('Reveal or enter a complete preshared key (PSK) before saving', 'warning');
                 return;
             }
             await saveCustomPsk(candidate);
@@ -1558,7 +1558,6 @@ void (async function () {
 
         try {
             const certs = await api('GET', '/api/acme/certificates');
-            const guidanceEl = document.getElementById('letsencrypt-guidance');
             const listEl = document.getElementById('certificates-list');
 
             if (!certificateRow || !emptyState || !clearChildren) {
@@ -1575,20 +1574,12 @@ void (async function () {
                 }
             }
 
-            if (guidanceEl) {
-                guidanceEl.classList.toggle('d-none', certs.length > 0);
-            }
-
             // Event delegation for certificate buttons
             listEl.removeEventListener('click', handleCertificateClick);
             listEl.addEventListener('click', handleCertificateClick);
         } catch (error) {
             const { emptyState } = window.WB?.settingsComponents || {};
-            const guidanceEl = document.getElementById('letsencrypt-guidance');
             const listEl = document.getElementById('certificates-list');
-            if (guidanceEl) {
-                guidanceEl.classList.remove('d-none');
-            }
             if (emptyState) {
                 listEl.textContent = '';
                 listEl.appendChild(emptyState(`Failed to load certificates: ${error.message}`, 'danger'));
@@ -1801,24 +1792,6 @@ void (async function () {
                 }
             }
 
-            const updEl = document.getElementById('blocklist-last-update');
-            const updValueEl = updEl?.querySelector('.blocklist-last-value');
-            if (updEl) {
-                if (status?.blocklist_updated_at) {
-                    const d = new Date(status.blocklist_updated_at);
-                    const value = d.toLocaleString();
-                    if (updValueEl) {
-                        updValueEl.textContent = value;
-                    } else {
-                        updEl.textContent = value;
-                    }
-                } else if (updValueEl) {
-                    updValueEl.textContent = '–';
-                } else {
-                    updEl.textContent = '–';
-                }
-            }
-
             // Auto-poll while rebuild is in progress so "Pending" badges update
             if (rebuildInProgress) {
                 scheduleRebuildPoll();
@@ -1835,13 +1808,6 @@ void (async function () {
                 } else {
                     container.textContent = `Failed to load blocklists: ${error.message}`;
                 }
-            }
-            const updEl = document.getElementById('blocklist-last-update');
-            const updValueEl = updEl?.querySelector('.blocklist-last-value');
-            if (updValueEl) {
-                updValueEl.textContent = '–';
-            } else if (updEl) {
-                updEl.textContent = '–';
             }
         }
     }
@@ -2252,19 +2218,11 @@ void (async function () {
         }
     }
 
-    // Load blocklists (called by tab system)
-    // Removed automatic loading - now handled by initTabs()
-
     /* ── Metrics Stats & Retention ─────────────────────────── */
 
     function formatBytes(size) {
-        const n = Number(size) || 0;
-        if (n >= 1024 * 1024 * 1024) return (n / (1024 * 1024 * 1024)).toFixed(2) + ' GB';
-        if (n >= 1024 * 1024) return (n / (1024 * 1024)).toFixed(2) + ' MB';
-        if (n >= 1024) return (n / 1024).toFixed(1) + ' KB';
-        return n + ' B';
+        return window.WBFormat.bytes(Number(size) || 0);
     }
-
     function setMetricPath(elementId, rawValue) {
         const el = document.getElementById(elementId);
         if (!el) return;
@@ -2279,26 +2237,25 @@ void (async function () {
         el.setAttribute('aria-label', value);
     }
 
-    // TSDB retention slider values (includes 0 for "No Logs")
-    const TSDB_RETENTION_VALUES = [0, 7, 30, 90, 180, 365];
+    // TSDB retention slider values (the backend has no keep-nothing mode, see TSDB_RETENTION_OPTIONS)
+    const TSDB_RETENTION_VALUES = [7, 30, 90, 180, 365];
 
     function tsdbRetentionLabel(days) {
         const n = Number(days);
-        if (n === 0) return 'No Logs';
         if (n === 365) return '1 Year';
         return `${n} Days`;
     }
 
     function tsdbRetentionIndexForDays(days) {
         const idx = TSDB_RETENTION_VALUES.indexOf(Number(days));
-        return idx >= 0 ? idx : 5; // default: 365 days
+        return idx >= 0 ? idx : 0; // default: 7 days
     }
 
     function tsdbRetentionDaysFromSlider(rawValue) {
         const parsed = Number.parseInt(String(rawValue), 10);
         const idx = Number.isFinite(parsed)
             ? Math.max(0, Math.min(TSDB_RETENTION_VALUES.length - 1, parsed))
-            : 5;
+            : 0;
         return TSDB_RETENTION_VALUES[idx];
     }
 
@@ -2307,10 +2264,7 @@ void (async function () {
         const labelEl = document.getElementById('tsdb-retention-value');
         if (labelEl) {
             labelEl.textContent = tsdbRetentionLabel(days);
-            // Visual warning when logging is disabled
-            labelEl.className = days === 0
-                ? 'badge text-bg-danger'
-                : 'badge text-bg-secondary';
+            labelEl.className = 'badge text-bg-secondary';
         }
         return days;
     }
@@ -2327,14 +2281,14 @@ void (async function () {
 
     function dnsMetricsRetentionIndexForDays(days) {
         const idx = DNS_METRICS_RETENTION_VALUES.indexOf(Number(days));
-        return idx >= 0 ? idx : 2; // default: 30 days
+        return idx >= 0 ? idx : 1; // default: 7 days
     }
 
     function dnsMetricsRetentionDaysFromSlider(rawValue) {
         const parsed = Number.parseInt(String(rawValue), 10);
         const idx = Number.isFinite(parsed)
             ? Math.max(0, Math.min(DNS_METRICS_RETENTION_VALUES.length - 1, parsed))
-            : 2;
+            : 1;
         return DNS_METRICS_RETENTION_VALUES[idx];
     }
 
@@ -2396,7 +2350,7 @@ void (async function () {
 
     function updateCustomRulesCount(count) {
         const badge = document.getElementById('custom-rules-count');
-        if (badge) badge.textContent = count === 1 ? '1 rule' : `${count} rules`;
+        if (badge) badge.textContent = count === 1 ? '1 rule' : `${window.WBFormat.number(count)} rules`;
     }
 
     function showCustomRulesErrors(errors) {
@@ -2501,16 +2455,6 @@ void (async function () {
         _tsdbRetentionSaving = true;
         try {
             const days = tsdbRetentionDaysFromSlider(nextValue);
-            if (days === 0) {
-                const ok = await wbConfirm(
-                    '"No Logs" disables traffic logging and deletes existing data. Dashboard charts will show "Logging disabled". Continue?',
-                    'warning'
-                );
-                if (!ok) {
-                    await loadTsdbStats();
-                    return;
-                }
-            }
             await api('PATCH', '/api/wireguard/stats/tsdb/retention', { retention_days: days });
             wbToast(`Traffic retention set to ${tsdbRetentionLabel(days)}`, 'success');
         } catch (e) {
@@ -2576,16 +2520,16 @@ void (async function () {
             if (sizeEl) sizeEl.textContent = formatBytes(stats.size_bytes || 0);
 
             const peersEl = document.getElementById('tsdb-peers');
-            if (peersEl) peersEl.textContent = stats.peer_count || 0;
+            if (peersEl) peersEl.textContent = window.WBFormat.number(stats.peer_count || 0);
 
             const filesEl = document.getElementById('tsdb-files');
-            if (filesEl) filesEl.textContent = stats.file_count || 0;
+            if (filesEl) filesEl.textContent = window.WBFormat.number(stats.file_count || 0);
 
             const archivesEl = document.getElementById('tsdb-archives');
             if (archivesEl) {
                 const archiveCount = stats.archive_count || 0;
                 const compressedSize = stats.compressed_size_bytes || 0;
-                archivesEl.textContent = `${archiveCount} (${formatBytes(compressedSize)})`;
+                archivesEl.textContent = `${window.WBFormat.number(archiveCount)} (${formatBytes(compressedSize)})`;
             }
 
             const slider = document.getElementById('tsdb-retention-slider');
@@ -2607,7 +2551,7 @@ void (async function () {
             if (sizeEl) sizeEl.textContent = formatBytes(stats.size_bytes || 0);
 
             const filesEl = document.getElementById('dns-metrics-files');
-            if (filesEl) filesEl.textContent = stats.file_count || 0;
+            if (filesEl) filesEl.textContent = window.WBFormat.number(stats.file_count || 0);
 
             const slider = document.getElementById('dns-metrics-retention-slider');
             if (slider && stats.retention_days != null) {
@@ -2628,7 +2572,7 @@ void (async function () {
             if (sizeEl) sizeEl.textContent = formatBytes(stats.size_bytes || 0);
 
             const totalEl = document.getElementById('peer-metrics-total');
-            if (totalEl) totalEl.textContent = stats.total_peers || 0;
+            if (totalEl) totalEl.textContent = window.WBFormat.number(stats.total_peers || 0);
 
             const hsEl = document.getElementById('peer-metrics-handshake');
             if (hsEl) hsEl.textContent = stats.peers_with_handshake || 0;
@@ -2720,15 +2664,6 @@ void (async function () {
     const BACKUP_RETENTION_DAYS = [1, 7, 14, 21, 30];
     const BACKUP_RETENTION_LABELS = ['1 Day', '7 Days', '14 Days', '21 Days', '30 Days'];
 
-    // Format bytes to human-readable string
-    function formatBackupSize(bytes) {
-        if (bytes === 0) return '0 B';
-        const units = ['B', 'KB', 'MB', 'GB', 'TB'];
-        const i = Math.floor(Math.log(bytes) / Math.log(1024));
-        const value = bytes / Math.pow(1024, i);
-        return value.toFixed(i > 0 ? 1 : 0) + ' ' + units[i];
-    }
-
     // Helper: Parse API error response
     async function parseBackupApiError(resp) {
         const error = await resp.json().catch(() => ({}));
@@ -2786,7 +2721,7 @@ void (async function () {
             const diskWarningEl = document.getElementById('backup-disk-warning');
 
             if (scheduledEl) scheduledEl.checked = data.scheduled_enabled;
-            if (countEl) countEl.textContent = data.backup_count.toString();
+            if (countEl) countEl.textContent = window.WBFormat.number(data.backup_count);
 
             // Set retention slider value
             if (retentionSlider && data.retention_days !== undefined) {
@@ -2805,7 +2740,7 @@ void (async function () {
 
             // Update backup size
             if (sizeEl && data.backup_size_bytes !== undefined) {
-                sizeEl.textContent = formatBackupSize(data.backup_size_bytes);
+                sizeEl.textContent = formatBytes(data.backup_size_bytes);
             }
 
             // Show/hide disk warning
@@ -2815,8 +2750,7 @@ void (async function () {
 
             if (lastAtEl) {
                 if (data.last_backup_at && data.backup_count > 0) {
-                    const date = new Date(data.last_backup_at);
-                    lastAtEl.textContent = date.toLocaleString();
+                    lastAtEl.textContent = window.WBFormat.format(data.last_backup_at, 'datetime-seconds');
                 } else {
                     lastAtEl.textContent = 'No backups yet';
                 }

@@ -4,9 +4,6 @@
 # Copyright (C) 2026 Gill-Bates http://github.com/Gill-Bates
 #
 
-# SPDX-License-Identifier: MIT
-#
-
 """Per-user dashboard layout storage (one row per placed widget).
 
 The layout lives in its own ``dashboard_layouts`` table instead of a JSON blob in ``settings``: the
@@ -40,6 +37,10 @@ def _widget_valid(widget: Any) -> bool:
 		return False
 	wid = widget.get("id")
 	if not isinstance(wid, str) or not 1 <= len(wid) <= 64:
+		return False
+	# "visible" is optional (default True) but must be a real bool when present: any
+	# other value would be stored by truthiness ("false" -> visible).
+	if "visible" in widget and not isinstance(widget["visible"], bool):
 		return False
 	values = [widget.get(key) for key in ("x", "y", "w", "h")]
 	if any(isinstance(v, bool) or not isinstance(v, int) for v in values):
@@ -114,7 +115,7 @@ def migrate_dashboard_layouts_from_settings(conn: sqlite3.Connection) -> int:
 				and all(_widget_valid(w) for w in widgets)
 				and len({w["id"] for w in widgets}) == len(widgets)
 			)
-		except (ValueError, TypeError, AttributeError):
+		except ValueError, TypeError, AttributeError:
 			valid = False
 			user_id = -1
 		if not valid:

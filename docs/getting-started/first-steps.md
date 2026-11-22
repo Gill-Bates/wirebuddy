@@ -44,8 +44,8 @@ Open **Settings → WireGuard** and select **Add Interface**.
 | Show on Dashboard | enabled | Include the interface in dashboard gauges |
 
 Use a private subnet that does not overlap the server LAN, another VPN, or an
-existing WireBuddy interface. WireBuddy rejects overlapping interface subnets
-and duplicate listen ports. When custom hooks are absent, it generates the NAT,
+existing WireBuddy interface. WireBuddy rejects IPv4 subnets larger than `/16`,
+overlapping interface subnets and duplicate listen ports. When custom hooks are absent, it generates the NAT,
 forwarding, and DNS firewall rules from the host's default route.
 
 After creation, use the play button in the interface row to start it. Verify on
@@ -124,7 +124,7 @@ proxy to use them. See [Let’s Encrypt](../features/acme.md).
 ### Backups
 
 Open **Settings → Backup** to download a configuration backup or enable the
-daily 03:00 scheduled backup. Keep `.env` and especially
+scheduled backup, which runs daily at 03:00 UTC. Keep `.env` and especially
 `WIREBUDDY_SECRET_KEY` in a separate secure backup because they are not a
 substitute for application data backups.
 

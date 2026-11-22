@@ -44,29 +44,6 @@
         return err?.name === 'AbortError' || err?.code === 'ABORTED';
     }
 
-    const SIZE_UNITS = ['B', 'KB', 'MB', 'GB', 'TB', 'PB', 'EB'];
-
-    function formatScaledSize(value, startUnitIndex) {
-        if (!Number.isFinite(value) || value <= 0) return '0 B';
-
-        let unitIndex = Math.max(0, Math.min(startUnitIndex, SIZE_UNITS.length - 1));
-        let scaledValue = value;
-
-        while (unitIndex < SIZE_UNITS.length - 1 && scaledValue >= 1024) {
-            scaledValue /= 1024;
-            unitIndex += 1;
-        }
-
-        while (unitIndex > 0 && scaledValue > 0 && scaledValue < 1) {
-            scaledValue *= 1024;
-            unitIndex -= 1;
-        }
-
-        const unit = SIZE_UNITS[unitIndex];
-        const decimals = unitIndex === 0 ? 0 : 1;
-        return `${Number(scaledValue.toFixed(decimals))} ${unit}`;
-    }
-
     /**
      * Format a byte count into a human-readable string.
      * Uses iterative division to avoid floating-point precision issues at exact
@@ -78,7 +55,7 @@
         if (bytes < 0) {
             console.warn('formatBytes: negative value', bytes);
         }
-        return formatScaledSize(Math.max(0, Number(bytes) || 0), 0);
+        return window.WBFormat.bytes(Math.max(0, Number(bytes) || 0), 0);
     }
 
     /**
@@ -88,27 +65,16 @@
      * @returns {string}
      */
     function formatTrafficMetric(value, unit) {
-        const parsed = Number(value);
-        const unitToExp = { B: 0, KB: 1, MB: 2, GB: 3, TB: 4, PB: 5, EB: 6 };
         const normalizedUnit = String(unit).toUpperCase();
-        const exp = unitToExp[normalizedUnit];
-        if (exp === undefined) {
+        if (!window.WBFormat.SIZE_UNITS.includes(normalizedUnit)) {
             console.warn('formatTrafficMetric: unknown unit', unit);
-            return '0 B';
+            return window.WBFormat.bytes(0);
         }
-        return formatScaledSize(parsed, exp);
+        return window.WBFormat.bytes(Number(value), normalizedUnit);
     }
-
     function formatBandwidthMetric(valueMbit, gbitDigits = 1, mbitDigits = gbitDigits) {
-        const numericValue = Number(valueMbit);
-        if (!Number.isFinite(numericValue)) return '–';
-
-        const isGbit = numericValue >= 1000;
-        const scaled = isGbit ? numericValue / 1000 : numericValue;
-        const digits = Math.max(Number(isGbit ? gbitDigits : mbitDigits) || 0, 0);
-        return `${scaled.toFixed(digits)} ${isGbit ? 'Gbit/s' : 'Mbit/s'}`;
+        return window.WBFormat.bandwidth(valueMbit, gbitDigits, mbitDigits);
     }
-
     const chartColorCache = { dark: null, light: null };
 
     function invalidateChartColorCache() {
@@ -396,7 +362,7 @@
     function describeSeries(label, values, unit, digits = 1) {
         const nums = (values || []).filter((v) => typeof v === 'number' && Number.isFinite(v));
         if (!nums.length) return '';
-        const fmt = (v) => v.toFixed(digits);
+        const fmt = (v) => window.WBFormat.fixed(v, digits);
         const min = Math.min(...nums);
         const max = Math.max(...nums);
         const latest = nums[nums.length - 1];

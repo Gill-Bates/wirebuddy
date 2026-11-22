@@ -118,7 +118,7 @@ docker compose --env-file .env -f docker/docker-compose.yml up -d
 === "Traffic"
     ![Traffic](https://raw.githubusercontent.com/Gill-Bates/wirebuddy/main/.github/img/screen_3.jpeg)
 
-=== "DNS Ad-Blocker"
+=== "DNS ad-blocking"
     ![DNS](https://raw.githubusercontent.com/Gill-Bates/wirebuddy/main/.github/img/screen_4.jpeg)
 
 ## Security

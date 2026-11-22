@@ -36,6 +36,7 @@ import sqlite3
 from collections.abc import Callable
 
 from ..db.sqlite_runtime import transaction
+from .time import utcnow
 
 _log = logging.getLogger(__name__)
 
@@ -75,8 +76,9 @@ def _ensure_schema_version_table(conn: sqlite3.Connection) -> None:
 		# Ensure exactly one row exists
 		conn.execute(
 			"""
-			INSERT OR IGNORE INTO schema_version (id, version) VALUES (1, 0)
-			"""
+			INSERT OR IGNORE INTO schema_version (id, version, updated_at) VALUES (1, 0, ?)
+			""",
+			(utcnow(),),
 		)
 
 
@@ -94,8 +96,8 @@ def get_schema_version(conn: sqlite3.Connection) -> int:
 def _set_schema_version(conn: sqlite3.Connection, version: int) -> None:
 	"""Update the schema version in the database."""
 	conn.execute(
-		"UPDATE schema_version SET version = ?, updated_at = CURRENT_TIMESTAMP WHERE id = 1",
-		(version,),
+		"UPDATE schema_version SET version = ?, updated_at = ? WHERE id = 1",
+		(version, utcnow()),
 	)
 
 

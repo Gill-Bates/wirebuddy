@@ -9,6 +9,8 @@ import path from 'node:path';
 
 import { expect, test } from '@playwright/test';
 
+import { computePixelDiff } from '../../lib/runtime/visual-diff/pixelmatch.mjs';
+
 import {
     captureKpiCards,
     captureStablePair,
@@ -147,4 +149,13 @@ test('disableMotion serves motion reset CSS through a routed stylesheet', async 
     expect(addStyleTagCalls).toHaveLength(1);
     expect(addStyleTagCalls[0]).toMatchObject({ url: expect.stringMatching(/^\/__ui_lint__\/motion-reset-[a-f0-9]{16}\.css$/) });
     expect(addStyleTagCalls[0]).not.toHaveProperty('content');
+});
+
+test('screenshot diff counts non-overlapping area as drift', async () => {
+    const solid = (width, height) => ({ width, height, data: Buffer.alloc(width * height * 4, 255) });
+    const result = computePixelDiff(solid(10, 10), solid(10, 12));
+
+    expect(result.dimensions.sizeMismatch).toBe(true);
+    expect(result.totalPixels).toBe(120);
+    expect(result.mismatchedPixels).toBe(20);
 });

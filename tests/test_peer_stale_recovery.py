@@ -4,9 +4,6 @@
 # Copyright (C) 2026 Gill-Bates http://github.com/Gill-Bates
 #
 
-# SPDX-License-Identifier: MIT
-#
-
 """peer_stale_months: alternate-DB recovery and the 'no key means default' semantics."""
 
 from __future__ import annotations

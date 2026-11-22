@@ -30,19 +30,28 @@ from app.utils.tls import (
 )
 
 
-def _write_cert_pair(directory: Path, hostname: str, *, not_after: dt.datetime) -> None:
-	"""Write a plausible ACME-style fullchain/privkey pair."""
+def _write_cert_pair(
+	directory: Path,
+	hostname: str,
+	*,
+	not_after: dt.datetime,
+	not_before: dt.datetime | None = None,
+	san: list[x509.GeneralName] | None = None,
+) -> None:
+	"""Write a plausible ACME-style fullchain/privkey pair (SAN defaults to ``hostname``)."""
 	directory.mkdir(parents=True, exist_ok=True)
 	key = ec.generate_private_key(ec.SECP256R1())
 	subject = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, hostname)])
+	names = san if san is not None else [x509.DNSName(hostname)]
 	cert = (
 		x509.CertificateBuilder()
 		.subject_name(subject)
 		.issuer_name(subject)
 		.public_key(key.public_key())
 		.serial_number(x509.random_serial_number())
-		.not_valid_before(not_after - dt.timedelta(days=90))
+		.not_valid_before(not_before or not_after - dt.timedelta(days=90))
 		.not_valid_after(not_after)
+		.add_extension(x509.SubjectAlternativeName(names), critical=False)
 		.sign(key, hashes.SHA256())
 	)
 	(directory / "fullchain.pem").write_bytes(cert.public_bytes(serialization.Encoding.PEM))
@@ -136,6 +145,55 @@ def test_mismatched_letsencrypt_key_falls_back(tmp_path):
 		)
 	)
 	assert resolve_gui_certificate(tmp_path, "vpn.example.com").source == "self-signed"
+
+
+def test_letsencrypt_cert_for_another_host_falls_back(tmp_path):
+	"""Valid expiry and matching key, but the SAN names another host: browsers would reject it."""
+	_write_cert_pair(
+		tmp_path / "vpn.example.com",
+		"other.example.com",
+		not_after=dt.datetime.now(dt.UTC) + dt.timedelta(days=60),
+	)
+	assert resolve_gui_certificate(tmp_path, "vpn.example.com").source == "self-signed"
+
+
+def test_letsencrypt_cert_without_san_falls_back(tmp_path):
+	_write_cert_pair(
+		tmp_path / "vpn.example.com",
+		"vpn.example.com",
+		not_after=dt.datetime.now(dt.UTC) + dt.timedelta(days=60),
+		san=[x509.DNSName("other.example.com")],
+	)
+	assert resolve_gui_certificate(tmp_path, "vpn.example.com").source == "self-signed"
+
+
+def test_letsencrypt_cert_not_yet_valid_falls_back(tmp_path):
+	now = dt.datetime.now(dt.UTC)
+	_write_cert_pair(
+		tmp_path / "vpn.example.com",
+		"vpn.example.com",
+		not_after=now + dt.timedelta(days=90),
+		not_before=now + dt.timedelta(days=1),
+	)
+	assert resolve_gui_certificate(tmp_path, "vpn.example.com").source == "self-signed"
+
+
+@pytest.mark.parametrize(
+	("san", "host", "expected"),
+	[
+		("*.example.com", "vpn.example.com", "letsencrypt"),
+		("*.example.com", "a.b.example.com", "self-signed"),
+		("*.example.com", "example.com", "self-signed"),
+	],
+)
+def test_letsencrypt_wildcard_san_matches_one_label(tmp_path, san, host, expected):
+	_write_cert_pair(
+		tmp_path / host,
+		host,
+		not_after=dt.datetime.now(dt.UTC) + dt.timedelta(days=60),
+		san=[x509.DNSName(san)],
+	)
+	assert resolve_gui_certificate(tmp_path, host).source == expected
 
 
 # ─── self-signed fallback ────────────────────────────────────────────────────

@@ -83,6 +83,33 @@ read_setting() {
     printf '%s' "$value"
 }
 
+# GeoLite2 databases live in a subdirectory of the data volume. Prepare it for
+# both modes before branching; existing files are never touched.
+prepare_geolite2_dir() {
+    local dir="${DATA_DIR}/geolite2"
+    if [ -L "$dir" ]; then
+        # Never create, chmod or write through a symlink on the user's behalf.
+        echo "Warning: $dir is a symlink; leaving it untouched" >&2
+        return 0
+    fi
+    if [ -e "$dir" ] && [ ! -d "$dir" ]; then
+        echo "Warning: $dir exists but is not a directory; GeoIP databases will be unavailable" >&2
+        return 0
+    fi
+    if [ ! -d "$dir" ]; then
+        if ! mkdir -p "$dir"; then
+            echo "Warning: could not create $dir; GeoIP databases will be unavailable" >&2
+            return 0
+        fi
+        echo "Created directory: $dir"
+    fi
+    if [ ! -w "$dir" ]; then
+        echo "Warning: $dir is not writable; GeoIP databases cannot be downloaded" >&2
+    fi
+    return 0
+}
+DATA_DIR="${WIREBUDDY_DATA_DIR:-/app/data}"
+prepare_geolite2_dir
 # ─── NODE MODE ───────────────────────────────────────────
 # In node mode, skip all master logic and run the daemon directly
 SERVER_MODE="${SERVER_MODE:-master}"
@@ -100,7 +127,6 @@ case "$SERVER_MODE" in
 esac
 
 # ─── MASTER MODE ─────────────────────────────────────────
-DATA_DIR="${WIREBUDDY_DATA_DIR:-/app/data}"
 DB_PATH="${DATA_DIR}/wirebuddy.db"
 HOST="0.0.0.0"
 PORT="8000"
@@ -188,7 +214,7 @@ echo "Trusting proxy headers from: ${WIREBUDDY_TRUSTED_PROXIES:-127.0.0.1,::1}"
 export WIREBUDDY_LISTENER_STATE="/run/wirebuddy/listener.env"
 rm -f "$WIREBUDDY_LISTENER_STATE"
 
-# Single start path shared with run.py: app.server decides HTTP vs built-in
+# Single start path: app.server decides HTTP vs built-in
 # HTTPS from gui_https_enabled, resolves the certificate (Let's Encrypt or
 # self-signed) and runs one uvicorn worker - the job queue and session/rate-
 # limit state live in-process.

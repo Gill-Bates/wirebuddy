@@ -9,7 +9,6 @@
 from __future__ import annotations
 
 import re
-from typing import Literal
 
 from pydantic import AwareDatetime, BaseModel, Field, IPvAnyAddress, field_validator, model_validator
 
@@ -212,14 +211,6 @@ class RecoveryDownloadRequest(BaseModel):
 	def normalize_token(cls, v: str) -> str:
 		"""Normalize and validate token format."""
 		return _validate_opaque_token(v)
-
-
-class TokenResponse(BaseModel):
-	"""Authentication token response."""
-
-	token: str
-	expires_at: AwareDatetime
-	token_type: Literal["Bearer"] = "Bearer"  # noqa: S105  (the OAuth token type, not a secret)
 
 
 class UserCreate(BaseModel):

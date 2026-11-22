@@ -5,6 +5,9 @@ services:
     restart: always
     stop_grace_period: 40s
     network_mode: host
+
+    init: true
+    pids_limit: 512
     cap_drop:
       - ALL
     cap_add:
@@ -14,13 +17,18 @@ services:
       - SETGID
       - CHOWN
       - DAC_OVERRIDE
+      - KILL
+    security_opt:
+      - no-new-privileges:true
       
     environment:
       LOG_LEVEL: "${LOG_LEVEL:-INFO}"
-      TZ: "${TZ:-Etc/UTC}"
       WIREBUDDY_SECRET_KEY: "${WIREBUDDY_SECRET_KEY:?Set WIREBUDDY_SECRET_KEY in .env (head -c 32 /dev/urandom | base64)}"
       WIREBUDDY_TRUSTED_PROXIES: "${WIREBUDDY_TRUSTED_PROXIES:-127.0.0.1,::1}"
+      WIREBUDDY_MTLS_PROXIES: "${WIREBUDDY_MTLS_PROXIES:-}"
+      WIREBUDDY_HOST: "${WIREBUDDY_HOST:-}"
       WIREBUDDY_PORT: "${WIREBUDDY_PORT:-8000}"
+      WIREBUDDY_PUBLIC_ORIGIN: "${WIREBUDDY_PUBLIC_ORIGIN:-}"
 
     logging:
       driver: json-file
@@ -28,12 +36,7 @@ services:
         max-size: "50m"
         max-file: "5"
 
-    security_opt:
-      - no-new-privileges:true
-    devices:
-      - /dev/net/tun:/dev/net/tun
-    volumes:
-      - ./data:/app/data
 
-    # No healthcheck override: the image's HEALTHCHECK probes the scheme and
-    # port this start actually serves (plain HTTP or built-in HTTPS).
+    volumes:
+      # Persistent data, including GeoLite2 databases in ./data/geolite2 (not tmpfs)
+      - ./data:/app/data

@@ -19,10 +19,8 @@ from __future__ import annotations
 import contextlib
 import ipaddress
 import logging
-import os
 import re
 import sqlite3
-import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -34,6 +32,7 @@ from ..db.sqlite_nodes import get_all_tunnel_peer_ids
 from ..utils.network import allowed_ips_with_dns_routes
 from ..utils.vault import decrypt as vault_decrypt
 from .wireguard_isolation import build_client_isolation_post_rules, extract_peer_ips
+from .wireguard_utils import write_secret_temp_file
 
 _log = logging.getLogger(__name__)
 
@@ -283,22 +282,15 @@ def write_interface_config(
 	config_path.mkdir(parents=True, exist_ok=True)
 	conf_file = config_path / f"{name}.conf"
 
-	# Atomic write: write to temp file, chmod, then replace
-	fd, temp_path = tempfile.mkstemp(dir=str(config_path), suffix=".tmp")
-	try:
-		os.write(fd, config_content.encode("utf-8"))
-		os.fchmod(fd, 0o600)
-	finally:
-		os.close(fd)
-
+	# Atomic write: complete 0600 temp file first, then replace the target.
+	temp_path = write_secret_temp_file(config_path, config_content.encode("utf-8"), suffix=".tmp")
 	try:
 		# Path.replace() is os.replace(): atomic within one filesystem.
 		Path(temp_path).replace(conf_file)
-	except Exception:
+	except BaseException:
 		with contextlib.suppress(OSError):
 			Path(temp_path).unlink()
 		raise
-
 	del config_content, config_lines
 
 

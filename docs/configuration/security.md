@@ -13,7 +13,7 @@ random per-password salt.
 The enforced password policy is:
 
 - minimum 8 characters
-- maximum 72 UTF-8 bytes
+- maximum 256 characters
 - no control characters or known common passwords
 - at least three of uppercase, lowercase, number, and special character
 
@@ -48,7 +48,8 @@ startup, so restart WireBuddy afterwards.
 
 This is a single, all-or-nothing switch (`gui_https_enabled`, also settable via
 `PATCH /api/wireguard/settings`). Enabling it does two things: the GUI port
-serves TLS, and logins and node enrollments reject plain-HTTP transports, so
+serves TLS, and logins, node enrollments, and node authentication reject
+plain-HTTP transports (loopback is exempt), so
 session cookies and node secrets are never sent in clear text. There is no
 separate policy toggle. The ACME challenge path is never affected.
 
@@ -60,8 +61,9 @@ Loopback peers stay exempt so local HTTP development keeps working.
 Which certificate is presented is decided automatically:
 
 1. A **Let's Encrypt** certificate for the configured Server FQDN, if one exists
-   under `data/certs/<fqdn>/` and has not expired. Staging certificates are
-   ignored.
+   under `data/certs/<fqdn>/`, is already valid and not expired, covers the
+   FQDN in its subject alternative names, and matches its private key.
+   Staging certificates are ignored.
 2. Otherwise a **self-signed** certificate, generated on demand into
    `data/certs/_selfsigned/`. Browsers show a trust warning for it.
 
@@ -79,7 +81,8 @@ to HTTPS. Certificate issue and renewal keep working, and no authenticated
 surface is exposed in clear text.
 
 That listener defaults to port 80 and is configured with the `gui_acme_http_port`
-setting; set it to `0` to disable it. Make sure the port is reachable from the
+setting; set it to `0` to disable it. The setting lives only in the database,
+and a change applies on the next start. Make sure the port is reachable from the
 internet, otherwise validation fails.
 
 Certificates are read at startup only. **Restart WireBuddy after issuing or
@@ -105,7 +108,7 @@ WIREBUDDY_PUBLIC_ORIGIN=https://vpn.example.com
 broad CIDRs unless the complete range is controlled by your proxy
 infrastructure.
 
-HSTS is emitted for requests detected as HTTPS. Set
+HSTS is emitted only for requests detected as HTTPS. Set
 `WIREBUDDY_FORCE_HSTS=1` only when TLS terminates upstream and scheme detection
 cannot be made reliable.
 
@@ -142,6 +145,11 @@ Additional legitimate origins can be listed in
 `WIREBUDDY_CSRF_ALLOWED_ORIGINS`. CSRF protection cannot be disabled through
 the UI.
 
+The CSRF cookie keeps its token. Every safe response (such as a page view)
+sends the same token again and extends the cookie lifetime, which is one hour,
+so a long browser session does not hit a `403`. A tab left idle for over an hour
+without any safe request loses the cookie; reload the page.
+
 ## Security Headers
 
 WireBuddy sends these headers by default:
@@ -151,10 +159,15 @@ Content-Security-Policy: default-src 'self'; ...
 X-Frame-Options: DENY
 X-Content-Type-Options: nosniff
 Referrer-Policy: strict-origin-when-cross-origin
+Permissions-Policy: camera=(), microphone=(), geolocation=(), payment=(), usb=()
+Cross-Origin-Opener-Policy: same-origin
 ```
 
-The CSP permits the explicitly used map tiles, jsDelivr-hosted country flags,
-and local application assets. There is no custom-CSP editor in the UI.
+The CSP permits the map tiles (`services.arcgisonline.com`) and local
+application assets. The admin-only `/swagger` page sends its own CSP that also
+allows `cdn.jsdelivr.net` for the Swagger UI bundle.
+Country flags are served by WireBuddy itself and need no external origin.
+There is no custom-CSP editor in the UI.
 
 ## Rate Limiting and Login Lockouts
 
@@ -236,11 +249,12 @@ when that threat model requires it.
 
 The supplied Compose service:
 
-- drops all capabilities and adds back only the six that are required:
+- drops all capabilities and adds back only the seven that are required:
   `NET_ADMIN` for WireGuard and iptables, and `NET_BIND_SERVICE`, `SETUID`,
-  `SETGID`, `CHOWN`, `DAC_OVERRIDE` for the bundled Unbound resolver
+  `SETGID`, `CHOWN`, `DAC_OVERRIDE`, `KILL` for the bundled Unbound resolver
 - enables `no-new-privileges`
-- mounts `/dev/net/tun`
+- runs an init process (`init: true`) and caps the process count
+  (`pids_limit: 512`)
 - uses host networking as required by WireGuard
 - limits JSON log-file growth
 
@@ -252,7 +266,9 @@ drop-in configuration.
 ## Operational Logging
 
 WireBuddy emits structured security-relevant log events for authentication,
-password changes, OTP/passkey changes, and administrative mutations. There is
+password changes, 2FA/passkey changes, and administrative mutations. Each log
+line reads `<UTC time> | LEVEL | wirebuddy | message`; warnings and errors go
+to stderr, everything else to stdout. There is
 no built-in audit-log browser or CSV/syslog export page. Forward container logs
 to your logging system when centralized retention or alerting is required.
 

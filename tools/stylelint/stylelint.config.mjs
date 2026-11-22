@@ -13,18 +13,7 @@
 // Bootstrap utility classes that silently win over more specific responsive
 // variants.
 //
-// Most of the tree is clean; see tools/stylelint/AGENTS.md for the fixes that
-// took (icon/text margin doubling in wb-ui-system.css, a missing
-// core/tokens.css import on the status pages, a dropdown escaping its clipped
-// .card ancestor - all found by running this for the first time). What is
-// still open is concentrated in dashboard.css/pages/dashboard.css, which is
-// mid-migration to the components/pages split and currently defines its KPI
-// card selectors twice in sequence (a base layout pass, then a "KPI
-// refinement" pass) rather than once - no-duplicate-selectors and
-// no-descending-specificity correctly flag that, and it is real duplication
-// worth resolving, just not by a mechanical --fix while the migration is
-// still moving. `npm run lint` is not yet a gate for this reason; see
-// AGENTS.md for the promotion criterion.
+// `npm run lint` is also the blocking `stylelint` job in .github/workflows/ci.yml.
 
 export default {
     extends: ['stylelint-config-standard'],

@@ -75,7 +75,7 @@ def parse_unbound_line(
 		try:
 			epoch = int(epoch_str)
 			ts = datetime.fromtimestamp(epoch, tz=UTC).isoformat()
-		except (ValueError, OSError):
+		except ValueError, OSError:
 			return None
 
 		# Parse reply payload: <client> <domain>. <qtype> IN <rcode> ...

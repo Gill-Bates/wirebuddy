@@ -142,6 +142,21 @@ export function buildVisualPolicy() {
                 explanation: 'A selector is using a deprecated color token or literal value.',
                 remediation: 'Replace the color literal with the current token or semantic color.',
             }),
+            customFindingRule({
+                id: 'visual-size-mismatch',
+                type: 'visual-size-mismatch',
+                category: 'visual',
+                severity: 'error',
+                when: (context) => Boolean(context.diff?.sizeMismatch),
+                build: (context) => [{
+                    count: 1,
+                    value: context.diff.dimensions || null,
+                    message: 'Screenshot size changed between captures',
+                    explanation: 'The compared screenshots have different dimensions; the added or missing area is counted as visual drift.',
+                    remediation: 'Check for layout shifts or late-loading content that changes the page height.',
+                    legacyKey: `visualSizeMismatch=${JSON.stringify(context.diff.dimensions || null)}`,
+                }],
+            }),
             thresholdFindingRule({
                 id: 'visual-drift',
                 type: 'visual-drift',

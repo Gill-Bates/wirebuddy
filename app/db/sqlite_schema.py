@@ -221,7 +221,7 @@ def init_schema(conn: sqlite3.Connection) -> None:
 			)
 			"""
 		)
-		conn.execute("INSERT OR IGNORE INTO schema_version (id, version) VALUES (1, 0)")
+		conn.execute("INSERT OR IGNORE INTO schema_version (id, version, updated_at) VALUES (1, 0, ?)", (utcnow(),))
 
 		# Login attempts (IP-level brute-force protection)
 		conn.execute(
@@ -271,7 +271,8 @@ def init_schema(conn: sqlite3.Connection) -> None:
 		)
 		conn.execute("CREATE INDEX IF NOT EXISTS idx_peers_interface ON peers(interface)")
 		conn.execute("CREATE INDEX IF NOT EXISTS idx_peers_peer_address ON peers(peer_address)")
-		conn.execute("CREATE INDEX IF NOT EXISTS idx_peers_node_id ON peers(node_id)")
+		# idx_peers_node_id is created by _run_migrations() once peers.node_id exists
+		# (a pre-node database has the table but not the column yet).
 		# Enforce uniqueness for assigned peer VPN address per interface.
 		# Hard-fail if duplicates already exist so startup cannot proceed in
 		# a schema state that violates uniqueness assumptions.

@@ -10,12 +10,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import os
 from collections.abc import Callable, Coroutine
 from datetime import UTC, datetime, timedelta
-from pathlib import Path
 from typing import TYPE_CHECKING
-from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from ..dns import unbound
 from ..utils.conntrack import init_conntrack_accounting
@@ -46,79 +43,31 @@ INTERVAL_SIX_HOURS = INTERVAL_HOURLY * 6
 INTERVAL_DAILY = INTERVAL_HOURLY * 24
 INTERVAL_WEEKLY = INTERVAL_DAILY * 7
 
-# Run backups at 03:00 in the resolved application timezone.
+# Run backups at 03:00 UTC.
 BACKUP_NIGHT_HOUR = 3
 _BLOCKLIST_STARTUP_DELAY_SECONDS = 15.0
 
 
-def _valid_timezone_or_none(value: str) -> str | None:
-	"""Return a normalized timezone name or None when invalid."""
-	tz_name = value.strip()
-	if not tz_name:
-		return None
-	try:
-		ZoneInfo(tz_name)
-	except (ZoneInfoNotFoundError, ValueError):
-		_log.warning("Ignoring invalid configured timezone: %r", value)
-		return None
-	return tz_name
-
-
-def _get_configured_backup_timezone() -> str:
-	"""Resolve the timezone used for scheduled backup wall-clock calculations.
-
-	Resolution order mirrors the UI display path closely:
-	1. ``TZ`` environment variable
-	2. ``/etc/timezone``
-	3. ``/etc/localtime`` symlink relative to ``/usr/share/zoneinfo``
-	4. ``UTC`` fallback
-	"""
-	tz_name = _valid_timezone_or_none(os.getenv("TZ", ""))
-	if tz_name:
-		return tz_name
-
-	tz_file = Path("/etc/timezone")
-	try:
-		tz_text = _valid_timezone_or_none(tz_file.read_text(encoding="utf-8"))
-		if tz_text:
-			return tz_text
-	except OSError:
-		pass
-
-	try:
-		localtime_path = Path("/etc/localtime").resolve()
-		zoneinfo_root = Path("/usr/share/zoneinfo")
-		if zoneinfo_root in localtime_path.parents:
-			return str(localtime_path.relative_to(zoneinfo_root))
-	except OSError:
-		pass
-
-	return "UTC"
-
-
-def _seconds_until_backup_time(tz: str = "UTC") -> float:
-	"""Return seconds until the next 03:00 wall-clock time in the given timezone.
+def _seconds_until_backup_time(*, now: datetime | None = None, min_gap: float = 0.0) -> float:
+	"""Return seconds until the next 03:00 UTC.
 
 	Args:
-	    tz: IANA timezone name such as ``Europe/Berlin``. Invalid values fall
-	        back to UTC and emit a warning.
+	    now: Reference instant (timezone-aware); defaults to the current time.
+	    min_gap: The target must lie more than this many seconds ahead. The
+	        scheduler uses it so a run that finishes right before 03:00 does not
+	        trigger a second run for the same night.
 
 	Returns:
-	    A non-negative number of seconds until the next configured backup hour.
-	    The target is advanced until it is strictly in the future, which keeps
-	    DST transition days from producing a stale or negative delay.
+	    A positive number of seconds. UTC has no DST, so the result is always
+	    within ``(min_gap, min_gap + 86400]``.
 	"""
-	try:
-		tzinfo = ZoneInfo(tz)
-	except (ZoneInfoNotFoundError, ValueError) as exc:
-		_log.warning("Invalid timezone %r for scheduled backup; falling back to UTC: %s", tz, exc)
-		tzinfo = UTC
-
-	now = datetime.now(tzinfo)
-	target = now.replace(hour=BACKUP_NIGHT_HOUR, minute=0, second=0, microsecond=0)
-	while target <= now:
-		target += timedelta(days=1)
-	return max(0.0, (target - now).total_seconds())
+	now_utc = (now if now is not None else datetime.now(UTC)).astimezone(UTC)
+	for offset in range(3):
+		day = now_utc.date() + timedelta(days=offset)
+		target = datetime(day.year, day.month, day.day, BACKUP_NIGHT_HOUR, tzinfo=UTC)
+		if (target - now_utc).total_seconds() > min_gap:
+			return (target - now_utc).total_seconds()
+	raise RuntimeError("no backup time found within three days")  # pragma: no cover
 
 
 def _bind(
@@ -225,7 +174,14 @@ async def register_all_tasks(scheduler: Scheduler, ctx: LifespanContext) -> None
 	)
 
 	# 5. GeoIP
-	scheduler.add("geoip-update", interval_seconds=INTERVAL_WEEKLY, func=_bind(ctx, scheduled_tasks.update_geoip), run_on_start=True, initial_delay=20.0)
+	scheduler.add(
+		"geoip-update",
+		interval_seconds=INTERVAL_WEEKLY,
+		func=_bind(ctx, scheduled_tasks.update_geoip),
+		run_on_start=True,
+		initial_delay=20.0,
+		next_delay=lambda: scheduled_tasks.geoip_next_delay(INTERVAL_WEEKLY),
+	)
 
 	# 6. Database Maintenance
 	scheduler.add("sqlite-maintenance", interval_seconds=INTERVAL_SIX_HOURS, func=sqlite_maintenance, run_on_start=True, initial_delay=60.0, timeout=60.0)
@@ -275,8 +231,8 @@ async def register_all_tasks(scheduler: Scheduler, ctx: LifespanContext) -> None
 		_log.info("SPEEDTEST_SCHEDULER no previous run recorded")
 
 	if initial_speedtest_delay > 0:
-		scheduled_time = datetime.now() + timedelta(seconds=initial_speedtest_delay)  # noqa: DTZ005  (local time on purpose: this only formats an ~HH:MM hint for the operator's log)
-		_log.info("SPEEDTEST_SCHEDULER first run in %.1f hours (at ~%s)", initial_speedtest_delay / 3600, scheduled_time.strftime("%H:%M"))
+		scheduled_time = datetime.now(UTC) + timedelta(seconds=initial_speedtest_delay)
+		_log.info("SPEEDTEST_SCHEDULER first run in %.1f hours (at ~%s UTC)", initial_speedtest_delay / 3600, scheduled_time.strftime("%H:%M"))
 
 	scheduler.add(
 		"speedtest",
@@ -285,13 +241,12 @@ async def register_all_tasks(scheduler: Scheduler, ctx: LifespanContext) -> None
 		run_on_start=False,
 		initial_delay=initial_speedtest_delay,
 		timeout=7500.0,
-		jitter_pct=0.05,
+		next_delay=scheduled_tasks.seconds_until_next_speedtest,
 	)
 
 	# 9. Backup
-	backup_timezone = await asyncio.to_thread(_get_configured_backup_timezone)
-	initial_backup_delay = await asyncio.to_thread(_seconds_until_backup_time, backup_timezone)
-	_log.info("SCHEDULED_BACKUP first run in %.1f hours (at ~%02d:00)", initial_backup_delay / 3600, BACKUP_NIGHT_HOUR)
+	initial_backup_delay = _seconds_until_backup_time()
+	_log.info("SCHEDULED_BACKUP first run in %.1f hours (at ~%02d:00 UTC)", initial_backup_delay / 3600, BACKUP_NIGHT_HOUR)
 
 	scheduler.add(
 		"scheduled-backup",
@@ -300,7 +255,7 @@ async def register_all_tasks(scheduler: Scheduler, ctx: LifespanContext) -> None
 		run_on_start=False,
 		initial_delay=initial_backup_delay,
 		timeout=300.0,
-		jitter_pct=0.05,
+		next_delay=lambda: _seconds_until_backup_time(min_gap=60.0),
 	)
 
 	# 10. Node Health

@@ -1,159 +1,150 @@
+#
+# .github/workflows/docs-build.yml
+# Copyright (C) 2026 Gill-Bates http://github.com/Gill-Bates
+#
+# Purpose: build the Zensical documentation site (zensical.toml), check its links,
+#   scan the resolved docs environment with Trivy and deploy it to GitHub Pages from main.
+# Related: ci.yml (gate), docker-build.yml (release, re-triggers this workflow);
+#   .github/workflows/AGENTS.md.
+#
 name: Deploy Documentation
-
+run-name: docs-build-${{ github.run_number }}
 on:
   push:
     branches:
       - main
-    paths:
+    paths: &docs-paths
       - 'docs/**'
+      - 'zensical.toml'
       - 'CHANGELOG.md'
       - 'LICENSE'
-      # The docs toolchain is installed from pyproject.toml's docs extra with
-      # tools/pyproject-deps.py, so both decide what this workflow builds and
-      # scans - a bump to either has to re-run it.
+      # The docs toolchain is the docs extra in pyproject.toml, read by
+      # tools/pyproject-deps.py, so a bump to either re-runs build and scan.
       - 'pyproject.toml'
       - 'tools/pyproject-deps.py'
+      - '.trivyignore'
+      - '.github/scripts/**'
       - '.github/workflows/docs-build.yml'
   pull_request:
     branches:
       - main
-    paths:
-      - 'docs/**'
-      - 'CHANGELOG.md'
-      - 'LICENSE'
-      - 'pyproject.toml'
-      - 'tools/pyproject-deps.py'
-      - '.github/workflows/docs-build.yml'
+    paths: *docs-paths
   workflow_dispatch:
-  # A release (docker-build.yml) can ship a version and changelog bump that
-  # never touches docs/** on its own. CHANGELOG.md's push trigger above already
-  # covers a plain commit, but a re-run of that workflow from an existing tag
-  # would not re-fire this one otherwise. Rebuilding docs after every successful
-  # release keeps the deployed site in step with what was actually published,
-  # independent of which paths changed.
+  # A release can ship a version and changelog bump without touching docs/**;
+  # rebuilding after every successful release keeps the site in step with it.
   workflow_run:
     workflows:
       - 'Docker Multi-Arch Build'
     types:
       - completed
   schedule:
-    # Weekly re-scan: new CVEs in the docs dependencies would otherwise only
-    # surface when something in the repo happens to change.
+    # Weekly rescan: new CVEs in the docs dependencies would otherwise only
+    # surface when something in the repository changes.
     - cron: '17 4 * * 1'
-
 permissions:
   contents: read
-
-# The weekly scan runs on the default branch like a deployment does, so it gets
-# its own group: sharing one would let a starting scan cancel a running deploy.
-# Only PR runs are cancellable; a deploy already underway is left to finish.
+# The weekly scan gets its own group, so a starting scan cannot cancel a running
+# deploy. Only PR runs are cancellable.
 concurrency:
   group: docs-${{ github.workflow }}-${{ github.event_name == 'schedule' && 'scan' || github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
-
 jobs:
   build:
-    # workflow_run fires on every conclusion of "Docker Multi-Arch Build"
-    # (success, failure, cancelled...). Only a successful release should trigger
-    # a docs rebuild; every other trigger (push, pull_request,
-    # workflow_dispatch, schedule) has no such conclusion to check.
+    # workflow_run fires on every conclusion of the release workflow, including
+    # manual dispatches. Only a successful tag push (v*) publishes, so only that
+    # rebuilds the docs; other triggers are unaffected.
     if: >-
       github.event_name != 'workflow_run' ||
-      github.event.workflow_run.conclusion == 'success'
-    # Named, as in ci.yml and docker-build.yml, and on 26.04 ahead of the
-    # ubuntu-latest migration (actions/runner-images#14748). The docs toolchain
-    # is installed from pyproject.toml onto a setup-python interpreter, so the
-    # host only has to provide git for the revision-date plugin.
+      (
+        github.event.workflow_run.conclusion == 'success' &&
+        github.event.workflow_run.event == 'push' &&
+        github.event.workflow_run.repository.full_name == github.repository &&
+        github.event.workflow_run.head_repository.full_name == github.repository &&
+        startsWith(github.event.workflow_run.head_branch, 'v')
+      )
     runs-on: ubuntu-26.04
     timeout-minutes: 15
     steps:
+      # No explicit ref: on workflow_run the default checkout is the head of the
+      # default branch, which is what gets deployed; the release's head_sha would
+      # let a re-run of an older tag publish stale docs over a newer site.
       - name: Checkout repository
-        uses: actions/checkout@v5
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
-          fetch-depth: 0  # Full history for git-based plugins
-          # On workflow_run, GITHUB_SHA is the default branch's head, not the
-          # commit the release published - so the default checkout would deploy
-          # documentation for changes that are not in the release whenever main
-          # moved on in the meantime. Empty for every other trigger, which
-          # leaves checkout's own default in place.
-          ref: ${{ github.event.workflow_run.head_sha }}
-
+          persist-credentials: false
       - name: Set up Python
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
         with:
-          python-version: '3.13'
+          python-version: '3.14'
           cache: pip
           cache-dependency-path: pyproject.toml
-
-      # pyproject.toml is the single dependency manifest; the docs toolchain
-      # lives in its [project.optional-dependencies] docs extra. Installing
-      # `.[docs]` would also install the project itself and its runtime
-      # dependencies, so only the extra is materialised here.
+      # Prints the agent banner and points TMPDIR, TMP and TEMP at the job temp directory.
+      - name: Agent banner and job temp directory
+        run: python3 .github/scripts/ci_job_setup.py
+      # Only the docs extra is installed: `.[docs]` would also pull the project and
+      # its private runtime dependencies.
       - name: Install dependencies
         run: |
           set -euo pipefail
-          python3 tools/pyproject-deps.py docs > requirements-docs.txt
-          cat requirements-docs.txt
-          pip install --upgrade pip
-          pip install -r requirements-docs.txt
-
-      # The docs extra lists direct dependencies without versions, so what got
-      # resolved is only known here. Scanning this very environment, in the job
-      # that builds the site, keeps scan and build on one dependency set.
-      # Trivy reports on what a manifest names, and the extra names only the
-      # direct dependencies; the frozen list adds the transitive ones. The file
-      # name has to contain "requirement" or Trivy's pip analyzer skips it.
-      - name: Freeze the resolved docs environment
-        run: pip freeze --all > docs-requirements-frozen.txt
-
-      - name: Trivy scan docs dependencies
-        # Pinned to an immutable commit SHA, see GHSA-69fq-xp46-6x23.
-        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
-        with:
-          cache: 'false'
-          scan-type: 'fs'
-          scan-ref: 'docs-requirements-frozen.txt'
-          # Trivy floats to the newest release on purpose; the action stays SHA-pinned.
-          version: 'latest'
-          format: 'table'
-          exit-code: '1'
-          ignore-unfixed: true
-          # Dependency list only. No gate owns secret/misconfig scanning yet
-          # (open gap, would be a Trivy fs job in ci.yml).
-          scanners: 'vuln'
-          severity: 'CRITICAL,HIGH'
-          timeout: '5m'
-          trivyignores: '.trivyignore'
-
-      - name: Copy root files to docs
+          requirements="$RUNNER_TEMP/requirements-docs.txt"
+          python3 tools/pyproject-deps.py docs > "$requirements"
+          test -s "$requirements"
+          cat "$requirements"
+          python -m pip install --upgrade pip
+          pip install -r "$requirements"
+          python -m pip check
+      # The exact package set the site is built with; security-scan scans this file.
+      # Trivy's pip analyzer only reads a file named like requirements.txt, and the
+      # extra names direct dependencies only.
+      - name: Freeze the build environment
         run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/docs-scan"
+          python -m pip freeze --all > "$RUNNER_TEMP/docs-scan/requirements.txt"
+          cat "$RUNNER_TEMP/docs-scan/requirements.txt"
+      - name: Upload frozen docs environment
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: docs-frozen-requirements
+          path: ${{ runner.temp }}/docs-scan/requirements.txt
+          retention-days: 1
+          if-no-files-found: error
+      # Generated copies, never committed (ci.yml rejects them).
+      - name: Copy root files into docs
+        run: |
+          set -euo pipefail
           cp CHANGELOG.md docs/changelog.md
           cp LICENSE docs/license.md
-
       - name: Build documentation
+        run: zensical build --config-file zensical.toml --strict --clean
+      - name: Check built site output
+        run: test -s site/index.html && test -s site/stylesheets/extra.css
+      # The site is published below /wirebuddy/, so root-relative URLs carry that
+      # prefix. Mirror it locally for lychee.
+      - name: Map Pages path for local link checks
+        env:
+          SITE_ROOT: ${{ runner.temp }}/lychee-root
+          SITE_DIR: ${{ github.workspace }}/site
         run: |
-          mkdocs build -f docs/mkdocs.yml --strict
-
-      # Runs against the same build that gets deployed. It used to live in a
-      # separate job that rebuilt the docs from a shallow checkout, so the
-      # git-revision-date plugin saw different history than the real build.
-      # img.shields.io is excluded because the badges on the landing page and in
-      # the README are generated on demand by a third party that throttles: a
-      # badge answering 503 after lychee's retries says nothing about the
-      # documentation, and blocking the Pages deploy on it only produces reruns.
+          set -euo pipefail
+          mkdir -p "$SITE_ROOT"
+          ln -s "$SITE_DIR" "$SITE_ROOT/wirebuddy"
+      # Runs against the build that gets deployed. img.shields.io badges are
+      # generated on demand by a throttling third party; a 503 there says nothing
+      # about the docs. The site's own Pages URL and apps.apple.com are excluded too.
       - name: Check links
-        uses: lycheeverse/lychee-action@v1
+        uses: lycheeverse/lychee-action@e7477775783ea5526144ba13e8db5eec57747ce8 # v2.9.0
         with:
           args: >-
             --verbose
             --no-progress
+            --root-dir '${{ runner.temp }}/lychee-root'
             --exclude 'fonts\.gstatic\.com'
             --exclude 'img\.shields\.io'
             --exclude 'gill-bates\.github\.io/wirebuddy'
             --exclude 'apps\.apple\.com'
             './site/**/*.html'
           fail: true
-
       - name: Upload artifact
         if: |
           github.ref == 'refs/heads/main' &&
@@ -162,11 +153,70 @@ jobs:
             github.event_name == 'workflow_dispatch' ||
             github.event_name == 'workflow_run'
           )
-        uses: actions/upload-pages-artifact@v5
+        uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
         with:
           path: ./site
-
+  # The resolved transitive set is only known after an install, so build freezes it
+  # and this job scans exactly that file. A skipped build also skips the scan.
+  security-scan:
+    name: Scan docs dependencies
+    needs: [build]
+    runs-on: ubuntu-26.04
+    timeout-minutes: 15
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - name: Set up Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: '3.14'
+      - name: Agent banner and job temp directory
+        run: python3 .github/scripts/ci_job_setup.py
+      - name: Download frozen docs environment
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: docs-frozen-requirements
+          path: ${{ runner.temp }}/docs-scan
+      - name: Trivy scan docs dependencies
+        id: trivy
+        # Pinned to an immutable commit SHA, see GHSA-69fq-xp46-6x23.
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          cache: 'true'
+          scan-type: 'fs'
+          scan-ref: '${{ runner.temp }}/docs-scan'
+          # Dependency vulnerabilities only; secrets in the sources belong to ci.yml.
+          scanners: 'vuln'
+          trivyignores: .trivyignore
+          format: 'json'
+          output: '${{ runner.temp }}/trivy-docs.json'
+          # Lists every package, so a clean scan still proves it read the frozen file.
+          list-all-pkgs: true
+          exit-code: '1'
+          ignore-unfixed: true
+          severity: 'CRITICAL,HIGH'
+          timeout: '5m'
+      # The scan step carries the blocking exit code; this proves the report names
+      # the frozen file with packages, since a green scan of nothing is a failure.
+      - name: Summarize Trivy report
+        if: ${{ !cancelled() && steps.trivy.conclusion != 'skipped' }}
+        run: |
+          set -euo pipefail
+          python3 .github/scripts/trivy_report.py status "$RUNNER_TEMP/trivy-docs.json" \
+            --expect-class lang-pkgs --expect-target requirements.txt \
+            --summary-title "Trivy (docs dependencies)" --list 20 >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload Trivy report
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: trivy-docs-report
+          path: ${{ runner.temp }}/trivy-docs.json
+          retention-days: 30
+          if-no-files-found: warn
   deploy:
+    # Same condition as the artifact upload in build; keep both in step.
     if: |
       github.ref == 'refs/heads/main' &&
       (
@@ -174,17 +224,59 @@ jobs:
         github.event_name == 'workflow_dispatch' ||
         github.event_name == 'workflow_run'
       )
-    needs:
-      - build
+    # A failing dependency scan blocks the deploy, not just the build.
+    needs: [build, security-scan]
     runs-on: ubuntu-26.04
     timeout-minutes: 10
+    # A deploy cancelled midway leaves a half-written site, so it never cancels.
+    concurrency:
+      group: pages
+      cancel-in-progress: false
     permissions:
+      contents: read  # sparse checkout of the job helper
       pages: write
       id-token: write
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
+      - name: Checkout job helper
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+          sparse-checkout: .github/scripts
+      - name: Set up Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: '3.14'
+      - name: Agent banner and job temp directory
+        run: python3 .github/scripts/ci_job_setup.py
       - name: Deploy to GitHub Pages
         id: deployment
-        uses: actions/deploy-pages@v5
+        uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346 # v5.0.1
+  # One tracking issue per failure, not one per run. Only this job may write issues.
+  report-failure:
+    name: Report failed scheduled run
+    needs: [build, security-scan]
+    if: ${{ failure() && github.event_name == 'schedule' }}
+    runs-on: ubuntu-26.04
+    timeout-minutes: 5
+    permissions:
+      contents: read  # sparse checkout of the scripts
+      issues: write
+    steps:
+      - name: Checkout job helper and scripts
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+          sparse-checkout: .github/scripts
+      - name: Set up Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: '3.14'
+      - name: Agent banner and job temp directory
+        run: python3 .github/scripts/ci_job_setup.py
+      - name: Open or update the tracking issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 .github/scripts/failure_issue.py --title "Docs build scan failed"

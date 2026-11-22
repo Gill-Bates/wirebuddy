@@ -1,10 +1,10 @@
 <!-- Parent: ../AGENTS.md -->
-<!-- Generated: 2026-09-21 | Updated: 2026-10-27 -->
+<!-- Generated: 2026-09-21 | Updated: 2026-11-22 -->
 
 # db
 
 ## Purpose
-Persistence layer. SQLite access is split into `sqlite_*.py` modules by domain (connections/transactions, schema and migrations, settings, users, auth tokens, passkeys, interfaces, peers, nodes), all operating on a passed-in connection. `tsdb.py` implements a file-based JSONL time-series database with file locking, rotation/compression and retention for peer metrics and DNS query logs.
+Persistence layer: SQLite access split into `sqlite_*.py` modules by domain, plus `tsdb.py`, the file-based JSONL time-series database for peer metrics, speedtests and DNS query logs.
 
 ## Key Files
 | File | Description |
@@ -25,7 +25,6 @@ Persistence layer. SQLite access is split into `sqlite_*.py` modules by domain (
 ## For AI Agents
 
 ### Working In This Directory
-- Python files use **tabs** and start with the standard header block (`#!/usr/bin/env python3`, file path, `Copyright (C) 2026 Gill-Bates`, SPDX MIT); keep that style.
 - Functions take a `sqlite3.Connection` (or use `sqlite_runtime`); do not open ad-hoc connections elsewhere.
 - Schema changes need an idempotent step in `_run_migrations` in `sqlite_schema.py`; backup/restore (`app/api/backup.py`) must remain compatible.
 - `tsdb.py` is synchronous and Unix-only (`fcntl`); call it from async code via `asyncio.to_thread`.
@@ -35,14 +34,14 @@ Persistence layer. SQLite access is split into `sqlite_*.py` modules by domain (
 - Use temporary SQLite files/directories; never touch `data/`.
 
 ### Common Patterns
-- Writes go through `transaction()`; secrets (private keys, PSKs, OTP secrets) are encrypted before storage.
+- Writes go through `transaction()`; secrets (private keys, PSKs, OTP secrets) are encrypted with `app/utils/vault.py` before storage.
 - Validation helpers (`_validate_*`) raise `ValueError` before any SQL runs.
 - Parameterised SQL only; column additions use `_add_column_if_missing`.
 
 ## Dependencies
 
 ### Internal
-- `app/utils` (crypto, config, time), `app/models` (validation types).
+- `app/utils` (vault, crypto, config, time, coerce), `app/node/events.py` (`NodeCommandType`), `app/dns/unbound_constants.py` (lazy import of `app.dns.constants` in `sqlite_settings.py`).
 
 ### External
 - sqlite3, cryptography, stdlib `fcntl`, `gzip`.

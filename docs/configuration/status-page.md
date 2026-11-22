@@ -55,6 +55,9 @@ Example:
 WIREBUDDY_TRUSTED_PROXIES=192.168.1.10/32,10.0.0.0/24
 ```
 
+A forwarded hop that cannot be parsed ends the check without a match (fail
+closed).
+
 Without that variable, private LAN proxies are **not** trusted automatically for `/status` (unlike
 the loopback-default trust used for auth-cookie/HTTPS detection elsewhere).
 
@@ -76,7 +79,7 @@ The second card shows:
 
 - `Inbound IP`: the client IP used for status authorization
 - `Public Client IP`: best-effort public IP resolution for the client
-- `Outbound IP`: best-effort public egress IP seen from the server
+- `Outbound IP`: best-effort public egress IP seen from the server (or from the remote node the client is connected to); the server queries several public-IP providers, ignores private or CGNAT answers, and prefers IPv6 when available
 - `WireGuard Interface`: the matching interface name, or `n/a`
 
 ### Health Checks
@@ -94,8 +97,7 @@ Each check is shown with a badge state such as `OK`, `WARN`, `ERROR`, or `N/A`.
 
 ## Disabled Behavior
 
-If the status page is disabled, `/status` does **not** return `404`.
-It returns a minimal disabled page with HTTP status `200` and no live diagnostic details.
+If the status page is disabled, `/status` returns a minimal disabled page with HTTP status `404` and no live diagnostic details.
 
 ## Security Notes
 
@@ -124,6 +126,7 @@ This page is HTML-only today. For monitoring, prefer simple HTTP checks such as:
 
 - Expect HTTP `200` when the page is enabled and accessible
 - Expect HTTP `403` from unauthorized networks
+- Expect HTTP `404` while the page is disabled
 - Match stable text like `Client Status`, `DNS Resolution`, or `Outbound IP Probe`
 
 Example:

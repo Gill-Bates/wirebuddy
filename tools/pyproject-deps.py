@@ -4,15 +4,12 @@
 # Copyright (C) 2026 Gill-Bates http://github.com/Gill-Bates
 #
 
-# SPDX-License-Identifier: MIT
-#
-
 """Print one dependency group from pyproject.toml as a pip requirements list.
 
 pyproject.toml replaced VERSION, requirements.txt and docs/requirements-docs.txt,
 but a few consumers still need a flat file: pip's ``-r`` in CI, and Trivy's
 filesystem scanner, which has no TOML analyzer for optional-dependencies. The
-Docker builder is not one of them - it installs the project itself.
+Docker build is not one of them - it reads pyproject.toml itself.
 
 	python tools/pyproject-deps.py            # [project] dependencies
 	python tools/pyproject-deps.py docs       # [project.optional-dependencies] docs

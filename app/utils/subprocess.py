@@ -21,6 +21,7 @@ _READ_CHUNK_BYTES = 65_536
 # Hard bound for the post-kill drain. The readers only need to observe EOF
 # here, so this never gates on the command itself making progress.
 _CLEANUP_DRAIN_SECONDS = 5.0
+_GROUP_POLL_SECONDS = 0.05
 
 
 @dataclass(slots=True)
@@ -75,8 +76,30 @@ def _signal_process_group(proc: asyncio.subprocess.Process, sig: int) -> bool:
 		return False
 	try:
 		os.killpg(proc.pid, sig)
-	except (ProcessLookupError, PermissionError):
+	except ProcessLookupError, PermissionError:
 		return False
+	return True
+
+
+def _process_group_alive(pgid: int) -> bool:
+	"""Probe the group with signal 0; a group id stays reserved while any member lives."""
+	try:
+		os.killpg(pgid, 0)
+	except ProcessLookupError:
+		return False
+	except PermissionError:
+		return True
+	return True
+
+
+async def _wait_group_gone(pgid: int, timeout: float) -> bool:
+	"""Poll until no member of the group is left; False when the deadline passes."""
+	loop = asyncio.get_running_loop()
+	deadline = loop.time() + timeout
+	while _process_group_alive(pgid):
+		if loop.time() >= deadline:
+			return False
+		await asyncio.sleep(_GROUP_POLL_SECONDS)
 	return True
 
 
@@ -85,16 +108,27 @@ async def _terminate_process_group(
 	*,
 	kill_timeout: float,
 ) -> None:
-	"""Terminate the full subprocess group with SIGTERM and SIGKILL fallback."""
-	if not _signal_process_group(proc, signal.SIGTERM):
+	"""Terminate the full subprocess group with SIGTERM and SIGKILL fallback.
+
+	The leader exiting does not end the group: members that ignore SIGTERM
+	survive it. The group is therefore probed until empty, and SIGKILL follows
+	whenever members remain after the grace period. The group id cannot be
+	reused while a member lives, and nothing is signalled once the probe
+	reports the group empty.
+	"""
+	pgid = proc.pid
+	if pgid is None or not _signal_process_group(proc, signal.SIGTERM):
 		return
 
-	try:
-		await asyncio.wait_for(proc.wait(), timeout=kill_timeout)
+	if await _wait_group_gone(pgid, kill_timeout):
+		# Reap the leader (bounded: it needs every pipe transport at EOF).
+		try:
+			await asyncio.wait_for(proc.wait(), timeout=kill_timeout)
+		except TimeoutError:
+			_log.warning("Process %s not reaped after its group exited", pgid)
 		return
-	except TimeoutError:
-		_log.debug("Process group %s did not terminate, sending SIGKILL", proc.pid)
 
+	_log.debug("Process group %s did not terminate, sending SIGKILL", pgid)
 	if not _signal_process_group(proc, signal.SIGKILL):
 		return
 
@@ -103,7 +137,9 @@ async def _terminate_process_group(
 	try:
 		await asyncio.wait_for(proc.wait(), timeout=kill_timeout)
 	except TimeoutError:
-		_log.warning("Process group %s not reaped after SIGKILL", proc.pid)
+		_log.warning("Process group %s not reaped after SIGKILL", pgid)
+	if not await _wait_group_gone(pgid, kill_timeout):
+		_log.warning("Process group %s still has members after SIGKILL", pgid)
 
 
 async def _cleanup(

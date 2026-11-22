@@ -11,6 +11,7 @@ from __future__ import annotations
 import ipaddress
 import logging
 import os
+import stat
 import threading
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -48,6 +49,45 @@ def parse_proxy_cidrs(raw: str, source: str = "trusted-proxy") -> tuple[IPNetwor
 	return tuple(networks)
 
 
+TRUSTED_PROXIES_ENV = "WIREBUDDY_TRUSTED_PROXIES"
+_explicit_proxy_networks: tuple[IPNetwork, ...] | None = None
+
+
+def get_explicit_trusted_proxy_networks() -> tuple[IPNetwork, ...]:
+	"""Return the CIDRs listed in WIREBUDDY_TRUSTED_PROXIES; empty when unset.
+
+	Unlike ``Config.trusted_proxies`` there is no loopback default, so callers
+	that must never trust loopback implicitly (the /status check) can use it. Resolved
+	lazily and cached: ``get_config()`` runs first so settings.env is loaded
+	regardless of module import order.
+	"""
+	global _explicit_proxy_networks
+	if _explicit_proxy_networks is None:
+		get_config()
+		raw = os.environ.get(TRUSTED_PROXIES_ENV, "").strip()
+		_explicit_proxy_networks = parse_proxy_cidrs(raw, TRUSTED_PROXIES_ENV) if raw else ()
+	return _explicit_proxy_networks
+
+
+MTLS_PROXIES_ENV = "WIREBUDDY_MTLS_PROXIES"
+_mtls_proxy_networks: tuple[IPNetwork, ...] | None = None
+
+
+def get_mtls_proxy_networks() -> tuple[IPNetwork, ...]:
+	"""Return the CIDRs allowed to deliver the client-cert fingerprint header.
+
+	Deliberately independent of WIREBUDDY_TRUSTED_PROXIES: a proxy trusted for
+	X-Forwarded-* is not thereby trusted for mTLS. Empty when unset (trust
+	nothing); invalid entries are logged and skipped, which only narrows trust.
+	"""
+	global _mtls_proxy_networks
+	if _mtls_proxy_networks is None:
+		get_config()
+		raw = os.environ.get(MTLS_PROXIES_ENV, "").strip()
+		_mtls_proxy_networks = parse_proxy_cidrs(raw, MTLS_PROXIES_ENV) if raw else ()
+	return _mtls_proxy_networks
+
+
 @dataclass(frozen=True)
 class Config:
 	"""Resolved runtime configuration derived from env and defaults."""
@@ -61,7 +101,7 @@ class Config:
 	secret_key: str | None = None
 	# Canonical public origin, e.g. "https://vpn.example.com". Drives CSRF
 	# allowed origins, the passkey RP ID/origin, the Host-header allowlist,
-	# and secure-cookie/HSTS defaults. Empty when not configured.
+	# and the secure-cookie default (not HSTS). Empty when not configured.
 	public_origin: str = ""
 	# CIDRs of reverse proxies whose forwarded headers (X-Forwarded-*,
 	# client-cert fingerprint) are trusted. Empty tuple = trust nothing.
@@ -70,6 +110,10 @@ class Config:
 	# bearer/enrollment auth) outright instead of only warning. Loopback stays
 	# exempt so local development over HTTP keeps working.
 	require_https_auth: bool = False
+	# Enrollment-token migration (I-016): master accepts legacy v1 (HMAC) tokens
+	# at /api/nodes/enroll, and the protocol version of newly issued tokens.
+	enrollment_accept_v1: bool = True
+	enrollment_token_version: int = 2
 
 	@property
 	def public_origin_hostname(self) -> str | None:
@@ -81,7 +125,7 @@ class Config:
 
 	@property
 	def force_https(self) -> bool:
-		"""Whether the public origin is HTTPS (drives secure cookies/HSTS defaults)."""
+		"""Whether the public origin is HTTPS (forces secure cookies; HSTS is decided per request)."""
 		return urlparse(self.public_origin).scheme.lower() == "https" if self.public_origin else False
 
 	def is_trusted_proxy_ip(self, ip_text: str) -> bool:
@@ -110,6 +154,18 @@ def _parse_value(raw: str) -> str:
 	if " #" in raw:
 		raw = raw.split(" #", 1)[0]
 	return raw.strip()
+
+
+def parse_strict_bool(name: str, default: bool) -> bool:
+	"""Read a boolean env var; an unrecognized value is an error, never a silent default."""
+	raw = os.getenv(name, "").strip().lower()
+	if not raw:
+		return default
+	if raw in ("1", "true", "yes", "on"):
+		return True
+	if raw in ("0", "false", "no", "off"):
+		return False
+	raise ValueError(f"{name} must be one of 1/0/true/false/yes/no/on/off")
 
 
 def _validate_secret_key(secret_key: str) -> str:
@@ -154,6 +210,60 @@ def load_dotenv(dotenv_path: Path | None = None) -> None:
 		os.environ.setdefault(key, value)
 
 
+def _unresolved_dir(path: Path) -> Path:
+	"""Make *path* absolute and resolve only its parent.
+
+	The final component is kept as given so that a symlink there is still
+	visible to the later safety check instead of being replaced by its target.
+	"""
+	absolute = Path(os.path.abspath(path))  # noqa: PTH100 - lexical only, resolve() would follow a final symlink
+	if absolute == absolute.parent:
+		return absolute
+	return absolute.parent.resolve() / absolute.name
+
+
+def _ensure_private_dir(path: Path) -> None:
+	"""Create *path* (0700) and exit unless it is a real, non-writable-by-others directory.
+
+	The directory is opened with O_NOFOLLOW and validated and chmodded through
+	that descriptor, so a symlink (or a swap between check and use) can never
+	redirect the chmod to a foreign directory. A failing chmod is tolerated
+	only when the directory is not group/other writable (same rule as
+	``app.db.sqlite_runtime.connect``).
+	"""
+	try:
+		path.mkdir(mode=0o700, parents=True, exist_ok=True)
+		fd = os.open(
+			path,
+			os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0),
+		)
+	except OSError as exc:
+		_log.critical(
+			"Path is not a safe directory (missing, symlink or not a directory): %s (%s)",
+			path,
+			exc,
+		)
+		raise SystemExit(1) from exc
+	try:
+		try:
+			os.fchmod(fd, 0o700)
+		except OSError as exc:
+			_log.warning("Failed to enforce restrictive permissions on %s: %s", path, exc)
+		mode = stat.S_IMODE(os.fstat(fd).st_mode)
+	except OSError as exc:
+		_log.critical("Cannot inspect data directory %s: %s", path, exc)
+		raise SystemExit(1) from exc
+	finally:
+		os.close(fd)
+	if mode & (stat.S_IWGRP | stat.S_IWOTH):
+		_log.critical(
+			"Data directory %s is group/other writable (%s) and could not be restricted to 0700",
+			path,
+			oct(mode),
+		)
+		raise SystemExit(1)
+
+
 def load_config() -> Config:
 	"""Load configuration from environment variables (optionally via settings.env)."""
 	load_dotenv()
@@ -162,26 +272,14 @@ def load_config() -> Config:
 
 	# Data path (overrideable for containers/deployments)
 	raw_data_dir = os.getenv("WIREBUDDY_DATA_DIR", "").strip()
-	data_dir = Path(raw_data_dir).expanduser().resolve() if raw_data_dir else (project_root / "data").resolve()
-	db_path = (data_dir / "wirebuddy.db").resolve()
-	tsdb_dir = (data_dir / "tsdb").resolve()
-	dns_dir = (data_dir / "dns").resolve()
-
+	data_dir = _unresolved_dir(Path(raw_data_dir).expanduser() if raw_data_dir else project_root / "data")
+	db_path = data_dir / "wirebuddy.db"
+	tsdb_dir = data_dir / "tsdb"
+	dns_dir = data_dir / "dns"
 	# Self-healing: Ensure core directories exist
 	# Note: dns_dir is created on-demand only when Unbound is installed
-	try:
-		for d in (data_dir, tsdb_dir):
-			d.mkdir(mode=0o700, parents=True, exist_ok=True)
-			d.lstat()
-			if d.is_symlink() or not d.is_dir():
-				_log.critical("Path exists but is not a safe directory: %s", d)
-				raise SystemExit(1)
-			d.chmod(0o700)
-	except OSError as exc:
-		_log.critical("Cannot create data directories: %s", exc)
-		raise SystemExit(1) from exc
-
-	# Validate log level
+	for d in (data_dir, tsdb_dir):
+		_ensure_private_dir(d)
 	allowed_levels = {"CRITICAL", "ERROR", "WARNING", "INFO", "DEBUG"}
 	log_level = os.getenv("LOG_LEVEL", "INFO").upper()
 	if log_level not in allowed_levels:
@@ -222,6 +320,15 @@ def load_config() -> Config:
 
 	require_https_auth = os.getenv("WIREBUDDY_REQUIRE_HTTPS_AUTH", "").strip().lower() in ("true", "1", "yes")
 
+	try:
+		enrollment_accept_v1 = parse_strict_bool("WIREBUDDY_ENROLLMENT_ACCEPT_V1", True)
+		enrollment_token_version = int(os.getenv("WIREBUDDY_ENROLLMENT_TOKEN_VERSION", "").strip() or "2")
+		if enrollment_token_version not in (1, 2):
+			raise ValueError("WIREBUDDY_ENROLLMENT_TOKEN_VERSION must be 1 or 2")
+	except ValueError as exc:
+		_log.critical(str(exc))
+		raise SystemExit(1) from exc
+
 	return Config(
 		base_dir=base_dir,
 		data_dir=data_dir,
@@ -233,6 +340,8 @@ def load_config() -> Config:
 		public_origin=public_origin,
 		trusted_proxies=trusted_proxies,
 		require_https_auth=require_https_auth,
+		enrollment_accept_v1=enrollment_accept_v1,
+		enrollment_token_version=enrollment_token_version,
 	)
 
 

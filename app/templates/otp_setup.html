@@ -1,6 +1,6 @@
 {% extends "auth_base.html" %}
 
-{% block title %}Set Up Two-Factor Authentication – WireBuddy{% endblock %}
+{% block title %}Set up two-factor authentication (2FA) – WireBuddy{% endblock %}
 
 {% block extra_css %}
 <link rel="stylesheet" href="/static/css/pages/otp-setup.css">
@@ -13,7 +13,7 @@
     <div class="card-body p-4 p-sm-5">
         <div class="text-center mb-4">
             <span class="material-icons otp-hero-icon" aria-hidden="true">verified_user</span>
-            <h1 class="h4 mt-3 mb-1">Set Up Two-Factor Authentication</h1>
+            <h1 class="h4 mt-3 mb-1">Set up two-factor authentication (2FA)</h1>
             <p class="text-muted small mb-0">Your administrator enabled 2FA for your account. Complete the setup to continue.</p>
         </div>
 
@@ -47,7 +47,7 @@
             <hr class="my-4">
 
             <div class="mb-3">
-                <p class="small text-muted mb-2" id="otp-input-label"><strong>Step 2:</strong> Enter the 6-digit code from your authenticator app</p>
+                <p class="small text-muted mb-2" id="otp-input-label"><strong>Step 2:</strong> Enter the 6-digit authenticator code (TOTP)</p>
             </div>
 
             {# One-time-code autofill only ever targets the first field; the paste/input
@@ -87,7 +87,7 @@
                 <span class="material-icons align-middle me-1" aria-hidden="true">arrow_forward</span>
                 Continue to Dashboard
             </button>
-            <small class="text-muted d-block text-center mt-2" id="continue-hint">
+            <small class="text-muted d-block text-center mt-2">
                 Download the recovery codes ZIP to enable this button.
             </small>
         </div>

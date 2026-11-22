@@ -4,9 +4,6 @@
 # Copyright (C) 2026 Gill-Bates http://github.com/Gill-Bates
 #
 
-# SPDX-License-Identifier: MIT
-#
-
 """FastAPI application factory and startup lifecycle wiring."""
 
 from __future__ import annotations
@@ -18,18 +15,16 @@ import logging
 import os
 import random
 import re
-import signal
 import sqlite3
-import sys
 import time
 from collections import OrderedDict
-from collections.abc import Callable
 from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass, field
 from pathlib import Path
 
 from fastapi import Depends, FastAPI, HTTPException, Request
-from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
+from gillbates_shutdown_handler import chain_signal_handlers
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from .api import acme as acme_api
@@ -79,7 +74,6 @@ from .dns import unbound
 from .dns.unbound_constants import atomic_write_text
 from .node.events import NodeEventBus
 from .node.notifier import configure_event_bus
-from .tasks import scheduled as scheduled_tasks
 from .tasks.db_inputs import (
 	load_blocklist_update_inputs_sync,
 	read_dns_retention_days_sync,
@@ -90,6 +84,8 @@ from .utils.banner import print_banner_once
 from .utils.binaries import first_executable
 from .utils.coerce import BOOL_TRUE_VALUES
 from .utils.config import WG_CONFIG_PATH, Config, load_config
+from .utils.flags import FLAG_BASE_URL, local_flag_svg
+from .utils.logging_setup import setup_logging
 from .utils.rate_limit import RateLimitExceededError, rate_limit
 from .utils.request_id import RequestIDMiddleware
 from .utils.scheduler import Scheduler
@@ -130,15 +126,6 @@ class LifespanContext:
 # Strict validation for interface names (prevents injection)
 _IFACE_NAME_RE = re.compile(r"^[a-zA-Z][a-zA-Z0-9_-]{0,14}$")
 
-# ANSI color codes for log levels (if TTY)
-_LOG_COLORS = {
-	"DEBUG": "\033[36m",  # Cyan
-	"INFO": "\033[32m",  # Green
-	"WARNING": "\033[33m",  # Yellow
-	"ERROR": "\033[31m",  # Red
-	"CRITICAL": "\033[35m",  # Magenta
-}
-_RESET = "\033[0m"
 _DOCKER_ENV_FILE = Path("/.dockerenv")
 _WG_CHECK_TIMEOUT_SECONDS = 5.0
 _WG_UP_TIMEOUT_SECONDS = 15.0
@@ -165,7 +152,6 @@ _APP_SHUTDOWN_TIMEOUT_SECONDS = 30.0
 # consume, so a slow/serialized wg-quick down never crowds out the Unbound
 # stop and TSDB fsync steps that run after it.
 _WG_SHUTDOWN_BUDGET_FRACTION = 0.5
-_PREPARED_RECORD_ATTR = "_wirebuddy_prepared"
 _WG_OPERATION_LOCK: asyncio.Lock | None = None
 _APPLICATION_LOCK_NAME = ".application.lock"
 _APPLICATION_LOCK_ACQUIRE_TIMEOUT = 3.0  # grace for a reload/restart handoff
@@ -365,69 +351,6 @@ def _release_application_lock(fd: int | None) -> None:
 		os.close(fd)
 
 
-def _make_shutdown_handler(
-	loop: asyncio.AbstractEventLoop,
-	shutdown_event: asyncio.Event,
-	previous_handler: object,
-) -> Callable[[int, object], None]:
-	"""Build a signal handler that preserves the previous handler chain."""
-
-	def _handler(signum: int, frame: object) -> None:
-		loop.call_soon_threadsafe(shutdown_event.set)
-		if previous_handler in (None, signal.SIG_DFL, signal.SIG_IGN, signal.default_int_handler):
-			return
-		if callable(previous_handler):
-			previous_handler(signum, frame)
-
-	return _handler
-
-
-def _install_shutdown_signal_handlers(
-	loop: asyncio.AbstractEventLoop,
-	shutdown_event: asyncio.Event,
-) -> list[tuple[int, object]]:
-	"""Install signal handlers that also notify long-lived app connections.
-
-	The wrapper preserves Uvicorn's existing SIGTERM/SIGINT handlers and only
-	adds a side effect: setting ``shutdown_event`` as soon as the process is
-	signalled. This lets streaming responses terminate before Uvicorn enters the
-	application shutdown phase.
-	"""
-	installed: list[tuple[int, object]] = []
-
-	for sig in (signal.SIGTERM, signal.SIGINT):
-		try:
-			previous_handler = signal.getsignal(sig)
-		except Exception as exc:
-			# Skipping a signal means shutdown will not be hooked for it, which
-			# is worth a line: it was previously a silent `continue`, matching
-			# the debug log used for the install failure below.
-			_log.debug("Could not read the existing handler for %s: %s", sig, exc)
-			continue
-
-		try:
-			signal.signal(sig, _make_shutdown_handler(loop, shutdown_event, previous_handler))
-		except (ValueError, RuntimeError) as exc:
-			_log.debug("Could not install shutdown signal hook for %s: %s", sig, exc)
-			continue
-		installed.append((sig, previous_handler))
-
-	return installed
-
-
-def _restore_signal_handlers(previous_handlers: list[tuple[int, object]]) -> None:
-	"""Restore signal handlers replaced by _install_shutdown_signal_handlers."""
-	for sig, previous_handler in previous_handlers:
-		if previous_handler is None:
-			# getsignal() returned None: no Python-level handler was installed
-			# before ours, so there is nothing to restore.
-			continue
-		try:
-			signal.signal(sig, previous_handler)  # type: ignore[arg-type]
-		except (ValueError, RuntimeError, TypeError):
-			continue
-
-
 # Docker default bridge gateway ranges
 _DOCKER_BRIDGE_NETWORKS = (
 	ipaddress.ip_network("172.17.0.0/16"),
@@ -562,7 +485,6 @@ async def _cleanup_stale_interfaces(ctx: LifespanContext) -> list[str]:
 			return removed
 
 		for iface_name in active_interfaces:
-			# Validate interface name
 			if not _IFACE_NAME_RE.fullmatch(iface_name):
 				_log.warning("Skipping stale interface with invalid name: %r", iface_name)
 				continue
@@ -572,7 +494,6 @@ async def _cleanup_stale_interfaces(ctx: LifespanContext) -> list[str]:
 				_log.debug("Skipping unmanaged WireGuard interface: %s", iface_name)
 				continue
 
-			# Check if config file exists
 			conf_file = config_path / f"{iface_name}.conf"
 			if conf_file.exists():
 				continue  # Has config, not orphaned
@@ -584,7 +505,6 @@ async def _cleanup_stale_interfaces(ctx: LifespanContext) -> list[str]:
 				conf_file,
 			)
 			try:
-				# Delete the interface
 				async with _get_wg_operation_lock():
 					del_res = await run_command(_IP_BIN, "link", "delete", iface_name, timeout=5.0)
 				if del_res.returncode == 0:
@@ -613,78 +533,6 @@ async def _cleanup_stale_interfaces(ctx: LifespanContext) -> list[str]:
 
 # NOTE: _peer_connection_state OrderedDict is only accessed from the single
 # event loop thread (in _sample_tsdb_metrics). Not thread-safe for concurrent access.
-
-
-def _humanize_aiosqlite_message(message: str) -> str:
-	"""Rewrite low-signal aiosqlite debug messages into readable text."""
-
-	def _describe_operation(operation: str) -> tuple[str, str]:
-		known_operations = (
-			("built-in method close of sqlite3.Connection", "closing SQLite connection", "SQLite connection closed"),
-			("built-in method close of sqlite3.Cursor", "closing SQLite cursor", "SQLite cursor closed"),
-			("built-in method commit of sqlite3.Connection", "committing SQLite transaction", "SQLite transaction committed"),
-			("built-in method rollback of sqlite3.Connection", "rolling back SQLite transaction", "SQLite transaction rolled back"),
-			("built-in method execute of sqlite3.Connection", "executing SQLite statement", "SQLite statement executed"),
-			("built-in method execute of sqlite3.Cursor", "executing SQLite cursor statement", "SQLite cursor statement executed"),
-			("built-in method fetchone of sqlite3.Cursor", "fetching one SQLite row", "SQLite row fetched"),
-			("built-in method fetchall of sqlite3.Cursor", "fetching SQLite rows", "SQLite rows fetched"),
-			("built-in method close of sqlite3.Blob", "closing SQLite blob handle", "SQLite blob handle closed"),
-			("Connection.stop.<locals>.close_and_stop", "stopping SQLite worker thread", "SQLite worker thread stopped"),
-			("connect.<locals>.connector", "opening SQLite connection", "SQLite connection opened"),
-			("built-in method cursor of sqlite3.Connection", "creating SQLite cursor", "SQLite cursor created"),
-		)
-		for needle, active_text, done_text in known_operations:
-			if needle in operation:
-				return active_text, done_text
-		return "running SQLite background operation", "SQLite background operation completed"
-
-	if message.startswith("executing "):
-		active_text, _ = _describe_operation(message[len("executing ") :])
-		return active_text
-	if message.startswith("operation ") and message.endswith(" completed"):
-		_, done_text = _describe_operation(message[len("operation ") : -len(" completed")])
-		return done_text
-	if message.startswith("returning exception "):
-		return f"SQLite background operation failed: {message[len('returning exception ') :]}"
-	return message
-
-
-def _prepare_log_record(record: logging.LogRecord, *, clone: bool = False) -> logging.LogRecord:
-	"""Clone and normalize a log record before formatting."""
-	if getattr(record, _PREPARED_RECORD_ATTR, False):
-		return record
-	if clone or record.name == "aiosqlite":
-		record = logging.makeLogRecord(record.__dict__)
-		setattr(record, _PREPARED_RECORD_ATTR, True)
-	else:
-		setattr(record, _PREPARED_RECORD_ATTR, True)
-	if record.name == "aiosqlite":
-		record.msg = _humanize_aiosqlite_message(record.getMessage())
-		record.args = ()
-	return record
-
-
-class _HumanizedFormatter(logging.Formatter):
-	"""Formatter that normalizes noisy third-party log messages."""
-
-	def _prepare(self, record: logging.LogRecord) -> logging.LogRecord:
-		return _prepare_log_record(record)
-
-	def format(self, record: logging.LogRecord) -> str:
-		record = self._prepare(record)
-		return super().format(record)
-
-
-class _ColoredFormatter(_HumanizedFormatter):
-	"""Custom formatter that adds color to log levels in TTY."""
-
-	def format(self, record: logging.LogRecord) -> str:
-		record = _prepare_log_record(record, clone=True)
-		if record.levelname in _LOG_COLORS:
-			record.levelname = f"{_LOG_COLORS[record.levelname]}{record.levelname:<8}{_RESET}"
-		else:
-			record.levelname = f"{record.levelname:<8}"
-		return logging.Formatter.format(self, record)
 
 
 def _purge_staged_interface_configs(config_path: Path) -> None:
@@ -844,7 +692,6 @@ def _regenerate_peer_tags_sync(db_path: Path) -> int:
 	conn = connect(db_path)
 	try:
 		regenerate_all_peer_tags(conn)
-		# Return peer count for logging
 		return len(get_all_peers(conn))
 	finally:
 		close_connection(conn)
@@ -874,64 +721,6 @@ def _sqlite_shutdown_sync(db_path: Path) -> tuple[dict[str, int | str | None], i
 		time.sleep(0.2)
 
 	return checkpoint, closed_connections
-
-
-class _StaticFileAccessFilter(logging.Filter):
-	"""Downgrade uvicorn access-log records for /static/ paths to DEBUG."""
-
-	def filter(self, record: logging.LogRecord) -> bool:
-		if "/static/" in record.getMessage():
-			record.levelno = logging.DEBUG
-			record.levelname = "DEBUG"
-		return True
-
-
-def _setup_logging(log_level: str) -> None:
-	"""Configure unified logging for the entire application."""
-	level_name = str(log_level or "INFO").strip().upper()
-	resolved_level = getattr(logging, level_name, None)
-	level = resolved_level if isinstance(resolved_level, int) else logging.INFO
-	is_tty = sys.stdout.isatty()
-
-	# Choose formatter based on TTY detection
-	if is_tty:
-		formatter = _ColoredFormatter(
-			fmt="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
-			datefmt="%Y-%m-%d %H:%M:%S",
-		)
-	else:
-		formatter = _HumanizedFormatter(
-			fmt="%(asctime)s | %(levelname)-8s | %(name)s | %(message)s",
-			datefmt="%Y-%m-%d %H:%M:%S",
-		)
-
-	# force=True removes any pre-existing handlers (e.g. from uvicorn)
-	# so every logger inherits the same format.
-	logging.basicConfig(
-		level=level,
-		handlers=[logging.StreamHandler(sys.stdout)],
-		force=True,
-	)
-
-	# Apply the formatter to the root logger's handler
-	for handler in logging.root.handlers:
-		handler.setFormatter(formatter)
-
-	if not isinstance(resolved_level, int):
-		_log.warning("Invalid log level %r, falling back to INFO", log_level)
-
-	# Make sure uvicorn loggers use the root handler & level
-	for name in ("uvicorn", "uvicorn.error", "uvicorn.access"):
-		logger = logging.getLogger(name)
-		logger.handlers.clear()
-		logger.setLevel(level)
-		logger.propagate = True
-
-	logging.getLogger("uvicorn.access").addFilter(_StaticFileAccessFilter())
-
-	# Quiet down noisy third-party libraries
-	for name in ("aiosqlite", "httpcore", "httpx", "hpack", "watchfiles", "python_multipart", "python_multipart.multipart"):
-		logging.getLogger(name).setLevel(logging.WARNING)
 
 
 # ─── LIFESPAN HELPERS ────────────────────────────────────────────────────────
@@ -1272,7 +1061,7 @@ async def _phase_dns_ingestion(ctx: LifespanContext) -> None:
 	while True:
 		should_run = await asyncio.to_thread(should_unbound_run_sync, ctx.cfg.db_path)
 		if not should_run:
-			await scheduled_tasks.sleep_with_cancellation_check(30.0)
+			await asyncio.sleep(30.0)
 			continue
 		for attempt in range(15):
 			if await unbound.is_running():
@@ -1297,7 +1086,7 @@ async def _phase_dns_ingestion(ctx: LifespanContext) -> None:
 			_log.warning("DNS_INGESTION returned unexpectedly; restarting in 5s")
 			# A clean return is not a crash: don't carry crash backoff forward.
 			retry_count = 0
-			await scheduled_tasks.sleep_with_cancellation_check(5.0)
+			await asyncio.sleep(5.0)
 		except asyncio.CancelledError:
 			_log.info("DNS_INGESTION shutdown requested")
 			raise
@@ -1313,7 +1102,7 @@ async def _phase_dns_ingestion(ctx: LifespanContext) -> None:
 			jitter = random.uniform(0.8, 1.2)  # noqa: S311  (timing jitter, not security-relevant)
 			delay = min(2.0**exponent * _DNS_INGESTION_RESTART_BASE_DELAY_SECONDS * jitter, _DNS_INGESTION_RESTART_MAX_DELAY_SECONDS)
 			_log.error("DNS_INGESTION crashed (retry #%d in %.0fs): %s", retry_count, delay, exc)
-			await scheduled_tasks.sleep_with_cancellation_check(delay)
+			await asyncio.sleep(delay)
 
 
 @asynccontextmanager
@@ -1333,7 +1122,7 @@ async def _lifespan(app: FastAPI):
 	app.state.shutdown_signal_event = shutdown_signal_event
 	app.state.node_event_bus = NodeEventBus()
 	configure_event_bus(app.state.node_event_bus)
-	previous_signal_handlers = _install_shutdown_signal_handlers(loop, shutdown_signal_event)
+	restore_signal_handlers = chain_signal_handlers(lambda _signum: loop.call_soon_threadsafe(shutdown_signal_event.set))
 	ctx = LifespanContext(
 		cfg=cfg,
 		app=app,
@@ -1392,7 +1181,7 @@ async def _lifespan(app: FastAPI):
 	finally:
 		app.state.bootstrap_gate_release = None
 		shutdown_signal_event.set()
-		_restore_signal_handlers(previous_signal_handlers)
+		restore_signal_handlers()
 		if ctx.deferred_startup_task and not ctx.deferred_startup_task.done():
 			ctx.deferred_startup_task.cancel()
 			with suppress(TimeoutError, asyncio.CancelledError):
@@ -1420,9 +1209,8 @@ def create_app() -> FastAPI:
 	# Print banner first (before any logs)
 	print_banner_once()
 
-	# Load configuration and setup logging
 	cfg = load_config()
-	_setup_logging(cfg.log_level)
+	setup_logging(cfg.log_level)
 
 	app = FastAPI(
 		title="WireBuddy",
@@ -1434,6 +1222,7 @@ def create_app() -> FastAPI:
 	)
 
 	app.state.cfg = cfg
+	frontend_ui.templates.env.globals["flag_base_url"] = FLAG_BASE_URL
 	app.state.db_path = cfg.db_path
 	app.state.tsdb_dir = cfg.tsdb_dir
 	app.state.dns_dir = cfg.dns_dir
@@ -1461,7 +1250,7 @@ def create_app() -> FastAPI:
 		"script-src 'self'; "
 		"script-src-attr 'none'; "
 		"style-src 'self'; "
-		"img-src 'self' data: blob: https://services.arcgisonline.com https://cdn.jsdelivr.net; "
+		"img-src 'self' data: blob: https://services.arcgisonline.com; "
 		"font-src 'self'; "
 		"connect-src 'self'; "
 		"object-src 'none'; "
@@ -1482,11 +1271,7 @@ def create_app() -> FastAPI:
 	elif _bind_is_loopback(os.getenv("WIREBUDDY_BIND_HOST")):
 		_log.info("Host header is not validated (loopback-only listener, no WIREBUDDY_ALLOWED_HOSTS or WIREBUDDY_PUBLIC_ORIGIN)")
 	else:
-		_log.warning(
-			"WIREBUDDY_ALLOWED_HOSTS is unset and no WIREBUDDY_PUBLIC_ORIGIN is "
-			"configured; Host header is not validated. Set one of them for "
-			"defense-in-depth behind a reverse proxy."
-		)
+		_log.warning("Host header not validated: set WIREBUDDY_ALLOWED_HOSTS or WIREBUDDY_PUBLIC_ORIGIN")
 
 	app.add_middleware(RequestIDMiddleware)
 
@@ -1659,6 +1444,14 @@ def create_app() -> FastAPI:
 			response = await super().get_response(path, scope)
 			response.headers["Cache-Control"] = "no-cache"
 			return response
+
+	# Registered before the /static mount so it wins; only codes the package validates reach the file system.
+	@app.get(f"{FLAG_BASE_URL}/{{code}}.svg", include_in_schema=False)
+	async def country_flag(code: str) -> Response:
+		svg = await asyncio.to_thread(local_flag_svg, code)
+		if svg is None:
+			return Response(status_code=404)
+		return Response(content=svg, media_type="image/svg+xml", headers={"Cache-Control": "public, max-age=86400"})
 
 	static_path = Path(__file__).parent / "static"
 	if static_path.exists():

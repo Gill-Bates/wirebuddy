@@ -3,10 +3,10 @@
 # The base image for every stage, in one place so a release can pin it to a
 # digest. Left as a plain tag by default, which is what a local `docker build`
 # wants; .github/workflows/docker-build.yml resolves
-# python:3.13-slim@sha256:... once in its meta job and passes it to both
+# python:3.14-slim@sha256:... once in its meta job and passes it to both
 # architecture builds, so amd64 and arm64 cannot end up on two different
 # pushes of the same tag.
-ARG PYTHON_BASE=python:3.13-slim
+ARG PYTHON_BASE=python:3.14-slim
 
 FROM ${PYTHON_BASE} AS builder
 
@@ -14,14 +14,29 @@ WORKDIR /build
 
 # pyproject.toml is the single dependency manifest (it replaced
 # requirements.txt). Only the [project] dependencies are materialised into a
-# flat requirements file here - tomllib is stdlib in 3.13, so no extra
+# flat requirements file here - tomllib is stdlib, so no extra
 # build-time tool is needed to read them back out.
+# The gillbates-* entries are git-pinned packages of the private
+# Gill-Bates/python-libraries repository. The token is a BuildKit secret
+# (`docker build --secret id=python_libraries_token,src=<file>`), never ARG/ENV,
+# so it stays out of layers and image history. It reaches git through a
+# credential helper that exists only for the pip call; git is purged in the same
+# RUN and this stage never reaches the final image (only /wheels is copied).
 COPY pyproject.toml .
-RUN pip install --upgrade pip && \
+RUN --mount=type=secret,id=python_libraries_token,required=true \
+    set -eu; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends git ca-certificates; \
+    pip install --upgrade pip; \
     python -c 'import tomllib; print("\n".join(tomllib.load(open("pyproject.toml", "rb"))["project"]["dependencies"]))' \
-        > requirements.txt && \
-    pip wheel --no-cache-dir --wheel-dir=/wheels -r requirements.txt && \
-    rm -f requirements.txt
+        > requirements.txt; \
+    test -s requirements.txt; \
+    GIT_TERMINAL_PROMPT=0 GIT_CONFIG_COUNT=2 GIT_CONFIG_KEY_0=credential.helper GIT_CONFIG_VALUE_0= \
+    GIT_CONFIG_KEY_1=credential.helper \
+    GIT_CONFIG_VALUE_1='!f() { echo username=x-access-token; echo "password=$(cat /run/secrets/python_libraries_token)"; }; f' \
+    pip wheel --no-cache-dir --wheel-dir=/wheels -r requirements.txt; \
+    apt-get purge -y --auto-remove git; \
+    rm -rf /var/lib/apt/lists/* requirements.txt
 
 # Build the current upstream wireguard-tools tree. BuildKit resolves the mutable
 # Git ref on every build, so a new upstream commit invalidates this layer
@@ -67,7 +82,7 @@ RUN set -eux; \
 # PYTHON_BASE is only pinned to a digest when docker-build.yml's meta job
 # resolves it and passes it as a build arg (see the ARG PYTHON_BASE comment
 # above). A plain `docker build` without that arg uses the mutable
-# python:3.13-slim tag, which is intentional for local iteration but is not
+# python:3.14-slim tag, which is intentional for local iteration but is not
 # reproducible; only CI-built release images carry the digest pin.
 FROM ${PYTHON_BASE} AS runtime-base
 
@@ -139,9 +154,13 @@ ARG VCS_REF
 # Install Python dependencies from pre-built wheels
 COPY --from=builder /wheels /wheels
 COPY pyproject.toml .
-RUN python -c 'import tomllib; print("\n".join(tomllib.load(open("pyproject.toml", "rb"))["project"]["dependencies"]))' \
+# Direct-URL requirements are reduced to their names: the wheels of the
+# gillbates-* packages are already in /wheels, so the runtime stage needs neither
+# git nor the token.
+RUN python -c 'import tomllib; print("\n".join(d.split(" @ ", 1)[0].strip() for d in tomllib.load(open("pyproject.toml", "rb"))["project"]["dependencies"]))' \
         > requirements.txt && \
     pip install --no-cache-dir --no-compile --no-index --find-links=/wheels -r requirements.txt && \
+    python -c "import gillbates_country_flags, gillbates_geoip, gillbates_logging, gillbates_public_ip, gillbates_shutdown_handler, gillbates_speedtest" && \
     rm -rf /wheels requirements.txt && \
     # pip is a build-time tool, not needed to run the app; removing it also
     # drops its vendored setuptools/msgpack copies from the shipped image.
@@ -160,19 +179,19 @@ COPY CHANGELOG.md .
 
 # Note: GeoIP databases (GeoLite2-City.mmdb, GeoLite2-ASN.mmdb) are
 # automatically downloaded on first startup and updated weekly at runtime.
-# No need to bake them into the image.
+# No need to bake them into the image; /app/data/geolite2 is created below.
 
 # Note: Vendor fonts (Material Icons, Roboto Flex, Noto Serif) are committed
 # under app/static/vendor/fonts/ and copied in with the app code above.
 
-# Note: Country flags are served from CDN (jsdelivr.net/npm/flag-icons)
-# to reduce image size and simplify updates.
+# Note: Country flags are the SVGs bundled in the gillbates-country-flags
+# package (installed with the dependencies) and are served locally.
 
 # Create data and log directories + DNSSEC root key
 # Note: Container runs as root for WireGuard/iptables commands
 # Security is enforced via capabilities + no-new-privileges in compose
 RUN set -eux; \
-    mkdir -p /app/data /var/log/unbound /etc/wireguard /var/lib/unbound; \
+    mkdir -p /app/data /app/data/geolite2 /var/log/unbound /etc/wireguard /var/lib/unbound; \
     chown -R unbound:unbound /var/log/unbound /var/lib/unbound; \
     install -o unbound -g unbound -m 0644 \
         /usr/share/dns/root.key \
@@ -199,10 +218,6 @@ ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1
 
 ENV UVICORN_GRACEFUL_SHUTDOWN_TIMEOUT=8
-
-# Timezone (default: UTC). Override with TZ=America/New_York etc.
-# See: https://en.wikipedia.org/wiki/List_of_tz_database_time_zones
-ENV TZ=Etc/UTC
 
 # X-Forwarded-For / X-Real-IP proxy header handling.
 #

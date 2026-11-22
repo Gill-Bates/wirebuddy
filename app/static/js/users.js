@@ -6,7 +6,6 @@
 (function () {
     'use strict';
 
-    // Helper to toggle d-none class
     function setHidden(el, hidden) {
         if (!el) return;
         el.classList.toggle('d-none', hidden);
@@ -315,14 +314,14 @@
 
         if (isEnabled) {
             indicator.classList.add('text-success');
-            indicator.title = 'OTP enabled';
+            indicator.title = '2FA enabled';
             indicator.textContent = 'verified_user';
             return;
         }
 
         if (hasSecret) {
             indicator.classList.add('text-warning');
-            indicator.title = 'OTP setup pending';
+            indicator.title = '2FA setup pending';
             indicator.textContent = 'schedule';
             return;
         }
@@ -348,27 +347,27 @@
         if (isEnabled) {
             document.getElementById('otp-status-text').textContent = 'Two-factor authentication is active';
             document.getElementById('otp-status-badge').innerHTML = '<span class="badge bg-success">Enabled</span>';
-            actionHelp.textContent = 'Disable two-factor authentication for this user.';
+            actionHelp.textContent = 'Disable two-factor authentication (2FA) for this user.';
             toggleBtn.className = 'btn btn-outline-danger w-100';
             toggleBtn.setAttribute('aria-pressed', 'true');
             toggleIcon.textContent = 'remove_moderator';
-            toggleLabel.textContent = 'Disable OTP';
+            toggleLabel.textContent = 'Disable 2FA';
         } else if (hasSecret) {
             document.getElementById('otp-status-text').textContent = '';
             document.getElementById('otp-status-badge').innerHTML = '<span class="badge bg-warning text-dark">Pending</span>';
-            actionHelp.textContent = 'OTP is pending. User onboarding starts at next login. You can disable OTP here.';
+            actionHelp.textContent = '2FA is pending. User onboarding starts at next login. You can disable 2FA here.';
             toggleBtn.className = 'btn btn-outline-danger w-100';
             toggleBtn.setAttribute('aria-pressed', 'false');
             toggleIcon.textContent = 'remove_moderator';
-            toggleLabel.textContent = 'Disable OTP';
+            toggleLabel.textContent = 'Disable 2FA';
         } else {
             document.getElementById('otp-status-text').textContent = 'Two-factor authentication is not enabled';
             document.getElementById('otp-status-badge').innerHTML = '<span class="badge bg-secondary">Disabled</span>';
-            actionHelp.textContent = 'Enable two-factor authentication. User onboarding starts at next login.';
+            actionHelp.textContent = 'Enable two-factor authentication (2FA). User onboarding starts at next login.';
             toggleBtn.className = 'btn btn-primary w-100';
             toggleBtn.setAttribute('aria-pressed', 'false');
             toggleIcon.textContent = 'add_moderator';
-            toggleLabel.textContent = 'Enable OTP';
+            toggleLabel.textContent = 'Enable 2FA';
         }
 
         const modal = bootstrap.Modal.getOrCreateInstance(modalEl);
@@ -388,7 +387,7 @@
         const shouldDisable = isEnabled || hasSecret;
 
         if (shouldDisable) {
-            if (!await wbConfirm(`Disable two-factor authentication for "${username}"?`, 'warning')) return;
+            if (!await wbConfirm(`Disable two-factor authentication (2FA) for "${username}"?`, 'warning')) return;
 
             this.disabled = true;
             try {
@@ -397,9 +396,9 @@
                 // Close modal and return to user overview
                 const modal = bootstrap.Modal.getInstance(modalEl);
                 if (modal) modal.hide();
-                wbToast('OTP disabled', 'success');
+                wbToast('2FA disabled', 'success');
             } catch (error) {
-                wbAlert('Failed to disable OTP: ' + error.message, 'danger');
+                wbAlert('Failed to disable 2FA: ' + error.message, 'danger');
             } finally {
                 this.disabled = false;
             }
@@ -411,9 +410,9 @@
             await api('POST', `/api/users/${userId}/otp/enable`);
             setUserOtpState(userId, false, true);
             openOtpSettings(userId, username, false, true);
-            wbToast('OTP enabled. User onboarding starts at next login.', 'success');
+            wbToast('2FA enabled. User onboarding starts at next login.', 'success');
         } catch (error) {
-            wbAlert('Failed to enable OTP: ' + error.message, 'danger');
+            wbAlert('Failed to enable 2FA: ' + error.message, 'danger');
         } finally {
             this.disabled = false;
         }
@@ -732,7 +731,7 @@
                     const item = document.createElement('div');
                     item.className = 'list-group-item d-flex justify-content-between align-items-center';
 
-                    const createdAt = new Date(pk.created_at || Date.now()).toLocaleDateString();
+                    const createdAt = pk.created_at ? window.WBFormat.format(pk.created_at, 'date') : '–';
                     const deviceName = pk.device_name || 'Unnamed Passkey';
                     const transports = pk.transports ? pk.transports.join(', ') : '';
 

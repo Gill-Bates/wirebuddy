@@ -15,8 +15,8 @@ WireBuddy API authentication uses the same session model as the web UI:
 - Session cookie: auth_token cookie (browser/UI)
 - Bearer header: Authorization: Bearer <auth_token> (automation/API clients)
 
-For node synchronization endpoints under /api/nodes/* (sync daemon flows), a
-separate node secret plus certificate fingerprint validation is used.
+Node synchronization endpoints under /api/nodes/* (sync daemon flows) use a
+separate node secret instead of a user session.
 
 See [API Authentication](authentication.md) for details.
 
@@ -24,7 +24,7 @@ See [API Authentication](authentication.md) for details.
 
 | Family | Description |
 |---|---|
-| /api/login, /api/logout, /api/me* | User authentication and MFA/session flows |
+| /api/login, /api/logout, /api/mfa/verify, /api/me* | User authentication and MFA/session flows |
 | /api/users/* | User administration |
 | /api/passkeys/* | Passkey registration/login and admin controls |
 | /api/wireguard/* | Interfaces, peers, stats, speedtest, settings |
@@ -32,12 +32,16 @@ See [API Authentication](authentication.md) for details.
 | /api/backup/* | Backup settings, create/validate/restore/list |
 | /api/acme/* | Certificate management and challenge handling |
 | /api/nodes/* | Multi-node management and node sync endpoints |
+| /api/dashboard/layout | Per-user dashboard layout |
 | /api/network/* | Network statistics |
 | /api/system/status | Runtime health/status |
 
 See [API Endpoints](endpoints.md) for the runtime-generated route list.
 
 ## OpenAPI Documentation
+
+Swagger UI and the OpenAPI schema are disabled by default and available to
+administrators only; see [Swagger](../configuration/security.md#swagger).
 
 ```text
 https://vpn.example.com/swagger

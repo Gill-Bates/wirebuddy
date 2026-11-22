@@ -73,7 +73,9 @@ A **node** runs only what's essential for VPN connectivity:
 
 - ✅ WireGuard kernel module and interfaces
 - ✅ Lightweight sync daemon (no web server)
-- ✅ Self-signed certificate for mutual TLS authentication
+- ✅ Per-node API secret (Bearer) for authentication to the master; a
+  self-signed certificate whose fingerprint is checked only behind a trusted
+  mTLS proxy
 - ❌ No database
 - ❌ No web UI
 - ❌ No DNS resolver
@@ -88,22 +90,39 @@ A **node** runs only what's essential for VPN connectivity:
 2. Token is provided to the node via `WIREBUDDY_ENROLLMENT_TOKEN` environment variable
 3. Node generates a self-signed EC P-256 certificate on first boot
 4. Node enrolls with master using the token and sends its certificate fingerprint
-5. Token is single-use and expires after successful enrollment
+5. Token is single-use: it expires after successful enrollment, or 24 hours after it was issued
 
-Token format:
-```
-base64url(JSON_PAYLOAD.HMAC_SHA256_SIGNATURE)
-```
+Token formats:
 
-Signed with `WIREBUDDY_SECRET_KEY` — cannot be forged without access to the master.
+| Version | Format | Signed with | Verified by the node with |
+|---------|--------|-------------|---------------------------|
+| v2 (default) | `wb2.<payload>.<Ed25519 signature>` | Ed25519 private key, kept on the master | Public key `wbpk2:...` |
+| v1 (deprecated) | `base64url(JSON_PAYLOAD.HMAC_SHA256_SIGNATURE)` | `WIREBUDDY_SECRET_KEY` | The same secret |
+
+The master creates the v2 signing key on first use. It is stored encrypted with
+`WIREBUDDY_SECRET_KEY` in the settings table and is included in backups. The
+node pins the public key (`wbpk2:...`) through `WIREBUDDY_ENROLLMENT_VERIFY_KEY`
+and never takes it from the token. A node that pins a `wbpk2:` key refuses v1
+tokens.
+
+Read the public key from the create or regenerate response, or with
+`GET /api/nodes/enrollment-key`. The Nodes page does not show it yet.
+`POST /api/nodes/enrollment-key/rotate` replaces the signing key: unused v2
+tokens then fail and must be regenerated, and nodes that are not yet enrolled
+need the new public key.
+
+A v1 token needs the master's `WIREBUDDY_SECRET_KEY` on the node, which would
+also let that node forge tokens. Migrate to v2, see
+[Migration from HMAC enrollment tokens](#migration-from-hmac-enrollment-tokens).
 
 !!! warning "Enrollment transport"
     Enrollment is the one time the master hands the node its long-lived
-    `session_secret`. When the master has **Serve GUI over HTTPS** enabled,
-    enrollment over plain HTTP is rejected with `400` and the node must reach the
-    master over `https://`. With HTTPS disabled the request is still accepted for
-    plain-HTTP LAN setups, but the master logs an error, because the secret is
-    then transmitted in clear text.
+    `session_secret`. When the master has **Serve GUI over HTTPS** enabled or
+    `WIREBUDDY_REQUIRE_HTTPS_AUTH` set, enrollment over plain HTTP is rejected
+    with `400` (loopback excepted) and the node must reach the master over
+    `https://`. Otherwise the request is still accepted for plain-HTTP LAN
+    setups, but the master logs an error, because the secret is then transmitted
+    in clear text.
 
     If the master uses the self-signed fallback certificate, the node must trust
     it — see [Node cannot enroll over HTTPS](../troubleshooting.md#node-cannot-enroll-over-https).
@@ -116,11 +135,44 @@ requests authenticate with the Bearer API secret:
 
 - Node → Master: `Authorization: Bearer {api_secret}`; the master compares the
   secret's hash.
+- Under the same conditions as enrollment (**Serve GUI over HTTPS** or
+  `WIREBUDDY_REQUIRE_HTTPS_AUTH`), a sync request over plain HTTP is rejected
+  with `400`; loopback is exempt.
 - The certificate fingerprint is checked only as an additional step, and only
-  when a reverse proxy listed in `WIREBUDDY_TRUSTED_PROXIES` terminates mTLS
-  and passes it in `X-Client-Cert-Fingerprint`. Without such a proxy, the
-  Bearer secret is the only credential.
+  when a reverse proxy listed in `WIREBUDDY_MTLS_PROXIES` (a CIDR list, empty by
+  default and independent of `WIREBUDDY_TRUSTED_PROXIES`) terminates mTLS and
+  passes it in `X-Client-Cert-Fingerprint`. Without such a proxy the header is
+  ignored and the Bearer secret is the only credential. Every proxy in front
+  must strip a client-supplied `X-Client-Cert-Fingerprint`, and only the
+  mTLS-terminating proxy may set it. List specific proxy IPs: a broad range lets
+  any host in it forge a fingerprint. Invalid entries are ignored, and a change
+  needs a restart.
 - No external PKI is required.
+
+### Migration from HMAC enrollment tokens
+
+Enrolled nodes authenticate with their session secret and certificate, not with
+the token, so they keep working throughout. Defaults accept both versions;
+`WIREBUDDY_ENROLLMENT_ACCEPT_V1` and `WIREBUDDY_ENROLLMENT_ALLOW_V1` are planned
+to default to `0` in a later release.
+
+1. Upgrade the master. It creates the Ed25519 key on first use, issues v2 tokens
+   and still accepts v1. Pending v1 tokens (up to 24 hours old) keep working.
+2. Upgrade node images at any time. Set `WIREBUDDY_ENROLLMENT_TOKEN_VERSION=1` on
+   the master only while an old node image must still be enrolled.
+3. For every new enrollment or token regeneration, set the token in
+   `WIREBUDDY_ENROLLMENT_TOKEN` and the `wbpk2:` key in
+   `WIREBUDDY_ENROLLMENT_VERIFY_KEY`.
+4. On enrolled nodes, remove the legacy secret from `.env`. A restart is not
+   required.
+5. Watch the master log for `Accepted deprecated v1` and the
+   `enrollment_v1_last_used_at` setting. When no v1 use remains, set
+   `WIREBUDDY_ENROLLMENT_ACCEPT_V1=0` on the master and restart it, then set
+   `WIREBUDDY_ENROLLMENT_ALLOW_V1=0` on the nodes.
+6. Rotate `WIREBUDDY_SECRET_KEY` if node hosts are less trusted than the master:
+   a host that held it keeps that knowledge, and removing it from `.env` does not
+   undo the exposure. Rotation tooling has not been verified.
+7. `POST /api/nodes/enrollment-key/rotate` replaces the signing key when needed.
 
 ### Network Security
 
@@ -139,7 +191,7 @@ A master is just a standard WireBuddy installation — `SERVER_MODE` defaults to
 [Installation Guide](../getting-started/installation.md#docker-compose-recommended).
 
 Do not hand-write a reduced Compose service for the master: it needs the full
-capability set, `/dev/net/tun`, and `no-new-privileges` that the shipped file
+capability set and `no-new-privileges` that the shipped file
 already declares. The node service below is the one that differs.
 
 ### 2. Create Node in UI
@@ -191,6 +243,8 @@ services:
     restart: always
     stop_grace_period: 20s
     network_mode: host
+    init: true
+    pids_limit: 256
     cap_drop:
       - ALL
     cap_add:
@@ -198,10 +252,9 @@ services:
     environment:
       SERVER_MODE: node
       WIREBUDDY_ENROLLMENT_TOKEN: "${WIREBUDDY_ENROLLMENT_TOKEN:?Set WIREBUDDY_ENROLLMENT_TOKEN in .env}"
-      WIREBUDDY_ENROLLMENT_VERIFY_KEY: "${WIREBUDDY_ENROLLMENT_VERIFY_KEY:?Set WIREBUDDY_ENROLLMENT_VERIFY_KEY in .env}"
+      WIREBUDDY_ENROLLMENT_VERIFY_KEY: "${WIREBUDDY_ENROLLMENT_VERIFY_KEY:-}"
       WIREBUDDY_DATA_DIR: /app/data
       LOG_LEVEL: "${LOG_LEVEL:-INFO}"
-      TZ: "${TZ:-Etc/UTC}"
     logging:
       driver: json-file
       options:
@@ -209,8 +262,6 @@ services:
         max-file: "3"
     security_opt:
       - no-new-privileges:true
-    devices:
-      - /dev/net/tun:/dev/net/tun
     volumes:
       - ./data:/app/data
     # Node mode runs the enrollment daemon, not uvicorn, so the healthcheck
@@ -229,10 +280,9 @@ services:
 |----------|----------|-------------|
 | `SERVER_MODE` | Yes | Must be `node` |
 | `WIREBUDDY_ENROLLMENT_TOKEN` | Yes | Token from master UI (contains master URL) |
-| `WIREBUDDY_ENROLLMENT_VERIFY_KEY` | Yes | Master's public key used to verify the token signature. Without it the daemon aborts the first bootstrap |
+| `WIREBUDDY_ENROLLMENT_VERIFY_KEY` | First enrollment | The master's public key `wbpk2:...`. Not needed once the node is enrolled. A value without the prefix is the deprecated v1 secret. Without a key the daemon aborts the first bootstrap |
 | `WIREBUDDY_DATA_DIR` | No | Data directory inside the container (default: `/app/data`) |
 | `LOG_LEVEL` | No | Logging verbosity (default: `INFO`) |
-| `TZ` | No | Timezone (default: `Etc/UTC`) |
 
 !!! info "Master URL in Token"
     The master URL is embedded in the enrollment token — no separate `WIREBUDDY_MASTER_URL` variable needed.
@@ -254,10 +304,11 @@ docker logs wirebuddy-node
 Expected output:
 
 ```
-NODE_DAEMON starting enrollment with master
-NODE_DAEMON enrollment successful, node_id=abc123def456
-NODE_DAEMON starting sync loop (interval=30s)
-NODE_DAEMON heartbeat sent (status=online)
+2026-01-01 12:00:00 UTC | INFO     | wirebuddy | WireBuddy Node Daemon starting...
+2026-01-01 12:00:01 UTC | INFO     | wirebuddy | Enrolling with master at https://vpn.example.com...
+2026-01-01 12:00:01 UTC | INFO     | wirebuddy | Received session secret from master (enrollment token is now invalidated)
+2026-01-01 12:00:02 UTC | INFO     | wirebuddy | Enrollment successful, starting sync loop
+2026-01-01 12:00:02 UTC | INFO     | wirebuddy | SSE event stream connected — config changes will be pushed instantly
 ```
 
 In the master UI, the node status should change from `pending` → `online`.
@@ -341,7 +392,11 @@ Master updates `last_seen` timestamp and sets `status=online`.
 
 ### Config Pull
 
-Nodes fetch configuration every **30 seconds** and compare `config_version`:
+Nodes fetch configuration every **30 seconds** and compare `config_version`.
+The master also pushes config changes over an SSE event stream; while that
+stream is disconnected, the node polls every **5 seconds**. Both intervals are
+set by `WIREBUDDY_NODE_SYNC_INTERVAL` and `WIREBUDDY_NODE_SYNC_INTERVAL_FAST`
+(see [Environment Variables](../configuration/environment.md)).
 
 - If version changed → apply config diff
 - Only changed interfaces are updated (no service disruption)
@@ -357,8 +412,8 @@ Master's scheduled task runs every **60 seconds** and marks nodes as `offline` i
 
 Nodes use **exponential backoff** on sync failures:
 
-- Initial retry: 5 seconds
-- Max backoff: 5 minutes
+- Initial retry: 2 seconds, doubling per failure, with ±20 % jitter
+- Max backoff: 60 seconds
 - Backoff resets on successful sync
 
 ## Configuration Details
@@ -436,6 +491,8 @@ sequenceDiagram
 
 !!! info "TSDB Integration"
     Metrics from nodes are written to the master's TSDB under the peer's public key, appearing alongside local peer metrics in the dashboard traffic charts.
+    The master accepts metrics only for peers assigned to the reporting node or
+    allowed on all nodes (roaming); data for any other peer is ignored.
 
 ## Troubleshooting
 
@@ -487,13 +544,38 @@ docker logs wirebuddy-node --tail 50
 
 ### Node Fails Enrollment
 
-**Error: "Invalid enrollment token"**
+**Error: "Token signature verification failed" or "Token has expired"**
 
-- Token was already used
-- Token signature is invalid (mismatch in `WIREBUDDY_SECRET_KEY`)
+- Token is older than 24 hours
+- Token signature is invalid (`WIREBUDDY_ENROLLMENT_VERIFY_KEY` does not match the master's `wbpk2:` key, or, for a v1 token, its `WIREBUDDY_SECRET_KEY`)
 - Regenerate token in master UI
 
-**Error: "Node ID not found"**
+**Error: "v2 token requires a wbpk2: key"**
+
+- The node has the legacy secret or no key. Set `WIREBUDDY_ENROLLMENT_VERIFY_KEY` to the master's `wbpk2:` key.
+
+**Error: "legacy v1 token refused: v2 key pinned"**
+
+- The node pins a `wbpk2:` key and the token is v1. Regenerate the token on a master that issues v2.
+
+**Error: "Legacy enrollment tokens are no longer accepted"**
+
+- The master runs with `WIREBUDDY_ENROLLMENT_ACCEPT_V1=0`. Regenerate the token as v2.
+
+**Error: "Token was signed by a different master key"**
+
+- The signing key was rotated after the token was issued. Regenerate the token and use the current `wbpk2:` key.
+
+**Error: "Enrollment signing key is unreadable; rotate it"**
+
+- A restore ran under a different `WIREBUDDY_SECRET_KEY`. Call `POST /api/nodes/enrollment-key/rotate`; enrolled nodes are not affected.
+
+**Error: "Node is already enrolled" or "API secret mismatch"**
+
+- Token was already used
+- Regenerate token in master UI
+
+**Error: "Enrollment token invalid or node deleted"**
 
 - Node was deleted from master after enrollment
 - Recreate node and re-deploy with new token
@@ -532,7 +614,7 @@ docker restart wirebuddy-node
 **Check:**
 
 1. Node status is `online` (not `offline` or `error`)
-2. Node logs show successful config pulls: `NODE_DAEMON config applied`
+2. Node logs show applied config changes: `Applied new config (version=...)`
 3. Master's `config_version` incremented after peer changes (check logs)
 
 **Force sync:**
@@ -550,7 +632,7 @@ docker restart wirebuddy-node
 docker logs wirebuddy-node --tail 100 | grep -i ack
 ```
 
-Expected: `ACK received: deleted X metrics (up to seq Y)`
+Expected, with `LOG_LEVEL=DEBUG`: `ACK received: deleted X metrics (up to seq Y)`
 
 **If no ACK:**
 
@@ -585,6 +667,11 @@ GET    /api/nodes/{node_id}
 PATCH  /api/nodes/{node_id}
 DELETE /api/nodes/{node_id}
 POST   /api/nodes/{node_id}/token
+GET    /api/nodes/enrollment-key
+POST   /api/nodes/enrollment-key/rotate
+POST   /api/nodes/{node_id}/restart
+POST   /api/nodes/{node_id}/speedtest
+GET    /api/nodes/{node_id}/speedtest/stream
 ```
 
 ### Sync Endpoints (Node → Master)
@@ -606,19 +693,10 @@ See [API Reference](../api/endpoints.md) for full documentation.
 ### Master Server
 
 - No performance impact from nodes (sync traffic is minimal)
-- Database grows by ~1 KB per node
-- API rate limiting applies to node sync endpoints (configurable)
-
-### Node Server
-
-- **RAM**: ~50 MB base + WireGuard kernel module overhead
-- **CPU**: Idle <1%, config sync spikes to ~5% for <1 second
-- **Network**: ~200 bytes/30s for heartbeat + config (if unchanged)
-- **Disk**: ~10 MB (Python runtime + certificate)
+- API rate limiting applies to node sync endpoints (fixed limits, for example 600 requests per minute for heartbeat and config polling)
 
 ### Scaling Limits
 
-- **Tested**: 1 master + 10 nodes, 1000 total peers
 - The binding constraint is the master: its SQLite database and single-process
   control plane serialize configuration writes and metric ingestion. Adding nodes
   scales VPN capacity, not control-plane capacity.
@@ -632,7 +710,7 @@ See [API Reference](../api/endpoints.md) for full documentation.
     No. A server runs either as `master` or `node`, not both. However, a master can have local WireGuard interfaces serving peers directly.
 
 ??? question "Can peers connect to multiple nodes?"
-    No. Each peer is assigned to exactly one node. For multi-path, configure separate peers.
+    Yes, with **Allow on all Nodes** in the peer form: the peer can then connect to any node with the same credentials. Without it, a peer belongs to exactly one node or the master.
 
 ??? question "What happens if the master goes down?"
     Nodes continue serving VPN traffic with their last known config. Re-sync resumes when master is back online. No auth/config changes are possible while master is down.
@@ -644,4 +722,4 @@ See [API Reference](../api/endpoints.md) for full documentation.
     Edit the peer in the UI and change the **Node** dropdown. The peer's config regenerates with the new endpoint.
 
 ??? question "Can I run a node without Docker?"
-    Yes. Set `SERVER_MODE=node` and the enrollment variables in `.env`, then run `python run.py`. Requires Python 3.13+ and WireGuard installed.
+    Yes. Set `SERVER_MODE=node` and the enrollment variables in `.env`, load them into the environment, then run `python -m app.server`. Requires Python 3.14+ (see [Installation](../getting-started/installation.md)) and WireGuard installed.

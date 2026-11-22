@@ -4,9 +4,6 @@
 # Copyright (C) 2026 Gill-Bates http://github.com/Gill-Bates
 #
 
-# SPDX-License-Identifier: MIT
-#
-
 """Resolve trusted executables from fixed candidate lists (stdlib only)."""
 
 from __future__ import annotations

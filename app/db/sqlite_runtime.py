@@ -116,6 +116,16 @@ def connect(db_path: Path) -> sqlite3.Connection:
 		db_dir.chmod(0o700)
 	except OSError as e:
 		_log.warning("Failed to enforce restrictive permissions on %s: %s", db_dir, e)
+	# A group/other-writable directory lets another local user replace the
+	# 0600 database entry, so fail closed. Read-only group access (for example
+	# a 0750 volume owned by another uid) stays allowed.
+	dir_mode = stat.S_IMODE(db_dir.stat().st_mode)
+	if dir_mode & (stat.S_IWGRP | stat.S_IWOTH):
+		raise RuntimeError(
+			f"Refusing to start: data directory {db_dir} has permissions {oct(dir_mode)} "
+			"(group/other writable) and could not be restricted to 0700; "
+			"fix its ownership or permissions"
+		)
 
 	conn: sqlite3.Connection | None = None
 	try:

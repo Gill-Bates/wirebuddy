@@ -65,7 +65,9 @@ _geo_inflight: dict[str, asyncio.Future] = {}  # Per-IP deduplication for geo lo
 
 
 class _AsyncTTLCache[T]:
-	"""Thread-safe async TTL cache with double-checked locking (prevents thundering herd).
+	"""Async TTL cache with double-checked locking (prevents thundering herd).
+
+	Not thread-safe: the ``asyncio.Lock`` only serialises tasks of one event loop.
 
 	On compute() failure, serves stale data if available; otherwise propagates exception.
 	"""
@@ -150,7 +152,7 @@ def _safe_int(value: object) -> int:
 	"""Coerce a value to int, returning 0 for None/falsy or on conversion error."""
 	try:
 		return int(value or 0)
-	except (TypeError, ValueError):
+	except TypeError, ValueError:
 		return 0
 
 

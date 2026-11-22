@@ -17,6 +17,8 @@
     }
 
     // One capturing listener per event type; handlers live in a WeakMap keyed by node.
+    // Handlers get the node as `this` and as second argument: event.currentTarget is
+    // `document` here, unlike with element.addEventListener().
     function dispatchDelegatedEvent(event) {
         const path = typeof event.composedPath === 'function' ? event.composedPath() : [];
         const nodes = path.length ? path : buildEventPath(event.target);
@@ -24,7 +26,7 @@
         for (const node of nodes) {
             const handler = isNode(node) ? delegatedHandlers.get(node)?.get(event.type) : null;
             if (handler) {
-                handler.call(node, event);
+                handler.call(node, event, node);
                 if (event.cancelBubble) {
                     break;
                 }
@@ -62,11 +64,27 @@
         }
     }
 
+    // Attributes whose value is a URL; srcdoc carries HTML and is refused outright.
+    const URL_ATTRIBUTES = new Set([
+        'href', 'src', 'action', 'formaction', 'poster', 'data', 'background', 'cite', 'ping', 'xlink:href',
+    ]);
+    const SAFE_URL_SCHEMES = new Set(['http', 'https', 'mailto']);
+    // Browsers ignore control characters and spaces inside a scheme, so drop them before checking.
+    function isSafeUrl(value) {
+        const normalized = String(value).replace(/[\u0000-\u0020\u007f-\u009f]/g, '').toLowerCase();
+        const match = /^([a-z][a-z0-9+.-]*):/.exec(normalized);
+        return !match || SAFE_URL_SCHEMES.has(match[1]);
+    }
     function setAttributes(element, attrs) {
         for (const [key, value] of Object.entries(attrs)) {
             // Inline handlers and style attributes violate the CSP; never set them via the builder.
             if (/^on/i.test(key) || key.toLowerCase() === 'style') {
                 console.warn('dom.setAttributes: refusing attribute', key);
+                continue;
+            }
+            const name = key.toLowerCase();
+            if (name === 'srcdoc' || (URL_ATTRIBUTES.has(name) && value != null && typeof value !== 'boolean' && !isSafeUrl(value))) {
+                console.warn('dom.setAttributes: refusing unsafe value for attribute', key);
                 continue;
             }
             if (value === true) {

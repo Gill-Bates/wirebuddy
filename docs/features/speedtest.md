@@ -45,7 +45,7 @@ librespeed-cli automatically selects the LibreSpeed server with the lowest ping 
 
 ### Enabling Speed Test
 
-**Navigate to:** Settings → General → Speed Test
+**Navigate to:** Settings → General → Speedtest
 
 | Setting | Description | Default |
 |---------|-------------|---------|
@@ -57,7 +57,7 @@ Server selection is automatic — no manual configuration needed.
 
 When enabled, WireBuddy runs a speed test automatically every night:
 
-- **Window:** 02:00 – 04:00 local time
+- **Window:** 02:00 – 04:00 UTC
 - **Execution model:** The scheduler waits for the nightly window and then runs the test if scheduled speed tests are enabled
 - **No peer gating:** Active WireGuard peers do not block or defer the nightly run
 - **Cross-process lease:** Concurrent runs are prevented so manual and scheduled tests do not overlap
@@ -68,7 +68,7 @@ If the scheduler reaches the nightly window while speed tests are enabled, the r
 
 ### Via Web UI
 
-1. Navigate to **Settings → General → Speed Test**
+1. Navigate to **Settings → General → Speedtest**
 2. Click **Run Now**
 3. Watch time-based progress via SSE streaming:
    - Progress bar moves through estimated phases
@@ -98,15 +98,15 @@ event: progress
 data: {"phase": "init", "progress": 0.0, "message": "Starting librespeed-cli…"}
 
 event: progress
-data: {"phase": "testing", "progress": 0.1, "message": "Running speed test…"}
+data: {"phase": "server_select", "progress": 0.1, "message": "Selecting fastest server…"}
 
 event: result
-data: {"status": "ok", "server": "Nuremberg, Germany (Hetzner)", "download_mbit": 248.5, "upload_mbit": 47.8, "rtt_ms": 23.1, "jitter_ms": 1.6}
+data: {"status": "ok", "server": "Nuremberg, Germany (Hetzner)", "server_url": "https://speed.example.de/", "country_code": "de", "download_mbit": 248.5, "upload_mbit": 47.8, "rtt_ms": 23.1, "jitter_ms": 1.6, "stored": true}
 ```
 
 ### Cooldown
 
-A 30-second cooldown prevents rapid consecutive tests. Attempting to run during cooldown returns HTTP 429.
+A 30-second cooldown after a successful test prevents rapid consecutive tests. Attempting to run during cooldown returns HTTP 429; a failed test starts no cooldown.
 
 ## History & Storage
 
@@ -117,7 +117,7 @@ A 30-second cooldown prevents rapid consecutive tests. Attempting to run during 
 The dashboard speedtest chart includes:
 
 - **Time range filter:** Select from 7d, 30d, 90d, 180d, or 1y
-- **Node filter:** View results from Master or All Nodes
+- **Node filter:** View results from the Master, All Nodes, or a single node
 - **Multi-node view:** When "All Nodes" is selected, each node is shown with separate download (solid line) and upload (dashed line) series
 
 **Available time ranges:**
@@ -141,11 +141,11 @@ curl https://vpn.example.com/api/wireguard/speedtest/history?range_key=7d \
 
 ### Data Retention
 
-Configure via the storage/retention API endpoint.
+Configure under **Settings → Logs → Speedtest Metrics → Retention Period**, or via the storage/retention API endpoint.
 
 | Setting | Value |
 |---|---|
-| **Retention options** | 0 (unlimited), 7, 30, 90, 180, 365 days |
+| **Retention options** | 0 (No Logs: results are pruned after one day), 7, 30, 90, 180, 365 days |
 | **Default** | 365 days |
 
 ### Storage Management
@@ -166,7 +166,7 @@ curl -X DELETE https://vpn.example.com/api/wireguard/speedtest/storage \
 
 ## Troubleshooting
 
-### "librespeed-cli not found"
+### "librespeed-cli not found in trusted locations"
 
 Ensure `librespeed-cli` is installed:
 
@@ -174,10 +174,10 @@ Ensure `librespeed-cli` is installed:
 apt-get install librespeed-cli
 ```
 
-Or verify the binary is in `$PATH`:
+WireBuddy only runs the binary from `/usr/bin/librespeed-cli` or `/usr/local/bin/librespeed-cli`, not from elsewhere in `$PATH`, and ignores a binary that is group- or world-writable. Check both conditions:
 
 ```bash
-which librespeed-cli
+ls -l /usr/bin/librespeed-cli /usr/local/bin/librespeed-cli
 ```
 
 ### Low or inconsistent results
@@ -199,6 +199,7 @@ Check outbound HTTPS connectivity from the server. LibreSpeed servers use HTTPS 
 | `/api/wireguard/speedtest/run` | POST | Trigger test (admin) |
 | `/api/wireguard/speedtest/run/stream/{stream_id}` | GET | Stream progress for a started test (admin) |
 | `/api/wireguard/speedtest/history` | GET | Get historical results |
+| `/api/wireguard/speedtest/nodes` | GET | List master and nodes with their latest result |
 | `/api/wireguard/speedtest/storage` | GET | Get storage stats |
 | `/api/wireguard/speedtest/storage/retention` | PATCH | Update retention (admin) |
 | `/api/wireguard/speedtest/storage` | DELETE | Purge all data (admin) |

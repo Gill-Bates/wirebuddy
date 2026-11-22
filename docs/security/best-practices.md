@@ -15,7 +15,7 @@ python3 -c "import secrets; print(secrets.token_urlsafe(32))"
 - Keep the value out of Git, images, screenshots, and logs.
 - Store a protected recovery copy alongside your data backup procedure.
 - Reuse the same key when recreating or upgrading the container.
-- Do not change the key after encrypted WireGuard, OTP, or ACME values exist.
+- Do not change the key after encrypted WireGuard, 2FA, or ACME values exist.
 
 Protect the environment file:
 
@@ -65,6 +65,9 @@ WIREBUDDY_TRUSTED_PROXIES=192.168.1.10/32
 WIREBUDDY_PUBLIC_ORIGIN=https://vpn.example.com
 ```
 
+- With a same-host proxy such as Caddy, also set `WIREBUDDY_HOST=127.0.0.1` so
+  WireBuddy is reachable only through the proxy. Do not set it when WireBuddy
+  is accessed directly.
 - `WIREBUDDY_TRUSTED_PROXIES` controls both Uvicorn's forwarded-header trust
   and application client-IP/HTTPS detection.
 - `WIREBUDDY_PUBLIC_ORIGIN` makes CSRF and WebAuthn origin handling explicit,
@@ -97,11 +100,12 @@ and conntrack statistics. Do not weaken the startup check with
 
 The supplied Compose service already:
 
-- drops all Linux capabilities, then re-adds only the six the service needs:
+- drops all Linux capabilities, then re-adds only the seven the service needs:
   `NET_ADMIN` (WireGuard, iptables) plus `NET_BIND_SERVICE`, `SETUID`,
-  `SETGID`, `CHOWN`, and `DAC_OVERRIDE` (bundled Unbound resolver)
+  `SETGID`, `CHOWN`, `DAC_OVERRIDE`, and `KILL` (bundled Unbound resolver)
 - enables `no-new-privileges`
-- mounts only `/dev/net/tun`
+- runs an init process and caps the process count (`pids_limit`)
+- mounts no host devices
 - limits JSON log rotation
 
 Keep these controls when creating overrides. The current image is not designed

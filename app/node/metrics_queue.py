@@ -261,14 +261,18 @@ def init_queue(data_dir: Path) -> sqlite3.Connection:
 	db_path.parent.mkdir(parents=True, exist_ok=True)
 
 	conn = sqlite3.connect(str(db_path), check_same_thread=False)
-	conn.row_factory = sqlite3.Row
-	conn.execute("PRAGMA journal_mode=WAL")
-	conn.execute("PRAGMA synchronous=NORMAL")  # Faster, still durable with WAL
+	try:
+		conn.row_factory = sqlite3.Row
+		conn.execute("PRAGMA journal_mode=WAL")
+		conn.execute("PRAGMA synchronous=NORMAL")  # Faster, still durable with WAL
 
-	_init_schema(conn)
-	_ensure_schema_version(conn)
-	_reconcile_meta(conn)
-	conn.commit()
+		_init_schema(conn)
+		_ensure_schema_version(conn)
+		_reconcile_meta(conn)
+		conn.commit()
+	except BaseException:
+		conn.close()  # do not leak the handle (and its WAL lock) on a failed init
+		raise
 	_register_connection_lock(str(db_path.resolve()))
 	_log.debug("Metrics queue initialized: %s", db_path)
 	return conn
@@ -436,7 +440,7 @@ def get_pending_batch(conn: sqlite3.Connection) -> list[QueuedMetric]:
 						data=data,
 					)
 				)
-			except (TypeError, ValueError, json.JSONDecodeError):
+			except TypeError, ValueError, json.JSONDecodeError:
 				corrupt_seqs.append(int(row["seq"]))
 				_log.warning("Corrupt metrics queue row skipped: seq=%s", row["seq"])
 

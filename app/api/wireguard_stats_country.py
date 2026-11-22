@@ -603,7 +603,6 @@ def _compute_traffic_generic(
 	traffic_metric: str,
 	log_prefix: str,
 	build_entry_fn: Callable[[str, dict[str, Any], str], Any],
-	build_empty_result_fn: Callable[[int], Any],
 	build_result_fn: Callable[[list[Any], str, int, bool, float], Any],
 ) -> Any:
 	"""Generic TSDB traffic aggregation for country and ASN endpoints."""
@@ -623,7 +622,8 @@ def _compute_traffic_generic(
 		)
 	except Exception as exc:
 		_log.error("%s TSDB query failed: %s", log_prefix, exc, exc_info=True)
-		return build_empty_result_fn(hours)
+		# Not an empty result: the caller must not cache or show it as zero traffic.
+		raise HTTPException(status_code=503, detail="Traffic data is temporarily unavailable") from exc
 
 	# The whole window was streamed, so the result is never partial; the fields
 	# stay in the response for API compatibility.
@@ -645,7 +645,7 @@ def _compute_traffic_generic(
 			if entry.total < 0.01:
 				continue
 			entries.append(entry)
-		except (ValueError, ZeroDivisionError, OverflowError):
+		except ValueError, ZeroDivisionError, OverflowError:
 			continue
 
 	_log.debug(
@@ -690,15 +690,6 @@ def _compute_country_traffic(
 		traffic_metric=GEO_TRAFFIC_METRIC,
 		log_prefix="COUNTRY_TRAFFIC",
 		build_entry_fn=_build_country_entry,
-		build_empty_result_fn=lambda h: CountryTrafficData(
-			countries=[],
-			display_unit="B",
-			hours=h,
-			total_countries=0,
-			truncated=False,
-			requested_hours=h,
-			effective_hours=float(h),
-		),
 		build_result_fn=lambda countries, unit, h, truncated, effective_h: CountryTrafficData(
 			countries=countries,
 			display_unit=unit,
@@ -867,15 +858,6 @@ def _compute_asn_traffic(
 		traffic_metric=ASN_TRAFFIC_METRIC,
 		log_prefix="ASN_TRAFFIC",
 		build_entry_fn=_build_asn_entry,
-		build_empty_result_fn=lambda h: ASNTrafficData(
-			asns=[],
-			display_unit="B",
-			hours=h,
-			total_asns=0,
-			truncated=False,
-			requested_hours=h,
-			effective_hours=float(h),
-		),
 		build_result_fn=lambda asns, unit, h, truncated, effective_h: ASNTrafficData(
 			asns=asns,
 			display_unit=unit,

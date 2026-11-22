@@ -53,5 +53,17 @@ export function computePixelDiff(imageA, imageB, { threshold = 0.1 } = {}) {
     const diff = new PNG({ width: dimensions.width, height: dimensions.height });
     const mismatchedPixels = pixelmatch(pngA.data, pngB.data, diff.data, dimensions.width, dimensions.height, { threshold });
 
-    return { diff, mismatchedPixels, totalPixels: dimensions.width * dimensions.height, dimensions };
+    // Area outside the shared crop exists in one image only and counts as fully
+    // different, so a taller page cannot report a zero ratio.
+    const unionPixels = Math.max(imageA.width, imageB.width) * Math.max(imageA.height, imageB.height);
+    const overlapPixels = dimensions.width * dimensions.height;
+    const nonOverlapPixels = unionPixels - overlapPixels;
+
+    return {
+        diff,
+        mismatchedPixels: mismatchedPixels + nonOverlapPixels,
+        totalPixels: unionPixels,
+        nonOverlapPixels,
+        dimensions,
+    };
 }

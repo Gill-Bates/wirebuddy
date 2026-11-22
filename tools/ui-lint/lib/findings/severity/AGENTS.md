@@ -1,5 +1,5 @@
 <!-- Parent: ../../AGENTS.md -->
-<!-- Generated: 2026-09-21 | Updated: 2026-09-21 -->
+<!-- Generated: 2026-09-21 | Updated: 2026-11-22 -->
 # severity
 
 ## Purpose
@@ -23,20 +23,6 @@ Severity vocabulary, weights and escalation/downgrade rules.
 
 ### Testing Requirements
 
-- Covered by `tests/findings/layout-policy.spec.js`. Run `cd tools/ui-lint && npx playwright test <spec>` (no playwright.config file; defaults apply).
-
-### Common Patterns
-
-- No special constraints beyond the parent directory guidance.
-
-## Dependencies
-
-### Internal
-
-- No special constraints beyond the parent directory guidance.
-
-### External
-
-- No special constraints beyond the parent directory guidance.
+- Covered by `tests/findings/layout-policy.spec.js`. Run `cd tools/ui-lint && npx playwright test <spec>`.
 
 <!-- MANUAL: Any manually added notes below this line are preserved on regeneration -->

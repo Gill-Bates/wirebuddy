@@ -11,7 +11,6 @@ from __future__ import annotations
 import ipaddress
 import json
 import logging
-import re
 import socket
 import sqlite3
 import threading
@@ -19,15 +18,14 @@ import time
 from collections import OrderedDict
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from functools import lru_cache
 from pathlib import Path
 from typing import Any, Never, TypedDict
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import RedirectResponse
 from fastapi.templating import Jinja2Templates
+from gillbates_country_flags import normalize_country_code
 
-from ..utils.formatting import format_bandwidth_mbit
 from ..utils.geoip import lookup_ip
 from ..utils.time import parse_utc, to_utc_iso
 from ..utils.version import BUILD_INFO, VERSION
@@ -100,7 +98,6 @@ def _truncate_ip(value: str | None, length: int = 24) -> str:
 # Register Jinja2 filters
 _jinja_templates.env.filters["wbr_ip"] = _wbr_ip
 _jinja_templates.env.filters["truncate_ip"] = _truncate_ip
-_jinja_templates.env.filters["format_bandwidth_mbit"] = format_bandwidth_mbit
 _jinja_templates.env.filters["utc_iso"] = to_utc_iso
 
 __all__ = [
@@ -134,7 +131,7 @@ def parse_node_metadata(value: Any, *, node_id: str) -> dict[str, Any]:
 		return value if isinstance(value, dict) else {}
 	try:
 		parsed = json.loads(value)
-	except (TypeError, json.JSONDecodeError):  # JSONDecodeError is a subclass of ValueError
+	except TypeError, json.JSONDecodeError:  # JSONDecodeError is a subclass of ValueError
 		_log.warning("Node %s has invalid metadata JSON; returning empty dict", node_id)
 		return {}
 
@@ -172,22 +169,15 @@ async def redirect_to_handler(_: Request, exc: RedirectTo) -> RedirectResponse:
 	return RedirectResponse(url=exc.url, status_code=303)
 
 
-@lru_cache(maxsize=4096)
-def _geoip_lookup_cached(ip_text: str) -> dict:
-	"""Internal: cached raw GeoIP lookup. Raises on failure (result not cached)."""
-	return lookup_ip(ip_text)
-
-
 def lookup_ip_cached(ip_text: str) -> dict | None:
-	"""Public API: cached GeoIP lookup.
+	"""GeoIP lookup through the package's LRU cache, which is cleared when a database is replaced.
 
 	Returns:
-		dict: GeoIP data (may be empty {} for IPs without geo data).
-		None: On lookup failure (not cached, next call retries).
+		dict: A fresh GeoIP mapping for the IP.
+		None: When the IP has no GeoIP record or the lookup failed.
 	"""
 	try:
-		result = _geoip_lookup_cached(ip_text)
-		return dict(result) if result else None
+		return lookup_ip(ip_text)
 	except Exception:
 		_log.debug("GeoIP lookup failed for %s", ip_text, exc_info=True)
 		return None
@@ -287,19 +277,19 @@ def extract_geo_fields(info: dict | None) -> GeoFields:
 	if not info:
 		return {"country_code": None, "city": None, "asn": None, "as_org": None}
 
-	country = str(info.get("country") or "").strip().lower()
+	country = str(info.get("country") or "").strip()
 	city = str(info.get("city") or "").strip() or None
 	try:
 		asn_number = int(info.get("asn") or 0)
-	except (ValueError, TypeError):
+	except ValueError, TypeError:
 		asn_number = 0
 	asn = f"AS{asn_number}" if asn_number > 0 else None
 	as_org = str(info.get("as_org") or "").strip()
 	if not as_org:
 		as_org = asn or ""
 
-	# Strict validation: exactly 2 lowercase letters, prevents path traversal
-	validated_country = country if re.fullmatch(r"[a-z]{2}", country) else None
+	# Strict validation: exactly 2 ASCII letters, prevents path traversal
+	validated_country = normalize_country_code(country)
 
 	return {
 		"country_code": validated_country,
@@ -408,7 +398,7 @@ def parse_last_seen_epoch(value: object) -> int:
 		try:
 			dt = parse_utc(value)
 			return int(dt.timestamp()) if dt else 0
-		except (ValueError, TypeError):
+		except ValueError, TypeError:
 			return 0
 	return 0
 

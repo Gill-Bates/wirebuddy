@@ -4,9 +4,6 @@
 # Copyright (C) 2026 Gill-Bates http://github.com/Gill-Bates
 #
 
-# SPDX-License-Identifier: MIT
-#
-
 """In-memory rate limiter: sliding window, per-route counters, IPv6 bundling, fail-closed behaviour, 429 contract."""
 
 from __future__ import annotations
@@ -20,11 +17,12 @@ from fastapi.testclient import TestClient
 
 from app.utils import rate_limit as rl
 from app.utils.rate_limit import RateLimitExceededError, SlidingWindow, parse_limit, rate_limit
+from app.utils.socket_peer import SOCKET_PEER_SCOPE_KEY
 
 
 class _FakeRequest:
 	def __init__(self, client):
-		self.scope = {"client": client}
+		self.scope = {"client": client, SOCKET_PEER_SCOPE_KEY: client[0] if client else None}
 		self.headers = {}
 
 
@@ -230,17 +228,21 @@ def test_client_key_uses_trusted_proxy_forwarding_only_from_trusted_peers(monkey
 	assert rl.rate_limit_key(untrusted) == "198.51.100.9"
 
 
-def test_real_app_returns_429_before_authentication(monkeypatch, tmp_path):
-	"""GET /api/users is RATE_LIMIT_AUTH (5/minute) and requires an admin: unauthenticated attempts still count."""
+def _real_client(monkeypatch, tmp_path) -> TestClient:
 	from app import main
 
 	monkeypatch.setenv("WIREBUDDY_SECRET_KEY", "x" * 48)
 	monkeypatch.setenv("WIREBUDDY_DATA_DIR", str(tmp_path))  # keep the real data/ untouched
-	# The route limiter is process-wide with a real clock; a unique client key gives this test a fresh
-	# bucket, so other requests to /api/users (or a rerun) cannot change the 5/minute budget it observes.
+	# The route limiters are process-wide with a real clock; a unique client key gives each test a
+	# fresh bucket, so other requests (or a rerun) cannot change the budget it observes.
 	bucket = f"test-{uuid.uuid4().hex}"
 	monkeypatch.setattr(rl, "rate_limit_key", lambda _request: bucket)
-	client = TestClient(main.create_app(), raise_server_exceptions=False)
+	return TestClient(main.create_app(), raise_server_exceptions=False)
+
+
+def test_real_app_returns_429_before_authentication(monkeypatch, tmp_path):
+	"""GET /api/users is RATE_LIMIT_AUTH (5/minute) and requires an admin: unauthenticated attempts still count."""
+	client = _real_client(monkeypatch, tmp_path)
 	codes = [client.get("/api/users").status_code for _ in range(7)]
 	assert codes[:5] == [401] * 5
 	assert codes[5:] == [429, 429]
@@ -248,3 +250,37 @@ def test_real_app_returns_429_before_authentication(monkeypatch, tmp_path):
 	assert response.json() == {"detail": "Too many requests. Please try again later."}
 	assert int(response.headers["Retry-After"]) >= 1
 	assert response.headers["X-RateLimit-Limit"] == "5 per 1 minute"
+
+
+def test_interface_crud_is_limited_to_heavy_budget(monkeypatch, tmp_path):
+	"""Interface create/update/delete share RATE_LIMIT_HEAVY (10/minute) per route; limiter runs before auth."""
+	client = _real_client(monkeypatch, tmp_path)
+	for method, path in (("post", "/api/wireguard/interfaces"), ("patch", "/api/wireguard/interfaces/wg0"), ("delete", "/api/wireguard/interfaces/wg0")):
+		codes = [client.request(method.upper(), path, json={}).status_code for _ in range(12)]
+		assert 429 not in codes[:10], (method, codes)
+		assert codes[10:] == [429, 429], (method, codes)
+
+
+def test_dashboard_layout_mutations_are_limited_above_edit_rate(monkeypatch, tmp_path):
+	"""Layout PUT/DELETE allow RATE_LIMIT_API (120/minute): far above one save per finished edit, still bounded."""
+	count, _window = parse_limit(rl.RATE_LIMIT_API)
+	client = _real_client(monkeypatch, tmp_path)
+	codes = [client.put("/api/dashboard/layout", json={"version": 1, "widgets": []}).status_code for _ in range(count + 1)]
+	assert 429 not in codes[:count]
+	assert codes[count] == 429
+	assert client.get("/api/dashboard/layout").status_code != 429  # reads stay unlimited
+
+
+def test_network_stats_polling_is_never_rate_limited(monkeypatch, tmp_path):
+	"""The dashboard polls /api/network/stats every NETWORK_STATS_REFRESH_MS; the route carries no limit."""
+	import re
+	from pathlib import Path
+
+	js = (Path(__file__).resolve().parent.parent / "app/static/js/dashboard.js").read_text(encoding="utf-8")
+	interval_ms = int(re.search(r"NETWORK_STATS_REFRESH_MS\s*=\s*(\d+)", js).group(1))
+	polls_per_minute = 60_000 / interval_ms
+	# Normal polling would already exceed any preset below the API budget over a few open tabs.
+	assert polls_per_minute < parse_limit(rl.RATE_LIMIT_API)[0]
+	client = _real_client(monkeypatch, tmp_path)
+	codes = [client.get("/api/network/stats").status_code for _ in range(int(polls_per_minute) * 6)]
+	assert 429 not in codes

@@ -298,16 +298,47 @@
     display: none !important;
 }
 
-/* Edit mode: a subtle outline marks a movable/resizable widget without looking like a separate app. */
+/* Edit mode: empty grid cells show as dashed, rounded drop slots. dashboard_grid.js fills this layer
+   with one .wb-dashboard-slot per cell; it sits under the tiles (they come later in the DOM) and
+   never takes pointer events, so drag, resize and drop stay with GridStack. */
+.wb-dashboard-slots {
+    display: none;
+}
+
 @media (width >=992px) {
-    .wb-dashboard-editing.wb-dashboard-grid {
-        background-image:
-            linear-gradient(to right, var(--bs-border-color-translucent) 1px, transparent 1px),
-            linear-gradient(to bottom, var(--bs-border-color-translucent) 1px, transparent 1px);
-        background-size: var(--gs-column-width) var(--gs-cell-height);
+    .wb-dashboard-editing>.wb-dashboard-slots {
+        position: absolute;
+        inset: 0;
+        display: flex;
+        flex-wrap: wrap;
+        align-content: flex-start;
+        overflow: hidden;
+        pointer-events: none;
     }
 }
 
+/* One cell of the 12-column grid; the padding is the tile gutter so the slot lines up with a tile. */
+.wb-dashboard-slot {
+    box-sizing: border-box;
+    flex: 0 0 var(--gs-column-width);
+    height: var(--gs-cell-height);
+    padding:
+        var(--gs-item-margin-top, var(--wb-dash-gutter))
+        var(--gs-item-margin-right, var(--wb-dash-gutter))
+        var(--gs-item-margin-bottom, var(--wb-dash-gutter))
+        var(--gs-item-margin-left, var(--wb-dash-gutter));
+}
+
+.wb-dashboard-slot::before {
+    content: "";
+    display: block;
+    height: 100%;
+    border: 1px dashed var(--wb-border-default, var(--bs-border-color));
+    border-radius: var(--wb-radius-lg);
+    background: var(--wb-muted-bg, var(--bs-tertiary-bg));
+}
+
+/* Edit mode: a subtle outline marks a movable/resizable widget without looking like a separate app. */
 .wb-dashboard-editing .grid-stack-item-content {
     outline: 1px dashed var(--bs-border-color);
     outline-offset: 2px;

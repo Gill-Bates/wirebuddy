@@ -12,6 +12,7 @@ import contextlib
 import ipaddress
 import logging
 import sqlite3
+import time
 from pathlib import Path
 
 from .sqlite_interfaces import get_interface
@@ -21,7 +22,9 @@ _log = logging.getLogger(__name__)
 
 
 type LastSeenUpdate = tuple[str, int, str]
-_MAX_ALLOCATABLE_HOSTS = 65_536
+MAX_ALLOCATABLE_HOSTS = 65_536
+# Tolerated clock skew between a reporting node and this server.
+MAX_HANDSHAKE_SKEW_S = 300
 
 
 # ---------------------------------------------------------------------------
@@ -53,6 +56,29 @@ def get_peer_by_id(conn: sqlite3.Connection, peer_id: int) -> sqlite3.Row | None
 	return cur.fetchone()
 
 
+def is_plausible_handshake(handshake_at: int, *, now: float | None = None) -> bool:
+	"""Return True if *handshake_at* is positive and not beyond the skew tolerance."""
+	limit = (time.time() if now is None else now) + MAX_HANDSHAKE_SKEW_S
+	return 0 < handshake_at <= limit
+
+
+def iter_peer_address_ips(peer_address: str | None) -> list[ipaddress.IPv4Address | ipaddress.IPv6Address]:
+	"""Return the valid host IPs of a stored ``peer_address`` (comma-separated CIDRs).
+
+	Empty and unparsable fragments are skipped.
+	"""
+	ips: list[ipaddress.IPv4Address | ipaddress.IPv6Address] = []
+	for raw_part in str(peer_address or "").split(","):
+		part = raw_part.strip()
+		if not part:
+			continue
+		try:
+			ips.append(ipaddress.ip_interface(part).ip)
+		except ValueError:
+			continue
+	return ips
+
+
 def update_peers_last_seen_batch(
 	conn: sqlite3.Connection,
 	updates: list[LastSeenUpdate],
@@ -64,22 +90,38 @@ def update_peers_last_seen_batch(
 	Monotonic on handshake_at: a roaming peer (allow_all_nodes) can be
 	reported by multiple nodes concurrently, and a delayed or reordered
 	update must not roll the peer back to "less recently seen" than an
-	already-recorded newer observation, or overwrite its IP with a stale one.
+	already-recorded newer observation. The IP changes only for a strictly
+	newer handshake, or when none is stored yet. Handshakes beyond the clock
+	skew tolerance are skipped (only that value, not the batch), and a stored
+	future value is treated as unset so a correct report repairs it.
 	"""
-	if not updates:
+	now = time.time()
+	rows = [
+		{"ip": client_ip, "hs": handshake_at, "key": public_key, "limit": int(now) + MAX_HANDSHAKE_SKEW_S}
+		for client_ip, handshake_at, public_key in updates
+		if is_plausible_handshake(handshake_at, now=now)
+	]
+	if len(rows) != len(updates):
+		_log.warning("PEER_HANDSHAKE_REJECTED skipped %d implausible (future or non-positive) timestamp(s)", len(updates) - len(rows))
+	if not rows:
 		return
 	with transaction(conn):
 		conn.executemany(
 			"""
 			UPDATE peers
 			SET last_client_ip = CASE
-					WHEN ? >= COALESCE(last_handshake_at, 0) THEN ?
+					WHEN :hs > (CASE WHEN COALESCE(last_handshake_at, 0) > :limit THEN 0 ELSE COALESCE(last_handshake_at, 0) END)
+						OR last_client_ip IS NULL OR last_client_ip = ''
+					THEN :ip
 					ELSE last_client_ip
 				END,
-				last_handshake_at = MAX(COALESCE(last_handshake_at, 0), ?)
-			WHERE public_key = ?
+				last_handshake_at = MAX(
+					CASE WHEN COALESCE(last_handshake_at, 0) > :limit THEN 0 ELSE COALESCE(last_handshake_at, 0) END,
+					:hs
+				)
+			WHERE public_key = :key
 			""",
-			[(handshake_at, client_ip, handshake_at, public_key) for client_ip, handshake_at, public_key in updates],
+			rows,
 		)
 
 
@@ -146,7 +188,6 @@ def get_peer_metrics_stats(conn: sqlite3.Connection) -> dict[str, int | str]:
 	if db_row and len(db_row) >= 3 and db_row[2]:
 		db_path = str(db_row[2])
 
-	# Get database file size
 	size_bytes = 0
 	if db_path:
 		with contextlib.suppress(OSError, ValueError):
@@ -168,17 +209,16 @@ def allocate_peer_ip(conn: sqlite3.Connection, interface_name: str) -> str | Non
 	"""Allocate the next available dual-stack IP address for a peer.
 
 	Returns:
-		The address string (e.g. "10.13.13.2/32, fd13:13:13::2/128"),
-		or None if the pool is exhausted.
+		The address string (e.g. "10.13.13.2/32, fd13:13:13::2/128"), or None
+		if no address can be allocated: unknown interface, invalid interface
+		IPv4 address, IPv4 pool larger than ``MAX_ALLOCATABLE_HOSTS``, or pool
+		exhausted.
 
 	Note:
-		This function must run inside an active transaction. Allocation is still
-		optimistic and NOT fully atomic unless the caller uses an immediate lock.
-		A concurrent writer may reserve
-		the same address between this read and the subsequent peer insert, causing
-		sqlite3.IntegrityError due to the unique index on (peer_address, interface).
-		Callers should use ``transaction(conn, immediate=True)`` and catch
-		IntegrityError to retry allocation + insert when needed.
+		Selection is not a reservation. To make it one, call this inside the
+		same ``BEGIN IMMEDIATE`` transaction as the peer insert (see
+		``create_peer(allocate_address=True)``); the unique index on
+		(peer_address, interface) is only the last line of defence.
 	"""
 	if not conn.in_transaction:
 		_log.warning("allocate_peer_ip called without an active transaction; use transaction(conn, immediate=True) to reduce allocation races")
@@ -195,7 +235,7 @@ def allocate_peer_ip(conn: sqlite3.Connection, interface_name: str) -> str | Non
 	except ValueError as e:
 		_log.error("Invalid interface IPv4 address %s: %s", iface["address"], e)
 		return None
-	if ipv4_network.num_addresses > _MAX_ALLOCATABLE_HOSTS:
+	if ipv4_network.num_addresses > MAX_ALLOCATABLE_HOSTS:
 		_log.error(
 			"Refusing peer allocation for interface=%s with oversized IPv4 pool %s (%d addresses)",
 			interface_name,
@@ -226,20 +266,11 @@ def allocate_peer_ip(conn: sqlite3.Connection, interface_name: str) -> str | Non
 		used_v6.add(ipv6_server)
 
 	for row in cur.fetchall():
-		peer_address = str(row["peer_address"] or "")
-		for raw_part in peer_address.split(","):
-			part = raw_part.strip()
-			if not part:
-				continue
-			try:
-				used_ip = ipaddress.ip_interface(part).ip
-				if isinstance(used_ip, ipaddress.IPv4Address):
-					used_v4.add(used_ip)
-				else:
-					used_v6.add(used_ip)
-			except ValueError:
-				pass
-
+		for used_ip in iter_peer_address_ips(row["peer_address"]):
+			if isinstance(used_ip, ipaddress.IPv4Address):
+				used_v4.add(used_ip)
+			else:
+				used_v6.add(used_ip)
 	# Find next free IPv4
 	next_v4 = None
 	for ip in ipv4_network.hosts():
@@ -298,19 +329,5 @@ def get_dns_logging_disabled_ips(conn: sqlite3.Connection) -> set[str]:
 
 	disabled_ips: set[str] = set()
 	for row in cur.fetchall():
-		peer_address = row["peer_address"]
-		if not peer_address:
-			continue
-		# peer_address can be "10.0.0.2/32" or "10.0.0.2/32, fd13:13::2/128"
-		for raw_part in str(peer_address).split(","):
-			part = raw_part.strip()
-			if not part:
-				continue
-			try:
-				# Extract IP from CIDR notation
-				iface = ipaddress.ip_interface(part)
-				disabled_ips.add(str(iface.ip))
-			except ValueError:
-				continue
-
+		disabled_ips.update(str(ip) for ip in iter_peer_address_ips(row["peer_address"]))
 	return disabled_ips

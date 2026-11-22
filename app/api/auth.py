@@ -233,7 +233,7 @@ def _is_https(request: Request) -> bool:
 	Raises HTTPException if client IP cannot be determined (prevents silent
 	cookie security degradation).
 
-	Secure cookies/HSTS are forced on automatically when
+	Secure cookies are forced on automatically when
 	WIREBUDDY_PUBLIC_ORIGIN uses https://. Can still be overridden explicitly
 	with FORCE_HTTPS_COOKIES=true for edge cases (e.g. TLS-terminating LB
 	without a configured public origin).
@@ -478,7 +478,7 @@ def _record_failed_and_raise(
 			detail=f"Too many login attempts. Please wait {max(1, lockout_secs)} seconds.",
 			headers={"Retry-After": str(lockout_secs)},
 		)
-	_log.info("LOGIN_FAILED ip=%s username=%s", client_ip, log_username)
+	_log.warning("LOGIN_FAILED ip=%s username=%s", client_ip, log_username)
 	raise HTTPException(status_code=status_code, detail=detail)
 
 

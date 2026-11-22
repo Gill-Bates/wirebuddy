@@ -125,3 +125,44 @@ def test_bootstrap_does_not_start_interface_with_failed_regeneration(monkeypatch
 
 	assert not key_mismatch
 	assert interfaces == ["wg1"]
+
+
+def test_lifespan_signal_sets_shutdown_event_and_keeps_previous_handler(monkeypatch, tmp_path: Path):
+	"""SIGTERM must end SSE streams via the shutdown event and still reach uvicorn's handler; exit restores it."""
+	import asyncio
+	import signal
+	from types import SimpleNamespace
+
+	from app import main
+
+	async def _noop(*_args) -> None:
+		return None
+
+	async def _gate_bootstrap(ctx) -> None:
+		# The first-boot gate skips the operational startup (WireGuard, DNS, scheduler).
+		ctx.app.state.bootstrap_gate_active = True
+
+	monkeypatch.setattr(main, "_require_trusted_binaries", lambda: None)
+	monkeypatch.setattr(main, "_verify_host_network_mode", _noop)
+	monkeypatch.setattr(main, "_acquire_application_lock", lambda _data_dir: None)
+	monkeypatch.setattr(main, "_release_application_lock", lambda _fd: None)
+	monkeypatch.setattr(main, "_phase_bootstrap", _gate_bootstrap)
+	monkeypatch.setattr(main, "_do_shutdown", _noop)
+	app = SimpleNamespace(state=SimpleNamespace(cfg=SimpleNamespace(data_dir=tmp_path), peer_connection_state={}))
+	received: list[int] = []
+
+	def _uvicorn_handler(signum, _frame) -> None:
+		received.append(signum)
+
+	async def _run() -> None:
+		async with main._lifespan(app):
+			signal.raise_signal(signal.SIGTERM)
+			await asyncio.wait_for(app.state.shutdown_signal_event.wait(), timeout=5)
+			assert received == [signal.SIGTERM]
+		assert signal.getsignal(signal.SIGTERM) is _uvicorn_handler
+
+	original = signal.signal(signal.SIGTERM, _uvicorn_handler)
+	try:
+		asyncio.run(_run())
+	finally:
+		signal.signal(signal.SIGTERM, original)

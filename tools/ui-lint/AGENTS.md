@@ -1,5 +1,5 @@
 <!-- Parent: ../AGENTS.md -->
-<!-- Generated: 2026-09-21 | Updated: 2026-10-27 -->
+<!-- Generated: 2026-09-21 | Updated: 2026-11-22 -->
 # ui-lint
 
 ## Purpose
@@ -29,13 +29,16 @@ Playwright-based UI lint tool for the WireBuddy web frontend. `run-ui-lint.mjs` 
 
 - Run an audit: `cd tools/ui-lint && npm install && npm run install:browsers && UI_LINT_USERNAME=... UI_LINT_PASSWORD=... npm run audit`. Credentials come only from the environment; never hard-code them.
 - Env vars read by `run-ui-lint.mjs`: `UI_LINT_BASE_URL` (default `http://localhost:8000`), `UI_LINT_USERNAME`, `UI_LINT_PASSWORD`, `UI_LINT_BROWSERS`, `UI_LINT_BROWSER_CONCURRENCY`, `UI_LINT_DEVICE_CONCURRENCY`, `UI_LINT_OUTPUT_DIR`, `UI_LINT_SCREENSHOT_DIR`, `UI_LINT_SPOOF_CLIENT_IP`, `UI_LINT_LOGIN_FAILURE_TESTS`, `UI_LINT_LOGIN_FAILURE_USERNAME`, `UI_LINT_HEALTH_MIN`. Shared with `tests/e2e`: `PLAYWRIGHT_DIR` (module source, see `lib/deps.mjs`), `PLAYWRIGHT_BROWSER` (used when `UI_LINT_BROWSERS` is unset; an invalid value fails fast; a legacy `BROWSER` counts only when it names an engine) and `COLOR_SCHEME=light|dark` (narrows the view matrix to one theme).
-- One-command audit against a throwaway instance (own port, empty data dir, seeded admin with random credentials, artifacts in the given dir): `PLAYWRIGHT_DIR=/opt/ux-test-tools PYTHON=.venv/bin/python PLAYWRIGHT_BROWSER=chromium node tests/e2e/ui_lint_isolated.mjs <artifact-dir>`.
+- Preferred: run the audit against a throwaway instance with `tests/e2e/ui_lint_isolated.mjs` (command and artifact rules in `tests/e2e/AGENTS.md`).
 - `run-ui-lint.mjs` consumes `lib/` only through facades (`constants`, `browser-utils`, `findings`, `runtime-config`, `views`, `orchestration/audit-runner`, `dom-health`, `ui-health-score`); keep those export surfaces stable.
+- Registry rules in the audit: `REGISTRY_RULE_IDS` in `run-ui-lint.mjs` lists every registered rule except `settings-logs-layout` (added only for the `settings-logs` view). `meta.scopes` is matched against the view scope (`dashboard`, `about`, ...) by `lib/rule-orchestration/execution-planner.mjs`; an empty list or `any` runs everywhere. A rule added to `rules/manifest.mjs` must be added to that list as well. A rule dependency cycle (self-dependency included) makes planning throw; the audit reports it as `registry-execution-failed`.
+- The screenshot directory is recreated each run by `resetScreenshotDir()` (`lib/runtime-orchestration/runtime-context.mjs`): it is only wiped when missing, empty, carrying the `.ui-lint-screenshots` marker, or holding nothing but `screenshot-*.png`/`diff-*.png`; any other non-empty directory aborts the run instead of being deleted. A screenshot diff of differently sized images counts the non-overlapping area as drift and raises `visual-size-mismatch`.
+- Login success means the base layout's `#logoutBtn` is present; a forced password change (`/ui/change-password`, auth layout) fails the login with a hint to seed the admin first.
 - New checks belong in `rules/` (register in `rules/manifest.mjs`), not inline in the entry point, unless they are page-flow checks that already live there.
 
 ### Testing Requirements
 
-- `npm test` runs the Playwright specs in `tests/` (`test:headed` / `test:ui` for debugging). No `playwright.config` exists, so defaults apply; specs mount static HTML via `page.setContent`, so no running app is needed for most of them (`tests/runtime/` specs such as `dom-runtime.spec.js` and `dashboard-grid.spec.js` load scripts from `/opt/wirebuddy/app/static/js`).
+- `npm test` runs the Playwright specs in `tests/` (`test:headed` / `test:ui` for debugging). No `playwright.config` exists, so defaults apply; specs mount static HTML via `page.setContent`, so no running app is needed for most of them (`tests/runtime/` specs such as `dom-runtime.spec.js` and `dashboard-grid.spec.js` load scripts from the repository's `app/static/js`, resolved relative to the spec file).
 - Full audits need a running WireBuddy instance and valid credentials.
 
 ### Common Patterns
@@ -48,7 +51,7 @@ Playwright-based UI lint tool for the WireBuddy web frontend. `run-ui-lint.mjs` 
 
 ### Internal
 
-- `lib/`, `rules/`, `tests/`, `/opt/wirebuddy/app/static` (CSS tokens and JS parsed/loaded at runtime)
+- `lib/`, `rules/`, `tests/`, `app/static/` (CSS tokens and JS parsed/loaded at runtime)
 
 ### External
 

@@ -202,7 +202,7 @@
             if (auth?.mfa_required) {
                 if (typeof showMfaForm !== 'function') {
                     console.error('Login page: MFA required but MFA UI is unavailable');
-                    showError('Multi-factor authentication is required but unavailable. Please reload the page.');
+                    showError('Two-factor authentication (2FA) is required but unavailable. Please reload the page.');
                     return;
                 }
                 clearBusy(submitBtn, 'Sign In');

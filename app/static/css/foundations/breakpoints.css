@@ -17,7 +17,7 @@
 /* ============================================
  * Breakpoint Reference (via CSS custom properties)
  * Note: CSS custom properties can't be used in media queries,
- * but we document them here for JS access via DesignTokens.
+ * but we document them here as a reference.
  * ============================================ */
 
 :root {

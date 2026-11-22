@@ -6,17 +6,24 @@ Guide for setting up a local WireBuddy development environment.
 
 ### Required
 
-- **Python 3.13+**
+- **Python 3.14+**
 - **Git**
 - **pip and venv**
 
 ### System Dependencies
 
-=== "Ubuntu/Debian"
+=== "Ubuntu 26.04 / Debian testing"
+    `python3.14` is packaged on Ubuntu 26.04 and Debian testing/unstable. On older
+    releases (for example Debian 13 or Ubuntu 24.04), install
+    [uv](https://docs.astral.sh/uv/getting-started/installation/) and run
+    `uv python install 3.14`; it provides `python3.14` in `~/.local/bin`. Skip
+    `python3.14` and `python3.14-venv` in the package list below, and create the
+    virtual environment with `uv venv --python 3.14 .venv` instead of `python3.14 -m venv`.
+
     ```bash
     sudo apt update
     sudo apt install -y \
-      python3.13 python3.13-venv python3-pip \
+      python3.14 python3.14-venv python3-pip \
       wireguard-tools \
       unbound \
       conntrack \
@@ -27,7 +34,7 @@ Guide for setting up a local WireBuddy development environment.
 
 === "macOS"
     ```bash
-    brew install python@3.13 wireguard-tools unbound
+    brew install python@3.14 wireguard-tools unbound
     ```
 
 === "Arch Linux"
@@ -47,7 +54,7 @@ cd wirebuddy
 ### Create Virtual Environment
 
 ```bash
-python3.13 -m venv .venv
+python3.14 -m venv .venv
 source .venv/bin/activate
 ```
 
@@ -56,8 +63,12 @@ source .venv/bin/activate
 `pyproject.toml` is the single manifest: it holds the release version, the runtime
 dependencies, and the `dev` and `docs` extras.
 
+Six runtime dependencies are `gillbates-*` packages from the private
+`Gill-Bates/python-libraries` repository, pinned by git tag. Installing them needs git and
+read access to that repository, for example through `gh auth setup-git`.
+
 ```bash
-# Editable install with development dependencies (pytest, ruff)
+# Editable install with development dependencies (pytest, pytest-asyncio, pytest-cov, httpx2, questionary, ruff)
 pip install -e ".[dev]"
 ```
 
@@ -72,8 +83,8 @@ cp .env-example .env
 ### Edit .env
 
 ```bash
-# Required
-WIREBUDDY_SECRET_KEY=dev-secret-key-change-me
+# Required: at least 32 bytes, e.g. the output of `head -c 32 /dev/urandom | base64`
+WIREBUDDY_SECRET_KEY=<your-secret-key>
 
 # Development settings
 LOG_LEVEL=DEBUG
@@ -84,7 +95,7 @@ WIREBUDDY_DEV_RELOAD=true
 WIREBUDDY_DATA_DIR=./data_local
 
 # Optional bind overrides are available in Docker as WIREBUDDY_HOST and
-# WIREBUDDY_PORT. Local run.py reads host and port from the application DB.
+# WIREBUDDY_PORT. A local `python -m app.server` reads host and port from the application DB.
 ```
 
 ### System Configuration
@@ -103,20 +114,23 @@ sudo sysctl -w net.netfilter.nf_conntrack_acct=1
 WireBuddy automatically creates database on first run:
 
 ```bash
-python run.py
+python -m app.server
 ```
 
-This creates `data_local/wirebuddy.db` with schema and default admin user.
+This creates `data_local/wirebuddy.db` with the schema and a default `admin` user whose
+one-time password is printed to the console. WireBuddy refuses to start when the data
+directory or its `tsdb/` subdirectory is a symlink, or is group- or world-writable and
+cannot be restricted to `0700`.
 
 ## Running WireBuddy
 
 ### Development Server
 
 ```bash
-python run.py
+python -m app.server
 ```
 
-Hot reload is enabled by `WIREBUDDY_DEV_RELOAD=true` in `.env`.
+Hot reload is enabled by exporting `WIREBUDDY_DEV_RELOAD=true` (a local start does not read `.env`; load it with `set -a; source .env; set +a`).
 
 Access: `http://localhost:8000`
 
@@ -189,24 +203,23 @@ wirebuddy/
 ├── app/                    # Application code
 │   ├── __init__.py
 │   ├── main.py            # create_app() factory and lifespan
+│   ├── server.py          # Start path (HTTP or built-in HTTPS), also used by Docker
 │   ├── api/               # FastAPI routers, split by resource
 │   ├── db/                # sqlite_*.py data access, tsdb.py metrics store
 │   ├── dns/               # Unbound config, blocklists, query-log ingestion
 │   ├── node/              # Node-mode daemon, enrollment, metrics queue
 │   ├── tasks/             # Scheduled background jobs
-│   ├── middleware/        # CSRF and request middleware
-│   ├── speedtest/         # librespeed-cli integration
+│   ├── middleware/        # CSRF middleware
 │   ├── models/            # Pydantic models
 │   ├── utils/             # Utilities (crypto, vault, geoip, conntrack, ...)
 │   ├── static/            # CSS design system, vanilla JS
 │   └── templates/         # Jinja2 templates
-├── tests/                 # Flat pytest suite (test_*.py)
-├── tools/                 # UI linter and CI helpers
+├── tests/                 # Flat pytest suite (test_*.py), e2e/ browser drivers
+├── tools/                 # UI linter, Stylelint setup, CI helpers
 ├── docker/                # Dockerfile, entrypoint, compose files
-├── docs/                  # MkDocs documentation
+├── docs/                  # Zensical documentation sources
 ├── data/                  # Runtime data (gitignored)
 ├── pyproject.toml         # Project metadata, version, dependencies, dev/docs extras
-├── run.py                 # Entry point
 ├── README.md
 ├── LICENSE
 └── .gitignore
@@ -284,7 +297,7 @@ import pdb
 
 pdb.set_trace()
 
-# Or use breakpoint() (Python 3.7+)
+# Or use the built-in
 breakpoint()
 ```
 
@@ -322,7 +335,7 @@ applied in `app/utils/migration.py` against the `schema_version` table.
 
 ## Testing
 
-The suite is flat — `tests/test_*.py`, no `unit`/`integration`/`e2e` split. Select
+The pytest suite is flat — `tests/test_*.py`, no `unit`/`integration` split. Select
 by file or by name:
 
 ```bash
@@ -330,6 +343,13 @@ pytest                                  # everything
 pytest tests/test_login_lockout.py      # one file
 pytest -k lockout                       # by name
 pytest -x                               # stop on first failure
+```
+
+The browser-side formatting module `app/static/js/core/format.js` has Node tests in
+`tests/js/`, outside pytest (Node 24 needs the quoted glob):
+
+```bash
+node --test "tests/js/*.test.mjs"
 ```
 
 ### Test Coverage
@@ -359,12 +379,15 @@ and collaborators. See `tests/AGENTS.md` for the per-file map of what is covered
 
 ### CSS
 
-Located in `app/static/css/`:
+Located in `app/static/css/`. `base.html` loads the layers in this order, later
+layers overriding earlier ones:
 
-- `wb-ui-system.css` — design system entry point, with `foundations/`,
-  `components/`, `utilities/`, and `pages/` beneath it
-- `style.css` plus per-page sheets (`dashboard.css`, `peers.css`, `traffic.css`,
-  `dns.css`, `users.css`, `login.css`, `status.css`)
+- `core/` (design tokens), `foundations/`, `components/`, `utilities/`
+- `wb-ui-system.css` (central UI system) and `style.css` (app shell)
+- per-page sheets from `pages/`, which import the page rule bodies
+  (`dashboard.css`, `peers.css`, `traffic.css`, `dns.css`, `users.css`, `login.css`)
+
+`status.css` is linked directly by the public status pages.
 
 ### JavaScript
 
@@ -391,20 +414,37 @@ Jinja2 templates in `app/templates/`:
 
 Templates auto-reload on save (development mode).
 
+### UI Checks
+
+The regression suite `tests/layout/` runs in CI (job `layout`) and locally with a repository-local
+Playwright install; see "Browser regression suite" in the contributing guide. The exploratory drivers
+below run only locally against an isolated throwaway instance. With Playwright installed under
+`/opt/ux-test-tools`:
+
+```bash
+PLAYWRIGHT_DIR=/opt/ux-test-tools PYTHON=.venv/bin/python \
+  node tests/e2e/live_resize.mjs "$(mktemp -d /tmp/wb-ux-e2e.XXXXXX)"
+```
+
+The other drivers are `ui_lint_isolated.mjs` (full `tools/ui-lint` audit) and
+`ios_viewport_audit.mjs`; `PLAYWRIGHT_BROWSER` (`chromium`, `webkit`, `firefox`) and
+`COLOR_SCHEME` select the engine and scheme. See `tests/e2e/AGENTS.md` and
+`tools/ui-lint/AGENTS.md`. CSS lint is optional: `cd tools/stylelint && npm install && npm run lint`.
+
 ## Documentation
 
 ### Build Docs Locally
 
 ```bash
-# Install docs dependencies (the "docs" extra in pyproject.toml)
-pip install -e ".[docs]"
+# Install only the docs toolchain (the "docs" extra in pyproject.toml)
+pip install -r <(python3 tools/pyproject-deps.py docs)
 
-# The CI workflow publishes these two root files as documentation pages.
+# docs-build.yml publishes these two root files as documentation pages.
 cp CHANGELOG.md docs/changelog.md
 cp LICENSE docs/license.md
 
 # Serve docs
-mkdocs serve -f docs/mkdocs.yml
+zensical serve --config-file zensical.toml
 
 # Open http://127.0.0.1:8000
 ```
@@ -412,8 +452,8 @@ mkdocs serve -f docs/mkdocs.yml
 ### Add Documentation
 
 1. Create markdown file in `docs/`
-2. Add to `docs/mkdocs.yml` navigation
-3. Preview with `mkdocs serve -f docs/mkdocs.yml`
+2. Add it to the `nav` in the root `zensical.toml`
+3. Preview with `zensical serve --config-file zensical.toml`, then check it with `zensical build --config-file zensical.toml --strict --clean`
 4. Commit changes
 
 ## Building Docker Image
@@ -422,8 +462,13 @@ mkdocs serve -f docs/mkdocs.yml
 
 The Dockerfile lives in `docker/` but its build context is the repository root:
 
+The build reads the `gillbates-*` packages with a GitHub token for `Gill-Bates/python-libraries`,
+passed as the BuildKit secret `python_libraries_token`; it stays out of the image layers:
+
 ```bash
-docker build -t wirebuddy:dev -f docker/Dockerfile .
+export PYTHON_LIBRARIES_TOKEN="$(gh auth token)"  # or any token with read access
+docker build --secret id=python_libraries_token,env=PYTHON_LIBRARIES_TOKEN \
+  -t wirebuddy:dev -f docker/Dockerfile .
 ```
 
 To reproduce the CI lint gate without a full build:
@@ -438,6 +483,7 @@ bash -n docker/entrypoint.sh
 ```bash
 docker buildx build \
   --platform linux/amd64,linux/arm64 \
+  --secret id=python_libraries_token,env=PYTHON_LIBRARIES_TOKEN \
   -t wirebuddy:dev -f docker/Dockerfile .
 ```
 
@@ -448,7 +494,7 @@ docker run -d \
   --name wirebuddy-dev \
   --network host \
   --cap-add NET_ADMIN \
-  -e WIREBUDDY_SECRET_KEY=dev-key \
+  -e WIREBUDDY_SECRET_KEY="<your-secret-key>" \
   -v $(pwd)/data:/app/data \
   wirebuddy:dev
 ```

@@ -3,7 +3,7 @@
 // Copyright (C) 2026 Gill-Bates http://github.com/Gill-Bates
 //
 
-export { RUNTIME_VERSION, RUNTIME_PROFILES, listRuntimeProfiles, resolveRuntimeProfile, whyWasThisProfileChosen, buildRunPaths, createRuntimeContext, getBaseContextOptions, getAuthenticatedContextOptions, getLoginFailureContextOptions } from './runtime-context.mjs';
+export { RUNTIME_VERSION, RUNTIME_PROFILES, listRuntimeProfiles, resolveRuntimeProfile, whyWasThisProfileChosen, buildRunPaths, resetScreenshotDir, SCREENSHOT_DIR_MARKER, createRuntimeContext, getBaseContextOptions, getAuthenticatedContextOptions, getLoginFailureContextOptions } from './runtime-context.mjs';
 export { createRuntimeTelemetry, buildRuntimeAnalytics } from './runtime-telemetry.mjs';
 export { createRuntimeScheduler } from './runtime-scheduler.mjs';
 export { createRuntimeStateStore } from './runtime-state-store.mjs';

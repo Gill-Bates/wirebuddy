@@ -33,7 +33,7 @@ function sortRuleEntries(left, right) {
 }
 
 function isCompatibleWithContext(ruleMeta, context) {
-    const { browser, device, environment } = context;
+    const { browser, device, environment, scope } = context;
 
     if (browser && ruleMeta.browsers.length && !ruleMeta.browsers.includes(browser)) {
         return false;
@@ -42,6 +42,13 @@ function isCompatibleWithContext(ruleMeta, context) {
         return false;
     }
     if (environment && ruleMeta.environments.length && !ruleMeta.environments.includes(environment)) {
+        return false;
+    }
+
+    // The scope is the audited view area (dashboard, about, ...); 'any' or an
+    // empty list means the rule applies to every view.
+    const scopes = ruleMeta.scopes || [];
+    if (scope && scopes.length && !scopes.includes('any') && !scopes.includes(scope)) {
         return false;
     }
 
@@ -152,7 +159,9 @@ function buildBatches(executableRules) {
     const plannedRuleIds = batches.flat().map((rule) => rule.id);
     const missing = [...remaining.keys()].filter((ruleId) => !plannedRuleIds.includes(ruleId));
     if (missing.length) {
-        batches.push(missing.map((ruleId) => remaining.get(ruleId)).filter(Boolean));
+        // Leftovers sit on or behind a dependency cycle (self-dependency included);
+        // running them anyway would ignore the declared order.
+        throw new Error(`Rule dependency cycle detected; cannot schedule: ${missing.join(', ')}`);
     }
 
     return batches;

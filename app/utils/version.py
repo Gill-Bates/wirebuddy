@@ -10,13 +10,14 @@ from __future__ import annotations
 
 import json
 import logging
-import re
 import threading
 import time
 import tomllib
 from importlib import metadata
 from pathlib import Path
 from typing import TypedDict
+
+from gillbates_logging import parse_version
 
 _log = logging.getLogger(__name__)
 _TIMEOUT = 10.0  # Hard ceiling for DNS + connect + read
@@ -123,34 +124,11 @@ class UpdateInfo(TypedDict):
 	error: str | None
 
 
-def _parse_version(version_str: str) -> tuple[int, ...]:
-	"""Parse version string to tuple of integers for comparison.
-
-	Handles formats like '1.2.3', 'v1.2.3', '1.2.3-beta', etc.
-	"""
-	if not version_str:
-		return (0,)
-	# Remove 'v' prefix if present
-	clean = version_str.lstrip("v").strip()
-	# Extract numeric parts
-	match = re.match(r"^(\d+(?:\.\d+)*)", clean)
-	if not match:
-		return (0,)
-	parts = match.group(1).split(".")
-	# Pad to a fixed width so '1.2' and '1.2.0' compare equal instead of the
-	# shorter tuple sorting first.
-	numbers = [int(p) for p in parts][:3]
-	numbers += [0] * (3 - len(numbers))
-	return tuple(numbers)
-
-
 def _is_newer_version(current: str, latest: str) -> bool:
-	"""Check if latest version is newer than current."""
-	if current == "dev":
-		return False  # Dev versions don't need updates
-	current_parts = _parse_version(current)
-	latest_parts = _parse_version(latest)
-	return latest_parts > current_parts
+	"""Check if latest version is newer than current; an unparseable side never is."""
+	current_key = parse_version(current)
+	latest_key = parse_version(latest)
+	return current_key is not None and latest_key is not None and latest_key > current_key
 
 
 def check_for_updates(force: bool = False) -> UpdateInfo:

@@ -1,5 +1,5 @@
 <!-- Parent: ../AGENTS.md -->
-<!-- Generated: 2026-09-21 | Updated: 2026-09-21 -->
+<!-- Generated: 2026-09-21 | Updated: 2026-11-22 -->
 # entity-layout
 
 ## Purpose
@@ -14,17 +14,9 @@ Spec for mobile peer/node entity card layout.
 
 ## For AI Agents
 
-### Working In This Directory
-
-- No special constraints beyond the parent directory guidance.
-
 ### Testing Requirements
 
 - Run `cd tools/ui-lint && npx playwright test tests/entity-layout/`; requires installed Playwright browsers.
-
-### Common Patterns
-
-- No special constraints beyond the parent directory guidance.
 
 ## Dependencies
 

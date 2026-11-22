@@ -10,8 +10,11 @@ from __future__ import annotations
 
 import ipaddress
 import logging
+from collections.abc import Callable
 from ipaddress import IPv4Address, IPv4Network, IPv6Address, IPv6Network
 from typing import TYPE_CHECKING
+
+from .socket_peer import socket_peer_ip
 
 if TYPE_CHECKING:
 	from starlette.requests import Request
@@ -20,12 +23,37 @@ if TYPE_CHECKING:
 
 __all__ = [
 	"allowed_ips_with_dns_routes",
+	"is_unsafe_outbound_address",
 	"parse_ip",
 	"parse_ip_str",
 	"resolve_client_ip",
+	"walk_forwarded_chain",
 ]
 
 _log = logging.getLogger(__name__)
+
+
+_CGNAT_NETWORK = IPv4Network("100.64.0.0/10")
+
+
+def is_unsafe_outbound_address(addr: IPv4Address | IPv6Address, *, allow_cgnat: bool = False) -> bool:
+	"""True if ``addr`` must never be an outbound connection target (SSRF guard).
+
+	Python >= 3.13 judges IPv4-mapped IPv6 (::ffff:a.b.c.d) by the embedded
+	IPv4 address, so no manual unwrapping is needed for the stdlib classes;
+	shared address space (CGNAT, 100.64.0.0/10) is neither private nor global
+	there and is checked here, also in mapped form. ``allow_cgnat`` is for
+	callers that only build a URL and make no request (for example Tailscale).
+	NAT64 64:ff9b::/96 is already rejected as reserved by the stdlib.
+	"""
+	if addr.is_private or addr.is_loopback or addr.is_link_local or addr.is_reserved or addr.is_multicast or addr.is_unspecified:
+		return True
+	if allow_cgnat:
+		return False
+	embedded = addr.ipv4_mapped if isinstance(addr, IPv6Address) else addr
+	return embedded is not None and embedded in _CGNAT_NETWORK
+
+
 _MAX_DNS_SERVERS_FOR_ROUTES = 16
 
 
@@ -94,17 +122,15 @@ def parse_ip_str(value: str | None) -> str | None:
 def resolve_client_ip(request: Request) -> str | None:
 	"""Return the client IP, trusting proxy headers only from a trusted socket peer.
 
-	SECURITY: Starts from the ORIGINAL socket address in ``request.scope["client"]``,
-	not from what uvicorn's proxy middleware rewrote, so a spoofed
-	``X-Forwarded-For`` from an untrusted peer cannot change the result. Returns
-	``None`` when no usable socket address exists; callers decide how to react.
+	SECURITY: Starts from the real TCP peer captured by ``SocketPeerMiddleware``
+	(``scope["wb.socket_peer"]``), not from ``scope["client"]``, which uvicorn's
+	proxy middleware rewrites from ``X-Forwarded-For``. Returns ``None`` when no
+	usable socket address exists (also when the app runs without the wrapper);
+	callers decide how to react.
 	"""
 	from .config import get_config
 
-	scope_client = request.scope.get("client")
-	if not scope_client or not scope_client[0]:
-		return None
-	socket_ip = parse_ip_str(scope_client[0])
+	socket_ip = socket_peer_ip(request.scope)
 	if not socket_ip:
 		return None
 
@@ -125,27 +151,32 @@ def resolve_client_ip(request: Request) -> str | None:
 	return socket_ip
 
 
-def _client_from_forwarded_chain(forwarded_for: str, config: Config) -> str | None:
-	"""Walk an ``X-Forwarded-For`` chain right-to-left against the trusted-proxy allowlist.
+def walk_forwarded_chain(
+	forwarded_for: str,
+	is_trusted: Callable[[IPv4Address | IPv6Address], bool],
+) -> IPv4Address | IPv6Address | None:
+	"""Walk an ``X-Forwarded-For`` chain right-to-left and return the first untrusted hop.
 
-	The rightmost entry is the hop that the trusted socket peer received the
-	request from. Trusting ``XFF[0]`` blindly lets any client spoof its address;
-	instead, skip entries whose sender is itself a trusted proxy and return the
-	first untrusted hop from the right as the real client. Returns ``None`` when
-	the whole chain is trusted or holds no parseable address.
+	Each hop was reported by the one to its right, so trusted hops are skipped
+	and the first untrusted one is the client; entries to its left are
+	attacker-controlled and never read. Returns ``None`` for an empty chain, a
+	fully trusted chain, or an unparseable hop (it breaks the chain of trust).
+	``is_trusted`` carries the caller's trust set.
 	"""
 	hops = [part.strip() for part in forwarded_for.split(",") if part.strip()]
-	# Right-to-left: each hop was reported by the one to its right. Keep walking
-	# while that reporter is a trusted proxy; the first untrusted reporter means
-	# the hop it reported is attacker-controlled and the loop stops at it.
 	for hop in reversed(hops):
-		candidate = parse_ip_str(hop)
+		candidate = parse_ip(hop)
 		if candidate is None:
-			# An unparseable entry breaks the chain of trust; stop walking.
 			return None
-		if not config.is_trusted_proxy_ip(candidate):
+		if not is_trusted(candidate):
 			return candidate
 	return None
+
+
+def _client_from_forwarded_chain(forwarded_for: str, config: Config) -> str | None:
+	"""Return the client from an ``X-Forwarded-For`` chain, skipping configured trusted proxies."""
+	client = walk_forwarded_chain(forwarded_for, lambda ip: config.is_trusted_proxy_ip(str(ip)))
+	return str(client) if client is not None else None
 
 
 def allowed_ips_with_dns_routes(

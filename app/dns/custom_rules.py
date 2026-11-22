@@ -273,6 +273,67 @@ _QUANTIFIED_ALTERNATION_RE = re.compile(r"\(" + _GROUP_BODY + r"\|" + _GROUP_BOD
 _NESTED_GROUP_RE = re.compile(r"\((?:[^()\\]|\\.)*\(")
 
 
+# Group-free patterns backtrack polynomially (/a+a+a+a+a+a+b/ is O(n^k) on a-heavy
+# names) or exponentially (/a?a?a?...aaa/), so the number of repetition operators
+# is capped as well. Domain-matching rules need only a handful.
+_MAX_UNBOUNDED_QUANTIFIERS = 3
+_MAX_QUANTIFIERS = 8
+_BRACE_QUANTIFIER_RE = re.compile(r"\{(\d+)(?:(,)(\d*))?\}")
+# A bounded upper limit above this counts as unbounded for the cap.
+_BRACE_UNBOUNDED_FROM = 8
+
+
+def _count_regex_quantifiers(pattern: str) -> tuple[int, int]:
+	"""Return ``(unbounded, total)`` repetition operators outside classes/escapes."""
+	unbounded = total = 0
+	i = 0
+	n = len(pattern)
+	in_class = False
+	prev_quantifier = False
+	while i < n:
+		ch = pattern[i]
+		if ch == "\\":
+			i += 2
+			prev_quantifier = False
+			continue
+		if in_class:
+			if ch == "]":
+				in_class = False
+			i += 1
+			continue
+		if ch == "[":
+			in_class = True
+			i += 1
+			prev_quantifier = False
+			continue
+		if ch in "+*?":
+			# "(?:" opens a group; "+?"/"*?"/"??"/"++" are lazy/possessive suffixes.
+			is_group_flag = ch == "?" and i > 0 and pattern[i - 1] == "("
+			if not is_group_flag and not prev_quantifier:
+				total += 1
+				if ch != "?":
+					unbounded += 1
+				prev_quantifier = True
+				i += 1
+				continue
+			prev_quantifier = False
+			i += 1
+			continue
+		if ch == "{":
+			m = _BRACE_QUANTIFIER_RE.match(pattern, i)
+			if m is not None and not prev_quantifier:
+				total += 1
+				upper = m.group(3)
+				if (m.group(2) and (not upper or int(upper) >= _BRACE_UNBOUNDED_FROM)) or (not m.group(2) and int(m.group(1)) >= _BRACE_UNBOUNDED_FROM):
+					unbounded += 1
+				prev_quantifier = True
+				i = m.end()
+				continue
+		prev_quantifier = False
+		i += 1
+	return unbounded, total
+
+
 def _regex_structure_is_unsafe(pattern: str) -> str | None:
 	"""Return a rejection reason when *pattern* permits catastrophic backtracking.
 
@@ -286,6 +347,9 @@ def _regex_structure_is_unsafe(pattern: str) -> str | None:
 		return "Potentially unsafe regex (nested quantifiers)"
 	if _QUANTIFIED_ALTERNATION_RE.search(pattern):
 		return "Potentially unsafe regex (quantified alternation)"
+	unbounded, total = _count_regex_quantifiers(pattern)
+	if unbounded > _MAX_UNBOUNDED_QUANTIFIERS or total > _MAX_QUANTIFIERS:
+		return "Potentially unsafe regex (too many repetition operators)"
 	return None
 
 
@@ -349,7 +413,6 @@ def _validate_domain_pattern(pattern: str, is_wildcard: bool) -> str | None:
 	if not pattern:
 		return "Empty domain pattern"
 
-	# Check for consecutive dots
 	if ".." in pattern:
 		return "Invalid domain: consecutive dots"
 
@@ -359,7 +422,6 @@ def _validate_domain_pattern(pattern: str, is_wildcard: bool) -> str | None:
 
 	labels = pattern.split(".")
 
-	# Check each label
 	for label in labels:
 		if not label:
 			return "Invalid domain: empty label"
@@ -368,7 +430,6 @@ def _validate_domain_pattern(pattern: str, is_wildcard: bool) -> str | None:
 
 		# For wildcard patterns, allow * in labels
 		if is_wildcard and "*" in label:
-			# Remove wildcards for basic validation
 			test_label = label.replace("*", "a")
 			if not _VALID_LABEL_RE.fullmatch(test_label):
 				return f"Invalid wildcard label: {label!r}"

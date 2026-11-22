@@ -17,30 +17,6 @@
     const SPEEDTEST_STATUS_POLL_MS = 5000;
     const HOVER_MEDIA = window.matchMedia('(hover: hover) and (pointer: fine)');
 
-    // Flag icons base URL - validated to ensure safe origins only
-    const DEFAULT_FLAG_ICON_BASE = 'https://cdn.jsdelivr.net/npm/flag-icons@7.3.2/flags/4x3';
-    const ALLOWED_FLAG_ORIGINS = new Set(['cdn.jsdelivr.net', 'unpkg.com', 'cdnjs.cloudflare.com']);
-
-    function safeFlagBaseUrl(raw) {
-        try {
-            const url = new URL(String(raw || DEFAULT_FLAG_ICON_BASE));
-            // Allow same-origin paths
-            if (url.origin === window.location.origin) {
-                return url.pathname.replace(/\/+$/, '');
-            }
-            // Allow known CDNs with HTTPS only
-            if (url.protocol === 'https:' && ALLOWED_FLAG_ORIGINS.has(url.hostname)) {
-                return url.href.replace(/\/+$/, '');
-            }
-            return DEFAULT_FLAG_ICON_BASE;
-        } catch {
-            return DEFAULT_FLAG_ICON_BASE;
-        }
-    }
-
-    const FLAG_ICON_BASE_URL = safeFlagBaseUrl(
-        document.getElementById('nodesPageRoot')?.dataset.flagIconBaseUrl,
-    );
 
     let pollTimer = null;
     let speedtestStatusTimer = null;
@@ -83,16 +59,6 @@
             console.error(`[nodes] Required global "${dependency}" is not defined. Page functionality disabled.`);
             return;
         }
-    }
-
-    // Local bandwidth formatting function (mirrors WBShared.formatBandwidthMetric)
-    function formatBandwidthMbit(valueMbit, gbitDigits = 1, mbitDigits = gbitDigits) {
-        const numericValue = Number(valueMbit);
-        if (!Number.isFinite(numericValue)) return '–';
-        const isGbit = numericValue >= 1000;
-        const scaled = isGbit ? numericValue / 1000 : numericValue;
-        const digits = Math.max(Number(isGbit ? gbitDigits : mbitDigits) || 0, 0);
-        return `${scaled.toFixed(digits)} ${isGbit ? 'Gbit/s' : 'Mbit/s'}`;
     }
 
     const HOSTNAME_LABEL_RE = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?$/;
@@ -456,7 +422,7 @@
         img.height = 12;
         img.loading = 'lazy';
         img.decoding = 'async';
-        img.src = `${FLAG_ICON_BASE_URL}/${code}.svg`;
+        img.src = window.WB.flags.url(code);
         img.addEventListener('error', () => img.remove(), { once: true });
         return img;
     }
@@ -703,7 +669,7 @@
             dl.className = 'badge bg-secondary';
             dl.setAttribute('title', 'Download');
             dl.setAttribute('data-bs-toggle', 'tooltip');
-            dl.textContent = `↓ ${formatBandwidthMbit(speedtest.download_mbit, 1, 1)}`;
+            dl.textContent = `↓ ${window.WBFormat.bandwidth(speedtest.download_mbit, 1)}`;
             wrap.appendChild(dl);
         }
 
@@ -712,7 +678,7 @@
             ul.className = 'badge bg-secondary';
             ul.setAttribute('title', 'Upload');
             ul.setAttribute('data-bs-toggle', 'tooltip');
-            ul.textContent = `↑ ${formatBandwidthMbit(speedtest.upload_mbit, 1, 1)}`;
+            ul.textContent = `↑ ${window.WBFormat.bandwidth(speedtest.upload_mbit, 1)}`;
             wrap.appendChild(ul);
         }
 
@@ -1010,7 +976,7 @@
         // Peers cell
         const tdPeers = document.createElement('td');
         tdPeers.setAttribute('data-label', 'Peers');
-        tdPeers.textContent = node.peer_count ?? 0;
+        tdPeers.textContent = window.WBFormat.number(node.peer_count ?? 0);
 
         // Speedtest cell
         const tdSpeedtest = document.createElement('td');

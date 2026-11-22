@@ -24,21 +24,31 @@ Important:
 
 ## How to Obtain an Auth Token
 
-Use the normal login endpoint and capture the resulting session token from your
-client flow.
+Send the credentials as JSON to the login endpoint. On success, the response
+returns the token in `data.token` (with `data.expires_at`) and also sets the
+`auth_token` cookie.
 
-```text
-POST /api/login
+```bash
+curl -s -X POST https://vpn.example.com/api/login \
+  -H "Content-Type: application/json" \
+  -d '{"username": "YOUR_USERNAME", "password": "YOUR_PASSWORD"}'
 ```
 
-For MFA-enabled users, complete the MFA verification step:
+For users with TOTP enabled, the login response contains `mfa_required: true`
+and an `mfa_token` instead of a session token. Complete the login with the
+same `username`, that `mfa_token` and a TOTP or recovery `code`:
 
 ```text
 POST /api/mfa/verify
 ```
 
 Then send requests with either cookie auth (browser-like clients) or Bearer
-header auth.
+header auth. Cookie sessions are extended on activity (up to 24 hours);
+Bearer requests do not extend the session, so a token used only as a Bearer
+header expires one hour after login.
+
+When the built-in HTTPS listener is enabled or `WIREBUDDY_REQUIRE_HTTPS_AUTH`
+is set, login over plain HTTP is rejected with `400`, except from loopback.
 
 ## Node Sync Authentication
 
@@ -49,9 +59,12 @@ node authentication:
 - `POST /api/nodes/enroll` is authenticated by a signed enrollment token
   and the node's self-signed certificate.
 - All later sync requests require `Authorization: Bearer <node_api_secret>`.
+- When the built-in HTTPS listener is enabled or `WIREBUDDY_REQUIRE_HTTPS_AUTH`
+  is set, enrollment and all later sync requests over plain HTTP are rejected
+  with `400`, except from loopback.
 - The `X-Client-Cert-Fingerprint` header is only evaluated when it comes from a
-  proxy listed in `WIREBUDDY_TRUSTED_PROXIES` (no proxy is trusted by default
-  for this header). Then it must match the fingerprint stored at enrollment;
+  proxy listed in `WIREBUDDY_MTLS_PROXIES` (no proxy is trusted by default
+  for this header, and `WIREBUDDY_TRUSTED_PROXIES` does not count). Then it must match the fingerprint stored at enrollment;
   otherwise it is ignored and the Bearer secret is the only credential.
 
 This is separate from user session auth.
@@ -73,9 +86,16 @@ Typical causes:
 - Authenticated but missing admin privileges
 - Account disabled
 
+### 428 Precondition Required
+
+The account must change its password first (for example after an admin reset).
+Only the password change and logout endpoints stay reachable.
+
 ### 429 Too Many Requests
 
-Rate-limited request. Respect Retry-After when provided.
+Rate-limited request or login lockout. Respect Retry-After when provided.
+`POST /api/wireguard/speedtest/run` also returns `429` during the 30-second
+cooldown after a successful speed test, and `409` while a test is running.
 
 ## Security Recommendations
 

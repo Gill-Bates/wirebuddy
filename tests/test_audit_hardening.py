@@ -142,6 +142,41 @@ def test_acme_requires_configured_https_origin(tmp_path: Path, monkeypatch: pyte
 		build_acme_http_app(tmp_path, 443)
 
 
+_ACME_TOKEN_CASES = [
+	("a", True),
+	("A-z_0" * 51 + "x", True),  # 256 characters
+	("a" * 257, False),
+	("", False),
+	("abc.def", False),
+	("abc/def", False),
+	("abc def", False),
+	("abc\n", False),
+]
+
+
+@pytest.mark.parametrize(("token", "valid"), _ACME_TOKEN_CASES)
+def test_acme_challenge_routes_accept_the_same_tokens(token: str, valid: bool, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+	from fastapi import HTTPException
+
+	from app.api import acme, frontend_pages
+
+	monkeypatch.setattr(acme, "get_challenge_response", lambda tok, certs_dir=None: "key-auth")
+	monkeypatch.setattr(frontend_pages, "get_challenge_response", lambda tok, certs_dir=None: "key-auth")
+	monkeypatch.setattr(frontend_pages, "get_certs_dir", lambda config: tmp_path)
+	monkeypatch.setattr(frontend_pages, "get_config", object)
+
+	page = frontend_pages.acme_challenge(token)
+	try:
+		api = asyncio.run(acme.serve_challenge(token, tmp_path))
+		api_status = api.status_code
+	except HTTPException as exc:
+		api_status = exc.status_code
+
+	expected = 200 if valid else 404
+	assert page.status_code == expected
+	assert api_status == expected
+
+
 def test_conntrack_sampler_leadership_is_exclusive(tmp_path: Path):
 	release_sampler_leadership()
 	try:

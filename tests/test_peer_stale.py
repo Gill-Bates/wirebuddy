@@ -4,14 +4,12 @@
 # Copyright (C) 2026 Gill-Bates http://github.com/Gill-Bates
 #
 
-# SPDX-License-Identifier: MIT
-#
-
 """Stale peer marker: calendar-month cutoff, persisted threshold, derived-only state."""
 
 from __future__ import annotations
 
 import asyncio
+import time
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -21,7 +19,7 @@ from pydantic import ValidationError
 
 from app.api import wireguard_settings as ws
 from app.api.auth import require_admin
-from app.db.sqlite_peers import update_peers_last_seen_batch
+from app.db.sqlite_peers import MAX_HANDSHAKE_SKEW_S, iter_peer_address_ips, update_peers_last_seen_batch
 from app.db.sqlite_settings import DEFAULT_PEER_STALE_MONTHS, get_peer_stale_months, get_setting, set_setting
 from app.utils.time import is_peer_stale, subtract_months
 
@@ -163,3 +161,73 @@ def test_ui_references_server_flag_only():
 	peers_js = (_ROOT / "app/static/js/peers.js").read_text(encoding="utf-8")
 	assert "is_stale" in peers_html and "peer-stale-badge" in peers_html
 	assert "is_stale" in peers_js
+
+
+def _seed_peer(conn, *, hs=None, ip=None):
+	conn.execute(
+		"INSERT INTO peers (name, public_key, private_key, allowed_ips, interface, created_at, updated_at, last_handshake_at, last_client_ip) "
+		"VALUES ('p', 'PUB', 'PRIV', '10.0.0.2/32', 'wg0', 'x', 'x', ?, ?)",
+		(hs, ip),
+	)
+	conn.commit()
+
+
+def _seen(conn):
+	row = conn.execute("SELECT last_handshake_at, last_client_ip FROM peers WHERE public_key='PUB'").fetchone()
+	return row["last_handshake_at"], row["last_client_ip"]
+
+
+def test_last_seen_accepts_past_present_and_small_clock_skew(threadsafe_conn):
+	_seed_peer(threadsafe_conn)
+	now = int(time.time())
+	for hs in (now - 3600, now, now + MAX_HANDSHAKE_SKEW_S - 10):
+		update_peers_last_seen_batch(threadsafe_conn, [("1.2.3.4", hs, "PUB")])
+		assert _seen(threadsafe_conn) == (hs, "1.2.3.4")
+
+
+def test_last_seen_skips_far_future_value_but_keeps_rest_of_batch(threadsafe_conn):
+	_seed_peer(threadsafe_conn, hs=1_700_000_000, ip="9.9.9.9")
+	threadsafe_conn.execute(
+		"INSERT INTO peers (name, public_key, private_key, allowed_ips, interface, created_at, updated_at) "
+		"VALUES ('q', 'PUB2', 'PRIV', '10.0.0.3/32', 'wg0', 'x', 'x')"
+	)
+	now = int(time.time())
+	update_peers_last_seen_batch(threadsafe_conn, [("6.6.6.6", now + 10 * 86400, "PUB"), ("5.5.5.5", now - 5, "PUB2")])
+	assert _seen(threadsafe_conn) == (1_700_000_000, "9.9.9.9")
+	row = threadsafe_conn.execute("SELECT last_handshake_at, last_client_ip FROM peers WHERE public_key='PUB2'").fetchone()
+	assert (row[0], row[1]) == (now - 5, "5.5.5.5")
+
+
+def test_last_seen_repairs_stored_future_value(threadsafe_conn):
+	now = int(time.time())
+	_seed_peer(threadsafe_conn, hs=now + 10 * 86400, ip="6.6.6.6")
+	update_peers_last_seen_batch(threadsafe_conn, [("1.2.3.4", now - 5, "PUB")])
+	assert _seen(threadsafe_conn) == (now - 5, "1.2.3.4")
+
+
+def test_last_seen_equal_timestamp_keeps_stored_ip_but_fills_empty_ip(threadsafe_conn):
+	now = int(time.time()) - 100
+	_seed_peer(threadsafe_conn, hs=now, ip="1.1.1.1")
+	update_peers_last_seen_batch(threadsafe_conn, [("2.2.2.2", now, "PUB")])
+	assert _seen(threadsafe_conn) == (now, "1.1.1.1")
+	update_peers_last_seen_batch(threadsafe_conn, [("3.3.3.3", now - 50, "PUB")])
+	assert _seen(threadsafe_conn) == (now, "1.1.1.1")
+	update_peers_last_seen_batch(threadsafe_conn, [("4.4.4.4", now + 1, "PUB")])
+	assert _seen(threadsafe_conn) == (now + 1, "4.4.4.4")
+	threadsafe_conn.execute("UPDATE peers SET last_client_ip = NULL")
+	update_peers_last_seen_batch(threadsafe_conn, [("5.5.5.5", now + 1, "PUB")])
+	assert _seen(threadsafe_conn) == (now + 1, "5.5.5.5")
+
+
+@pytest.mark.parametrize(
+	("value", "expected"),
+	[
+		(None, []),
+		("", []),
+		("10.0.0.2/32", ["10.0.0.2"]),
+		("10.0.0.2/32, fd00::2/128", ["10.0.0.2", "fd00::2"]),
+		("bogus, ,10.0.0.3/32,", ["10.0.0.3"]),
+	],
+)
+def test_iter_peer_address_ips(value, expected):
+	assert [str(ip) for ip in iter_peer_address_ips(value)] == expected

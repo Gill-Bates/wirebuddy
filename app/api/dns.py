@@ -71,9 +71,9 @@ from ..dns.ingestion_writer import DNS_METRIC_BLOCKED, DNS_METRIC_TOTAL, DNS_STA
 from ..utils.async_utils import spawn_tracked_task
 from ..utils.config import get_config
 from ..utils.deps import get_conn, get_dns_dir, get_tsdb_dir
-from ..utils.network import parse_ip_str
+from ..utils.network import is_unsafe_outbound_address, parse_ip_str
 from ..utils.rate_limit import RATE_LIMIT_HEAVY, rate_limit
-from ..utils.time import parse_utc
+from ..utils.time import parse_utc, to_utc_iso
 from .auth import get_current_user, require_admin
 from .response import OkResponse, ok_response
 from .wireguard_peers import regenerate_all_peer_tags
@@ -323,12 +323,12 @@ def _normalize_ip_literal(value: str) -> str:
 
 
 def _blocklist_mtime() -> str | None:
-	"""Return the ISO-8601 mtime of the blocklist file, or None."""
+	"""Return the blocklist file mtime as an ISO 8601 UTC instant (``...Z``), or None."""
 	try:
 		blocklist_path = unbound.get_blocklist_file()
 		if blocklist_path.exists():
 			ts = blocklist_path.stat().st_mtime
-			return datetime.fromtimestamp(ts, tz=UTC).isoformat()
+			return to_utc_iso(datetime.fromtimestamp(ts, tz=UTC))
 	except Exception:
 		_log.debug("Could not read blocklist mtime", exc_info=True)
 	return None
@@ -394,16 +394,16 @@ def _parse_tsdb_timestamp(raw: str) -> datetime | None:
 	try:
 		dt = parse_utc(value)
 		return dt.astimezone(UTC) if dt else None
-	except (ValueError, TypeError):
+	except ValueError, TypeError:
 		return None
 
 
 def _format_tsdb_timestamp(raw: str) -> str:
-	"""Format TSDB timestamp for UI table display."""
+	"""Format a TSDB timestamp as an ISO 8601 UTC instant (``...Z``, whole seconds) or ``""``."""
 	dt = _parse_tsdb_timestamp(raw)
 	if dt is None:
 		return ""
-	return dt.replace(microsecond=0).strftime("%Y-%m-%d %H:%M:%S")
+	return dt.replace(microsecond=0).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def _regenerate_peer_tags_safe(db_path: str | Path) -> None:
@@ -427,7 +427,7 @@ def _collect_listen_addresses(
 	for iface in interfaces:
 		try:
 			addr4 = iface["address"]
-		except (KeyError, TypeError, IndexError):
+		except KeyError, TypeError, IndexError:
 			addr4 = getattr(iface, "address", None)
 		if addr4:
 			ip4 = str(addr4).split("/")[0]
@@ -1838,13 +1838,8 @@ def _test_dot_server(addr: str, timeout: float = 5.0) -> dict:
 		result["error"] = f"Invalid IP address: {ip_part}"
 		return result
 
-	# Unwrap IPv4-mapped IPv6 to check the real address (SSRF protection)
-	# On Python < 3.11, ::ffff:127.0.0.1 reports is_loopback=False
-	check_ip = ip_obj
-	if isinstance(ip_obj, ipaddress.IPv6Address) and ip_obj.ipv4_mapped:
-		check_ip = ip_obj.ipv4_mapped
-
-	if check_ip.is_private or check_ip.is_loopback or check_ip.is_link_local or check_ip.is_reserved or check_ip.is_multicast or check_ip.is_unspecified:
+	# SSRF protection: ipaddress (>= 3.13) judges ::ffff:a.b.c.d by its embedded IPv4 address
+	if is_unsafe_outbound_address(ip_obj):
 		result["error"] = "Private/reserved addresses not allowed"
 		return result
 
@@ -1881,7 +1876,6 @@ def _test_dot_server(addr: str, timeout: float = 5.0) -> dict:
 	try:
 		start_time = time.monotonic()
 
-		# Create SSL context for DoT
 		context = ssl.create_default_context()
 		context.check_hostname = True
 		context.verify_mode = ssl.CERT_REQUIRED
@@ -1890,7 +1884,12 @@ def _test_dot_server(addr: str, timeout: float = 5.0) -> dict:
 			ssock.sendall(dns_message)
 
 			# Read response length (2 bytes)
-			length_data = ssock.recv(2)
+			length_data = b""
+			while len(length_data) < 2:
+				length_chunk = ssock.recv(2 - len(length_data))
+				if not length_chunk:
+					break
+				length_data += length_chunk
 			if len(length_data) < 2:
 				result["error"] = "No response from server"
 				return result
@@ -2071,6 +2070,12 @@ async def get_adblocker_status(
 	return ok_response(data=_get_adblocker_status_sync(conn, now))
 
 
+def _next_utc_midnight_epoch(now: int) -> int:
+	"""Epoch of the next 00:00 UTC after ``now``, at least 60 seconds ahead."""
+	tomorrow = (datetime.fromtimestamp(now, UTC) + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
+	return max(int(tomorrow.timestamp()), now + 60)
+
+
 @router.post("/adblocker/mode", response_model=OkResponse[dict[str, object]], dependencies=[Depends(rate_limit(RATE_LIMIT_HEAVY))])
 async def set_adblocker_mode(
 	payload: AdblockerModePayload,
@@ -2083,7 +2088,7 @@ async def set_adblocker_mode(
 	- enable: enable immediately, clear any timer
 	- disable: disable indefinitely, clear any timer
 	- disable_1h: disable for 1 hour (server-side timer)
-	- disable_today: disable until midnight local server time
+	- disable_today: disable until the next 00:00 UTC
 
 	Performance: DB changes and peer-tags are applied immediately, then
 	Unbound config reload happens in the background for fast response.
@@ -2112,16 +2117,7 @@ async def set_adblocker_mode(
 		)
 
 	# Timed disable modes
-	if mode == "disable_1h":
-		until = now + 3600
-	else:  # disable_today
-		# Compute start of next day in server local time (avoids microsecond truncation)
-		local_now = datetime.now().astimezone()
-		tomorrow = (local_now + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
-		until = int(tomorrow.timestamp())
-		# Ensure at least 60 seconds
-		if until - now < 60:
-			until = now + 60
+	until = now + 3600 if mode == "disable_1h" else _next_utc_midnight_epoch(now)  # else: disable_today
 
 	await _db_call(set_dns_blocklist_enabled, conn, False)
 	await _db_call(set_blocklist_disabled_until, conn, until)

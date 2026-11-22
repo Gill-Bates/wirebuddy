@@ -1,9 +1,9 @@
 <!-- Parent: ../AGENTS.md -->
-<!-- Generated: 2026-10-27 | Updated: 2026-10-27 -->
+<!-- Generated: 2026-10-27 | Updated: 2026-11-22 -->
 # e2e
 
 ## Purpose
-Browser E2E drivers for the WireBuddy UI, same conventions as rct-manager: one central toolset in `/opt/ux-test-tools` (playwright + @axe-core/playwright, no lockfile), every driver starts its own server on a free port with a throwaway data dir, and all artifacts go to the directory passed as `argv[2]`. Not part of pytest (`python_files = test_*.py` never matches `.mjs`), not run in CI.
+Browser E2E drivers for the WireBuddy UI: one central toolset in `/opt/ux-test-tools` (playwright + @axe-core/playwright, no lockfile), every driver starts its own server on a free port with a throwaway data dir, and all artifacts go to the directory passed as `argv[2]`. Not part of pytest (`python_files = test_*.py` never matches `.mjs`), not run in CI. The regression suite that CI runs is `tests/layout/` (see `../layout/AGENTS.md`); these drivers stay local exploration and audit tools, and `run_server.py` is shared by both.
 
 ## Key Files
 | File | Description |
@@ -20,7 +20,7 @@ Browser E2E drivers for the WireBuddy UI, same conventions as rct-manager: one c
 - `.mjs` files carry the `//` path/copyright header and use 4-space indentation like `tools/ui-lint`; `run_server.py` follows the Python rules (tabs, header block).
 - Run: `PLAYWRIGHT_DIR=/opt/ux-test-tools PYTHON=/opt/wirebuddy/.venv/bin/python PLAYWRIGHT_BROWSER=chromium COLOR_SCHEME=light node tests/e2e/live_resize.mjs "$(mktemp -d /tmp/wb-ux-e2e.XXXXXX)"`. Results are `PASS`/`FAIL` lines; the exit code is non-zero on any failure. Findings are real UI defects, not harness errors, unless a `driver ran to completion` check fails.
 - `PLAYWRIGHT_BROWSER=chromium|webkit|firefox` selects the engine; any other explicit value fails fast (exit 2, valid values listed). The legacy `BROWSER` is honoured only when it names an engine, because desktops often export `BROWSER=xdg-open`; prefer `PLAYWRIGHT_BROWSER`. Pass an artifact dir outside the repo: `OUT` also receives the throwaway `data-*` dirs.
-- Contrast: `ui-lint` already measures contrast (rules plus axe `color-contrast`), so rct-manager's `contrast_audit.mjs` and `axe_scan.mjs` are deliberately not ported.
+- Contrast: `ui-lint` already measures contrast (rules plus axe `color-contrast`), so separate contrast or axe drivers are deliberately not added here.
 - Never point a driver at `data/`; always artifact dirs below the OS temp dir, never inside the repo.
 
 ### Testing Requirements

@@ -30,28 +30,6 @@
         'y1': 'last year',
     });
 
-    // Flag icons base URL - validated to ensure safe origins only
-    const DEFAULT_FLAG_ICON_BASE = 'https://cdn.jsdelivr.net/npm/flag-icons@7.3.2/flags/4x3';
-    const ALLOWED_FLAG_ORIGINS = new Set(['cdn.jsdelivr.net', 'unpkg.com', 'cdnjs.cloudflare.com']);
-
-    function safeFlagBaseUrl(raw) {
-        try {
-            const url = new URL(String(raw || DEFAULT_FLAG_ICON_BASE));
-            // Allow same-origin paths
-            if (url.origin === window.location.origin) {
-                return url.pathname.replace(/\/+$/, '');
-            }
-            // Allow known CDNs with HTTPS only
-            if (url.protocol === 'https:' && ALLOWED_FLAG_ORIGINS.has(url.hostname)) {
-                return url.href.replace(/\/+$/, '');
-            }
-            return DEFAULT_FLAG_ICON_BASE;
-        } catch {
-            return DEFAULT_FLAG_ICON_BASE;
-        }
-    }
-
-    const FLAG_ICON_BASE_URL = safeFlagBaseUrl(null);
 
     // Responsive data point settings
     const MIN_POINTS = 10;
@@ -366,20 +344,9 @@
      * @returns {string}
      */
     function shortLabel(isoStr, hours) {
-        const d = new Date(isoStr);
-        if (isNaN(d.getTime())) return '—';
-        try {
-            const h = Number(hours);
-            if (h > 168) {
-                return d.toLocaleDateString([], { month: 'short', day: '2-digit' });
-            }
-            if (h > 24) {
-                return d.toLocaleString([], { month: 'short', day: '2-digit', hour: '2-digit', minute: '2-digit' });
-            }
-            return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-        } catch {
-            return d.toISOString().slice(0, 16).replace('T', ' ');
-        }
+        const h = Number(hours);
+        const kind = h > 168 ? 'date-short' : (h > 24 ? 'datetime-short' : 'time');
+        return window.WBFormat.format(isoStr, kind, h > 168 ? { day: '2-digit' } : undefined) || '—';
     }
 
     function getChartColors() {
@@ -498,14 +465,14 @@
 
     function buildCountryRenderKey(items, unit, peerFilter) {
         const hash = items.map((country, index) =>
-            `${country.code || country.name || index}:${Number(country.total || 0).toFixed(2)}`
+            `${country.code || country.name || index}:${Math.round(Number(country.total || 0) * 100)}`
         ).join(';');
         return `${unit}|${peerFilter}|${items.length}|${hash}`;
     }
 
     function buildAsnRenderKey(items, unit, peerFilter) {
         const hash = items.map((asn, index) =>
-            `${asn.asn || asn.name || index}:${Number(asn.total || 0).toFixed(2)}`
+            `${asn.asn || asn.name || index}:${Math.round(Number(asn.total || 0) * 100)}`
         ).join(';');
         return `${unit}|${peerFilter}|${items.length}|${hash}`;
     }
@@ -565,7 +532,7 @@
             flag.height = 18;
             flag.loading = 'lazy';
             flag.decoding = 'async';
-            flag.src = `${FLAG_ICON_BASE_URL}/${countryCode}.svg`;
+            flag.src = window.WB.flags.url(countryCode);
             flag.addEventListener('error', () => {
                 flag.remove();
                 const icon = document.createElement('span');
@@ -970,17 +937,6 @@
             trafficCombinedLoading.classList.add('d-none');
         }
 
-        // Check if logging is disabled
-        if (traffic.logging_disabled) {
-            destroyTrafficCharts();
-            trafficCombinedWrap.classList.add('d-none');
-            if (trafficCombinedLoading) trafficCombinedLoading.classList.add('d-none');
-            trafficEmptyState.classList.remove('d-none');
-            clearElement(trafficEmptyState);
-            trafficEmptyState.appendChild(chartEmptyState('Logging disabled. Enable logging in Settings → Logs to collect traffic data.'));
-            return;
-        }
-
         const peerFilter = trafficPeerFilter?.value ?? '';
         const hours = Number(traffic?.hours ?? 24);
         if (!cachedTrafficLabels) {
@@ -1122,6 +1078,7 @@
             options: {
                 responsive: true,
                 maintainAspectRatio: false,
+                locale: window.WBFormat.resolved().locale,
                 interaction: { mode: 'index', intersect: false },
                 plugins: {
                     legend: {

@@ -23,9 +23,12 @@ export async function performLogin(page, { baseUrl, username, password, motionRe
     try {
         const outcome = await page.waitForFunction(
             () => {
-                const loginSucceeded = !window.location.pathname.includes('/login')
-                    || Boolean(document.getElementById('logoutBtn'));
-                if (loginSucceeded) {
+                // A forced password change (auth_base page, no navbar) is not a
+                // usable session; only the base layout's logout button proves one.
+                if (window.location.pathname.includes('/change-password')) {
+                    return 'password-change';
+                }
+                if (document.getElementById('logoutBtn')) {
                     return 'success';
                 }
 
@@ -56,9 +59,13 @@ export async function performLogin(page, { baseUrl, username, password, motionRe
 
                 return null;
             },
+            null,
             { timeout: 10000, polling: 100 },
         );
         const resolvedOutcome = await outcome.jsonValue();
+        if (resolvedOutcome === 'password-change') {
+            throw new Error('Login failed: the account must change its password first (seed the admin before the server starts)');
+        }
         if (resolvedOutcome === 'failure') {
             const loginFailure = await detectLoginFailure(page);
             throw new Error(`Login failed: ${loginFailure || 'Too many attempts. Please wait.'}`);

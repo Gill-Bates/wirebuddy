@@ -1,5 +1,5 @@
 <!-- Parent: ../AGENTS.md -->
-<!-- Generated: 2026-09-21 | Updated: 2026-09-21 -->
+<!-- Generated: 2026-09-21 | Updated: 2026-11-22 -->
 # component
 
 ## Purpose
@@ -15,17 +15,9 @@ Component-level rules.
 
 ## For AI Agents
 
-### Working In This Directory
-
-- No special constraints beyond the parent directory guidance.
-
 ### Testing Requirements
 
-- Covered by `tests/component/changelog-details.spec.js`, `tests/component/dashboard-light-surfaces.spec.js`. Run `cd tools/ui-lint && npx playwright test <spec>` (no playwright.config file; defaults apply).
-
-### Common Patterns
-
-- Header comment `// Rule: ...`; `meta` object + `registerRule`.
+- Covered by `tests/component/changelog-details.spec.js`, `tests/component/dashboard-light-surfaces.spec.js`. Run `cd tools/ui-lint && npx playwright test <spec>`.
 
 ## Dependencies
 
@@ -33,9 +25,5 @@ Component-level rules.
 
 - `../../lib/rule-registry.mjs`
 - `../manifest.mjs` (entry required)
-
-### External
-
-- None
 
 <!-- MANUAL: Any manually added notes below this line are preserved on regeneration -->

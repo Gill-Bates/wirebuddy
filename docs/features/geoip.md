@@ -12,12 +12,19 @@ addresses and to aggregate WireGuard destination traffic by country and ASN.
 The Docker image does not embed the databases. WireBuddy downloads and validates
 both databases when the scheduled GeoIP task first runs after startup and checks
 again weekly. Downloads come from the P3TERX GeoLite.mmdb mirror by default and
-do not require a MaxMind license key.
+do not require a MaxMind license key. Lookups use a newly downloaded or updated
+database without a restart.
 
 | Database | Purpose | Container path |
 |---|---|---|
 | `GeoLite2-City.mmdb` | Country, city, coordinates | `/app/data/geolite2/GeoLite2-City.mmdb` |
 | `GeoLite2-ASN.mmdb` | ASN and organization | `/app/data/geolite2/GeoLite2-ASN.mmdb` |
+
+The directory is part of the persistent data volume and survives container
+restarts and image updates. The image and the entrypoint create it
+automatically in master and node mode; existing files are never replaced or
+removed, and a symlinked `geolite2` directory is left untouched. A restart does
+not trigger a new download while the stored databases are valid and current.
 
 With the supplied Compose file, the host path is `docker/data/geolite2/`.
 Lookups happen locally. Only database downloads contact the configured download

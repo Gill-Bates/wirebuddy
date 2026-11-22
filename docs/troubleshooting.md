@@ -29,14 +29,15 @@ docker compose --env-file .env -f docker/docker-compose.yml logs --tail 200 wire
 Common causes are:
 
 - missing or shorter-than-required `WIREBUDDY_SECRET_KEY` in `.env`;
-- missing `/dev/net/tun` or WireGuard host support;
+- missing WireGuard support in the host kernel;
 - a process already listening on the GUI, WireGuard, or DNS port;
-- a read-only/unwritable `docker/data/` directory; or
+- a read-only/unwritable `docker/data/` directory, or a data or `tsdb/`
+  directory that is a symlink or stays group- or world-writable after WireBuddy
+  restricts it to `0700`; or
 - unsupported Docker/Compose versions.
 
-The container intentionally uses host networking, `/dev/net/tun`, and a
-capability set of `NET_ADMIN`, `NET_BIND_SERVICE`, `SETUID`, `SETGID`, `CHOWN`,
-and `DAC_OVERRIDE`. Dropping any of the last five leaves the web UI running but
+The container intentionally uses host networking and a capability set of `NET_ADMIN`, `NET_BIND_SERVICE`, `SETUID`, `SETGID`, `CHOWN`,
+`DAC_OVERRIDE`, and `KILL`. Dropping any of the last six leaves the web UI running but
 breaks DNS — see [DNS does not resolve or block](#dns-does-not-resolve-or-block).
 
 Its health check probes `/ready` on the scheme and port the container actually
@@ -71,8 +72,9 @@ setting is read at startup, so every change needs a restart.
 
 ### Browser warns the certificate is not trusted
 
-WireBuddy is serving the self-signed fallback, because no valid Let's Encrypt
-certificate exists for the configured Server FQDN. Check which one is active:
+WireBuddy is serving the self-signed fallback, because no Let's Encrypt
+certificate exists for the configured Server FQDN, or it is expired, not yet
+valid, or does not cover that host name. Check which one is active:
 
 ```bash
 echo | openssl s_client -connect 127.0.0.1:8000 2>/dev/null \
@@ -106,9 +108,10 @@ affected. Set `gui_acme_http_port` to `0` if another service owns port 80.
 
 ### Login is rejected with "requires HTTPS"
 
-Expected: with HTTPS enabled, logins and node enrollments over plain HTTP are
-refused so credentials are never sent in clear text. Reach the GUI over
-`https://`. Behind a reverse proxy that terminates TLS, leave this setting off
+Expected: with HTTPS enabled (or `WIREBUDDY_REQUIRE_HTTPS_AUTH` set), password
+logins, node enrollments and node authentication over plain HTTP are refused
+so credentials are never sent in clear text; loopback clients are exempt. Reach
+the GUI over `https://`. Behind a reverse proxy that terminates TLS, leave this setting off
 and let the proxy handle TLS.
 
 ### Node cannot enroll over HTTPS
@@ -186,6 +189,7 @@ Related failures from the same cause, visible in the container log:
 | `fatal error: unable to set group id of unbound` | `SETUID`, `SETGID` |
 | `Could not open logfile ...` (Unbound runs, query log stays empty) | `CHOWN` |
 | `can't bind socket` on port 53 | `NET_BIND_SERVICE` |
+| `SPLIT_DNS_RELOAD_FAILED ... Operation not permitted` or `DNS_STOP some unbound processes could not be killed` (Unbound starts, but cannot be reloaded or stopped) | `KILL` |
 
 Compare the running container against the shipped Compose file:
 
@@ -193,7 +197,7 @@ Compare the running container against the shipped Compose file:
 docker inspect wirebuddy --format '{{.HostConfig.CapAdd}}'
 ```
 
-It must list all six capabilities. Recreate the container after correcting them;
+It must list all seven capabilities. Recreate the container after correcting them;
 `docker compose restart` does not apply capability changes.
 
 ### `Port conflict: UDP <address>:53 is already in use`

@@ -5,6 +5,9 @@ services:
     restart: always
     stop_grace_period: 20s
     network_mode: host
+
+    init: true
+    pids_limit: 256
     cap_drop:
       - ALL
     cap_add:
@@ -13,10 +16,9 @@ services:
     environment:
       SERVER_MODE: node
       WIREBUDDY_ENROLLMENT_TOKEN: "${WIREBUDDY_ENROLLMENT_TOKEN:?Set WIREBUDDY_ENROLLMENT_TOKEN in .env}"
-      WIREBUDDY_ENROLLMENT_VERIFY_KEY: "${WIREBUDDY_ENROLLMENT_VERIFY_KEY:?Set WIREBUDDY_ENROLLMENT_VERIFY_KEY in .env}"
+      WIREBUDDY_ENROLLMENT_VERIFY_KEY: "${WIREBUDDY_ENROLLMENT_VERIFY_KEY:-}"
       WIREBUDDY_DATA_DIR: /app/data
       LOG_LEVEL: "${LOG_LEVEL:-INFO}"
-      TZ: "${TZ:-Etc/UTC}"
 
     logging:
       driver: json-file
@@ -26,9 +28,8 @@ services:
 
     security_opt:
       - no-new-privileges:true
-    devices:
-      - /dev/net/tun:/dev/net/tun
     volumes:
+      # Persistent data, including GeoLite2 databases in ./data/geolite2 (not tmpfs)
       - ./data:/app/data
 
     healthcheck:

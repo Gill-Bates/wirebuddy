@@ -2,7 +2,7 @@
 
 Authoritative route list generated from mounted FastAPI routers.
 
-- Generated: 2026-10-27
+- Generated: 2026-11-22
 - Total endpoints: 134
 
 ## Authentication Model
@@ -58,7 +58,7 @@ Authoritative route list generated from mounted FastAPI routers.
 | GET | `/api/passkeys/user/{user_id}` |
 | DELETE | `/api/passkeys/{passkey_id}` |
 
-### Wireguard
+### WireGuard
 
 | Method | Path |
 |---|---|
@@ -111,7 +111,7 @@ Authoritative route list generated from mounted FastAPI routers.
 | POST | `/api/wireguard/stats/tsdb/maintenance` |
 | PATCH | `/api/wireguard/stats/tsdb/retention` |
 
-### Dns
+### DNS
 
 | Method | Path |
 |---|---|
@@ -150,7 +150,7 @@ Authoritative route list generated from mounted FastAPI routers.
 | PATCH | `/api/backup/settings` |
 | POST | `/api/backup/validate` |
 
-### Acme
+### ACME
 
 | Method | Path |
 |---|---|
@@ -167,6 +167,8 @@ Authoritative route list generated from mounted FastAPI routers.
 | GET | `/api/nodes` |
 | POST | `/api/nodes` |
 | GET | `/api/nodes/config` |
+| GET | `/api/nodes/enrollment-key` |
+| POST | `/api/nodes/enrollment-key/rotate` |
 | POST | `/api/nodes/commands/{command_id}/ack` |
 | POST | `/api/nodes/enroll` |
 | GET | `/api/nodes/events` |

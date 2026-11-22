@@ -452,7 +452,7 @@ def get_node_last_metric_seq(conn: sqlite3.Connection, node_id: str) -> int | No
 		return None
 	try:
 		return int(value)
-	except (TypeError, ValueError):
+	except TypeError, ValueError:
 		_log.warning("Invalid last_metric_seq for node=%s: %r", node_id, value)
 		return None
 
@@ -582,7 +582,7 @@ def _parse_command_payload(raw: Any) -> dict[str, Any]:
 		return {}
 	try:
 		parsed = json.loads(str(raw))
-	except (TypeError, ValueError, json.JSONDecodeError):
+	except TypeError, ValueError, json.JSONDecodeError:
 		_log.warning("Invalid node command payload: %r", raw)
 		return {}
 	return parsed if isinstance(parsed, dict) else {}
@@ -821,7 +821,7 @@ def _build_interfaces_config(
 	interfaces_map = {row["name"]: row for row in list_interfaces(conn)}
 	tunnel_interface = tunnel_peer["interface"] if tunnel_peer else None
 
-	ni_rows = conn.execute("SELECT * FROM node_interfaces WHERE node_id = ?", (node_id,)).fetchall()
+	ni_rows = conn.execute("SELECT * FROM node_interfaces WHERE node_id = ? ORDER BY interface_name", (node_id,)).fetchall()
 	interfaces: list[dict[str, Any]] = []
 	for ni in ni_rows:
 		iface = interfaces_map.get(ni["interface_name"])
@@ -932,6 +932,19 @@ def _build_master_peer_config(conn: sqlite3.Connection, tunnel_peer: sqlite3.Row
 		"allowed_ips": allowed_ips,
 		"tunnel_address": tunnel_peer["peer_address"],
 	}
+
+
+def get_node_peer_public_keys(conn: sqlite3.Connection, node_id: str) -> set[str]:
+	"""Return public keys of peers a node may report on (assigned or roaming).
+
+	Disabled peers are included: a node can still report one until it has
+	pulled the config that removed it.
+	"""
+	rows = conn.execute(
+		"SELECT public_key FROM peers WHERE node_id = ? OR allow_all_nodes = 1",
+		(node_id,),
+	).fetchall()
+	return {str(row["public_key"]) for row in rows}
 
 
 def get_node_config(

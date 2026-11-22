@@ -4,9 +4,6 @@
 # Copyright (C) 2026 Gill-Bates http://github.com/Gill-Bates
 #
 
-# SPDX-License-Identifier: MIT
-#
-
 """Cancelled GeoIP lookups must not pin an IP in the in-flight dedup map.
 
 A cancellation during the threadpool lookup is a BaseException, not caught

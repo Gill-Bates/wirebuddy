@@ -2,200 +2,489 @@
 # .github/workflows/ci.yml
 # Copyright (C) 2026 Gill-Bates http://github.com/Gill-Bates
 #
-# The PR gate. docker-build.yml only runs on release tags and docs-build.yml is
-# filtered to docs/**, so before this workflow existed nothing stood between a
-# broken commit and main - a failure first surfaced during the release itself,
-# the one run where it is most expensive. Gates on pytest, the correctness half
-# of ruff, the container entrypoint and Dockerfile, and the single-manifest
-# invariant. Also callable (workflow_call) so docker-build.yml can gate a
-# release on the same checks for the tagged commit.
+# Purpose: push and PR gate (ruff, pytest, manifest invariants, container and
+#   workflow checks, source secret scan). docker-build.yml calls it as the
+#   release gate, so a release runs exactly the same checks on the tagged commit.
+# Related: docker-build.yml (release), docs-build.yml (Pages); .github/workflows/AGENTS.md.
 #
-
 name: CI
-
+run-name: ci-${{ github.run_number }}
 on:
   push:
     branches:
-      - main
+      - "**"
   pull_request:
     branches:
       - main
   workflow_dispatch:
-  # The release workflow calls this as its gate; the triggers above are
-  # unchanged, so the PR gate behaves exactly as before.
   workflow_call:
-
+    secrets:
+      # Read access to the private Gill-Bates/python-libraries repository
+      # (gillbates-* git dependencies in pyproject.toml).
+      RELEASE_TOKEN:
+        required: true
 permissions:
   contents: read
-
+# Only a pull request run is cancellable: a push run is a gate result, so a
+# newer push must not cancel it.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
-
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 jobs:
-  python:
-    name: Ruff + pytest
-    # Every job here names its image instead of following ubuntu-latest, which
-    # moves x64 runners to Ubuntu 26.04 in a gradual rollout from 2026-10-19 to
-    # 2026-11-19 (actions/runner-images#14748) - weeks in which two runs of one
-    # commit could disagree about the OS. Taking 26.04 now rather than being
-    # taken there keeps the image a reviewable line instead of a date.
-    #
-    # Nothing here depends on the host's pre-cached toolchains: Python comes
-    # from setup-python, which publishes 26.04 builds.
-    runs-on: ubuntu-26.04
-    timeout-minutes: 15
-
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v5
-
-      - name: Set up Python
-        uses: actions/setup-python@v6
-        with:
-          # Matches requires-python in pyproject.toml and the python:3.13-slim
-          # stages in docker/Dockerfile.
-          python-version: '3.13'
-          cache: pip
-          cache-dependency-path: pyproject.toml
-
-      # The tests import app/, so the runtime stack has to be present too, not
-      # just the dev extra. Both lists come out of pyproject.toml through
-      # tools/pyproject-deps.py so the dependency list stays in one place.
-      #
-      # The project itself is deliberately not installed: [tool.pytest]
-      # pythonpath = ["."] already puts the source tree on sys.path, and a
-      # `pip install .` would only add a build step that can fail on its own.
-      - name: Install dependencies
-        run: |
-          set -euo pipefail
-          python -m pip install --upgrade pip
-          python tools/pyproject-deps.py dev > requirements-ci.txt
-          python tools/pyproject-deps.py >> requirements-ci.txt
-          cat requirements-ci.txt
-          pip install -r requirements-ci.txt
-
-      # The full rule set configured in pyproject.toml, blocking. The tree was
-      # brought to zero findings before this became a gate; the deliberate
-      # exemptions live in pyproject.toml with the reasoning next to each one
-      # (subprocess invocation of wg/ip/iptables,
-      # dynamic SQL identifiers, EN DASH in prose, local wall-clock scheduling),
-      # and narrower cases carry a per-line `# noqa` naming the reason.
-      #
-      # Prefer fixing over exempting. If a new finding really does not apply,
-      # annotate the line rather than widening the ignore list, so the next
-      # reader can tell a decision from a blanket.
-      - name: Ruff
-        run: ruff check --output-format=github .
-
-      # The tree is formatted with `ruff format` (tab indent, see pyproject.toml);
-      # keep it that way.
-      - name: Ruff format
-        run: ruff format --check --diff .
-
-      # No WIREBUDDY_SECRET_KEY here on purpose. The app refuses to start
-      # without one, but the tests do not start it: they set what they need with
-      # monkeypatch, and tests/test_audit_hardening.py asserts the behaviour
-      # when the variable is *absent* (it calls monkeypatch.delenv on it). An
-      # ambient value would silently change what that test exercises.
-      - name: pytest
-        run: pytest
-
-  container:
-    name: Dockerfile + entrypoint
-    runs-on: ubuntu-26.04
-    timeout-minutes: 10
-
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v5
-
-      # The image is only ever built from a release tag, so without these two
-      # steps a broken entrypoint or Dockerfile stays invisible until the
-      # release itself. The full multi-arch build is far too slow for a PR;
-      # these are the cheap half that still catches a typo.
-      #
-      # entrypoint.sh runs as bash (its shebang is /usr/bin/env bash) and uses
-      # bash-only syntax, so it is parsed as bash rather than sh. -n parses
-      # without executing, so none of the wg/unbound handling runs here.
-      - name: Entrypoint shell syntax
-        run: |
-          bash -n docker/entrypoint.sh
-          bash -n docker/healthcheck.sh
-
-      # BuildKit's own linter: resolves the stages (builder,
-      # wireguard-tools-builder, runtime-base, runtime), the ARG/ENV references
-      # and the COPY --from targets, and reports on them without running a
-      # single build step. Non-zero on any finding.
-      - name: Dockerfile check
-        run: docker build --check -f docker/Dockerfile .
-
+  # Seconds-cheap checks without a dependency install; they run beside the
+  # check legs and fail the run early. A PR gate has no irreversible step.
   manifest:
     name: pyproject.toml is the only manifest
+    # Named images instead of ubuntu-latest, so two runs of one commit cannot
+    # disagree about the OS during a runner image rollout.
     runs-on: ubuntu-26.04
     timeout-minutes: 5
-
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v5
-
-      # VERSION, requirements.txt and docs/requirements-docs.txt were folded
-      # into pyproject.toml (see the comment at the top of it). Reintroducing
-      # any of them would give the release workflow, the running container and
-      # the docs build two versions to disagree about.
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      # Before the banner: the helper scripts need the requires-python interpreter.
+      - name: Set up Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: '3.14'
+      # Prints the agent banner and points TMPDIR, TMP and TEMP at the job temp directory.
+      - name: Agent banner and job temp directory
+        run: python3 .github/scripts/ci_job_setup.py
+      # VERSION, requirements*.txt and docs/requirements-docs.txt were folded into
+      # pyproject.toml; a second manifest gives the release, the container and the
+      # docs build two versions to disagree about. docs/changelog.md, docs/license.md
+      # and BUILD_INFO are generated during builds, so a committed copy goes stale.
+      # docs/mkdocs.yml was replaced by the root zensical.toml.
       - name: Reject reintroduced manifests
         run: |
           set -euo pipefail
           failed=0
-          for stale in VERSION requirements.txt docs/requirements-docs.txt; do
+          while IFS= read -r stale; do
+            echo "::error::$stale is obsolete; pyproject.toml is the single manifest"
+            failed=1
+          done < <(git ls-files -- ':(glob)**/requirements*.txt' ':(glob)**/BUILD_INFO')
+          for stale in VERSION docs/requirements-docs.txt docs/mkdocs.yml mkdocs.yml docs/changelog.md docs/license.md; do
             if [ -e "$stale" ]; then
-              echo "ERROR: $stale is back - pyproject.toml is the single manifest"
+              echo "::error::$stale must not exist in the repository"
               failed=1
             fi
           done
           [ "$failed" -eq 0 ]
-
-      # docker-build.yml rejects a version this check would not accept, but it
-      # only runs once the tag is already pushed - and a tag is not retractable
-      # in the same way a commit is. Same regex as the release workflow's, kept
-      # strict to X.Y.Z with an optional prerelease suffix.
+      # A bad version has to fail before the tag is pushed: a pushed tag is not
+      # retractable like a commit. Same strict regex as docker-build.yml.
       - name: Version is release-shaped
         run: |
           set -euo pipefail
           VERSION="$(python3 -c 'import tomllib; print(tomllib.load(open("pyproject.toml", "rb"))["project"]["version"])')"
           echo "pyproject.toml version: ${VERSION}"
           echo "$VERSION" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$'
-
+      - name: Test CI helper scripts
+        run: |
+          set -euo pipefail
+          python3 -m unittest discover -s .github/scripts -p 'test_*.py' -v
+          node --test .github/scripts/test_release_publish.cjs
+      # format.js drives every browser-side date and number; the test needs only
+      # Node built-ins (no npm install). A directory argument fails on Node 24, so use the glob.
+      - name: Test browser formatting helpers
+        run: npm run test:js
   workflows:
     name: Workflow lint (actionlint + shellcheck)
     runs-on: ubuntu-26.04
     timeout-minutes: 5
-
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v5
-
-      # actionlint runs shellcheck over every inline `run:` block when the
-      # binary is on PATH, and silently skips it otherwise. Failing here keeps
-      # that half of the gate from disappearing unnoticed with a runner image.
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - name: Set up Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: '3.14'
+      - name: Agent banner and job temp directory
+        run: python3 .github/scripts/ci_job_setup.py
+      # actionlint runs shellcheck over every inline `run:` block when the binary
+      # is on PATH and silently skips it otherwise.
       - name: shellcheck is available
         run: command -v shellcheck && shellcheck --version
-
-      # Exact release plus its published sha256, so the binary that gates the
-      # workflows is a reviewed one. .github/actionlint.yaml is picked up
-      # automatically and declares the 26.04 runner labels.
+      # Exact release plus its published sha256. .github/actionlint.yaml is picked
+      # up automatically and declares the 26.04 runner labels.
       - name: Install actionlint
         env:
-          ACTIONLINT_VERSION: '1.7.12'
+          # renovate: datasource=github-releases depName=rhysd/actionlint
+          ACTIONLINT_VERSION: "1.7.12"
+          # Renovate bumps ACTIONLINT_VERSION only; update this checksum from the release's
+          # checksums file in the same PR, otherwise the install below fails closed.
           ACTIONLINT_SHA256: 8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8
         run: |
           set -euo pipefail
-          archive="actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"
+          archive="$RUNNER_TEMP/actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"
           curl -fsSL --proto '=https' --tlsv1.2 -o "$archive" \
-            "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/${archive}"
+            "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"
           echo "${ACTIONLINT_SHA256}  ${archive}" | sha256sum --check --strict
-          tar -xzf "$archive" actionlint
-          ./actionlint -version
-
+          tar -xzf "$archive" -C "$RUNNER_TEMP" actionlint
+          "$RUNNER_TEMP/actionlint" -version
       - name: actionlint
-        run: ./actionlint -color
+        run: '"$RUNNER_TEMP/actionlint" -color'
+  zizmor:
+    name: Workflow security lint (zizmor)
+    runs-on: ubuntu-26.04
+    timeout-minutes: 5
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - name: Set up Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: '3.14'
+      - name: Agent banner and job temp directory
+        run: python3 .github/scripts/ci_job_setup.py
+      # zizmor complements actionlint with unpinned actions, template injection and
+      # over-broad permissions. Reads .github/zizmor.yml.
+      - name: Install zizmor
+        env:
+          # renovate: datasource=pypi depName=zizmor
+          ZIZMOR_VERSION: "1.32.0"
+        run: |
+          set -euo pipefail
+          python3 -m venv "$RUNNER_TEMP/zizmor"
+          "$RUNNER_TEMP/zizmor/bin/pip" install --quiet --disable-pip-version-check "zizmor==${ZIZMOR_VERSION}"
+      # The read-only token enables the online audits (known-vulnerable actions,
+      # impostor commits).
+      - name: zizmor
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: '"$RUNNER_TEMP/zizmor/bin/zizmor" --no-progress --format=github .github/workflows'
+  container:
+    name: Dockerfile + entrypoint
+    runs-on: ubuntu-26.04
+    timeout-minutes: 10
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - name: Set up Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: '3.14'
+      - name: Agent banner and job temp directory
+        run: python3 .github/scripts/ci_job_setup.py
+      # The image is only built from a release tag, so these are the cheap half
+      # that still catches a broken entrypoint or Dockerfile in a PR. Both scripts
+      # use bash syntax; -n parses without executing.
+      - name: Entrypoint shell syntax
+        run: bash -n docker/entrypoint.sh docker/healthcheck.sh
+      - name: Entrypoint shellcheck
+        run: shellcheck docker/entrypoint.sh docker/healthcheck.sh
+      # BuildKit's linter resolves stages, ARG/ENV references and COPY --from
+      # targets without running a build step.
+      - name: Dockerfile check
+        run: docker build --check -f docker/Dockerfile .
+  # Source-level CSS lint of app/static/css (tools/stylelint). Blocking: the tree is
+  # at zero findings and the config carries no blanket ignores.
+  stylelint:
+    name: CSS lint (Stylelint)
+    runs-on: ubuntu-26.04
+    timeout-minutes: 5
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - name: Set up Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: '3.14'
+      - name: Set up Node.js
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: tools/stylelint/package-lock.json
+      - name: Agent banner and job temp directory
+        run: python3 .github/scripts/ci_job_setup.py
+      - name: Install Stylelint
+        working-directory: tools/stylelint
+        run: npm ci --ignore-scripts
+      - name: Stylelint
+        working-directory: tools/stylelint
+        run: npm run lint
+  # ruff and pytest are independent, so they run as parallel legs.
+  check:
+    name: Check (${{ matrix.check }})
+    runs-on: ubuntu-26.04
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        check: [ruff, pytest]
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - name: Set up Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          # Matches requires-python and the python:3.14-slim stages in docker/Dockerfile.
+          python-version: '3.14'
+          cache: pip
+          cache-dependency-path: pyproject.toml
+      - name: Agent banner and job temp directory
+        run: python3 .github/scripts/ci_job_setup.py
+      # The tests import app/, so runtime and dev dependencies are installed, both
+      # from pyproject.toml through tools/pyproject-deps.py; the project itself is
+      # not installed ([tool.pytest] pythonpath = ["."]). The gillbates-* packages
+      # are private git dependencies: the token reaches git only through a credential
+      # helper reading this step's environment, never a URL or a file.
+      - name: Install dependencies
+        env:
+          RELEASE_TOKEN: ${{ secrets.RELEASE_TOKEN }}
+        run: |
+          set -euo pipefail
+          : "${RELEASE_TOKEN:?Missing RELEASE_TOKEN secret (not available to pull requests from forks)}"
+          python -m pip install --upgrade pip
+          requirements="$RUNNER_TEMP/requirements-ci.txt"
+          python tools/pyproject-deps.py dev > "$requirements"
+          python tools/pyproject-deps.py >> "$requirements"
+          test -s "$requirements"
+          cat "$requirements"
+          # The empty first helper resets any helper configured on the runner.
+          export GIT_TERMINAL_PROMPT=0 GIT_CONFIG_COUNT=2 GIT_CONFIG_KEY_0=credential.helper GIT_CONFIG_VALUE_0=
+          export GIT_CONFIG_KEY_1=credential.helper
+          # shellcheck disable=SC2016 # expanded by git's helper shell at call time, not here
+          export GIT_CONFIG_VALUE_1='!f() { echo username=x-access-token; echo "password=${RELEASE_TOKEN}"; }; f'
+          pip install -r "$requirements"
+          # Fails on a resolved set whose declared requirements conflict.
+          pip check
+      # The full rule set from pyproject.toml, blocking; deliberate exemptions live
+      # there with their reasons. Prefer fixing over exempting.
+      - name: Run ruff
+        if: matrix.check == 'ruff'
+        run: ruff check --output-format=github .
+      - name: Run ruff format
+        if: matrix.check == 'ruff'
+        run: ruff format --check --diff .
+      # No WIREBUDDY_SECRET_KEY on purpose: tests/test_audit_hardening.py asserts
+      # the behaviour when the variable is absent, an ambient value would change it.
+      - name: Run pytest
+        if: matrix.check == 'pytest'
+        run: pytest
+  source-scan:
+    name: Source secrets
+    runs-on: ubuntu-26.04
+    timeout-minutes: 10
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - name: Set up Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: '3.14'
+      - name: Agent banner and job temp directory
+        run: python3 .github/scripts/ci_job_setup.py
+      # The release image scan owns vulnerabilities; this scans the source tree for
+      # committed secrets. The CLI instead of the action, because the gate reads
+      # the scanner log. Exact release plus its published sha256, as for actionlint.
+      - name: Install checksum-verified Trivy
+        env:
+          # renovate: datasource=github-releases depName=aquasecurity/trivy
+          TRIVY_VERSION: "0.70.0"
+          # Renovate bumps TRIVY_VERSION only; update this checksum from the release's
+          # checksums file in the same PR, otherwise the install below fails closed.
+          TRIVY_SHA256: 8b4376d5d6befe5c24d503f10ff136d9e0c49f9127a4279fd110b727929a5aa9
+        run: |
+          set -euo pipefail
+          archive="$RUNNER_TEMP/trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz"
+          curl -fsSL --proto '=https' --tlsv1.2 --retry 3 -o "$archive" \
+            "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz"
+          echo "${TRIVY_SHA256}  ${archive}" | sha256sum --check --strict
+          mkdir -p "$RUNNER_TEMP/trivy-bin"
+          tar -xzf "$archive" -C "$RUNNER_TEMP/trivy-bin" trivy
+          echo "$RUNNER_TEMP/trivy-bin" >> "$GITHUB_PATH"
+          "$RUNNER_TEMP/trivy-bin/trivy" --version
+      # Exit 0 even with findings: the verdict comes from the report step, and a
+      # scanner error still fails this step. Skipped paths never ship. Dockerfile
+      # misconfiguration is not scanned: the image starts as root on purpose
+      # (WireGuard, iptables and Unbound need it), which Trivy reports as HIGH.
+      - name: Trivy source scan
+        run: |
+          set -euo pipefail
+          trivy fs --scanners secret \
+            --skip-dirs .git,.venv,venv,__pycache__,site,.cache,.pytest_cache,.ruff_cache,node_modules,data \
+            --severity CRITICAL,HIGH --ignorefile .trivyignore --timeout 5m \
+            --skip-version-check --exit-code 0 \
+            --format json --output "$RUNNER_TEMP/trivy-source.json" . \
+            2>&1 | tee "$RUNNER_TEMP/trivy-source.log"
+      # Fails on findings, on a missing or empty scan input, and on scanner log
+      # lines that mean a scan on nothing.
+      - name: Evaluate source scan report
+        run: |
+          set -euo pipefail
+          python3 .github/scripts/trivy_report.py status "$RUNNER_TEMP/trivy-source.json" \
+            --expect-class secret --input . \
+            --log-file "$RUNNER_TEMP/trivy-source.log" --fail-on-findings \
+            --summary-title "Trivy (source)" --list 20 >> "$GITHUB_STEP_SUMMARY"
+  # Decides whether the layout job below has to run. A `paths:` filter on the triggers
+  # would filter the whole workflow, so the filter lives here and every other job runs
+  # on every push. Relevant: everything under app/ (the suite starts the real app)
+  # except Markdown, tests/layout/, the app launcher tests/e2e/run_server.py, the helpers
+  # tools/ci-seed-admin.py and tools/pyproject-deps.py, package.json, package-lock.json,
+  # pyproject.toml, this workflow and the scripts the layout job calls
+  # (.github/scripts/ui_changes.py). Always runs: release tag, manual dispatch, unknown
+  # comparison base or failed diff (fail-open). The list is ui_changes.py's PREFIXES.
+  changes:
+    name: UI-relevant changes
+    runs-on: ubuntu-26.04
+    timeout-minutes: 5
+    outputs:
+      ui: ${{ steps.detect.outputs.ui }}
+    steps:
+      # Full history: the push range and the pull request base must be present for git diff.
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Set up Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: '3.14'
+      - name: Agent banner and job temp directory
+        run: python3 .github/scripts/ci_job_setup.py
+      - name: Detect UI-relevant changes
+        id: detect
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          REF: ${{ github.ref }}
+          BEFORE: ${{ github.event.before }}
+          AFTER: ${{ github.sha }}
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+        run: python3 .github/scripts/ui_changes.py
+  # Playwright layout suite (tests/layout, `npm run test:layout`). NON-BLOCKING
+  # introduction phase: job-level continue-on-error keeps a failure visible (red job,
+  # warning annotation) while the run, and with it the release gate that
+  # docker-build.yml takes from this workflow, still succeeds. Switch to blocking
+  # (remove the continue-on-error line) after three complete green runs on GitHub
+  # Actions; until then a persistently red job must be fixed, not left red.
+  # Chromium on every run; Firefox and WebKit additionally on pull requests.
+  # A skipped layout job (no UI-relevant change) shows as skipped, never as passed; it is
+  # also skipped for a cancelled run, and runs when `changes` itself failed (fail-open).
+  layout:
+    name: Layout (${{ matrix.browser }})
+    needs: changes
+    if: ${{ !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.ui == 'true') }}
+    runs-on: ubuntu-26.04
+    # The suite's globalTimeout is 25 minutes; the rest covers install steps.
+    timeout-minutes: 35
+    continue-on-error: true
+    strategy:
+      fail-fast: false
+      matrix:
+        browser: ${{ fromJSON(github.event_name == 'pull_request' && '["chromium","firefox","webkit"]' || '["chromium"]') }}
+    env:
+      # The runner defaults to .venv/bin/python, which does not exist here.
+      WIREBUDDY_LAYOUT_PYTHON: python
+      WIREBUDDY_LAYOUT_BROWSERS: ${{ matrix.browser }}
+      # The runner has no wireguard-tools, and startup refuses to run without trusted
+      # wg/wg-quick paths. The layout suite only renders the UI and never calls wg.
+      WIREBUDDY_SKIP_NETWORK_CHECK: "1"
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - name: Set up Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: '3.14'
+          cache: pip
+          cache-dependency-path: pyproject.toml
+      # No node-version file exists in the repository: Node.js 24 is the active LTS line
+      # (Playwright 1.64 supports it).
+      - name: Set up Node.js
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: package-lock.json
+      - name: Agent banner and job temp directory
+        run: python3 .github/scripts/ci_job_setup.py
+      # Server logs hold no credentials: the harness passes them through the child's
+      # environment only. Traces do record the typed login password of the throwaway
+      # instance (random per run, instance deleted at teardown).
+      - name: Point server logs at the results directory
+        run: echo "WIREBUDDY_LAYOUT_LOGS=$RUNNER_TEMP/layout-results/logs" >> "$GITHUB_ENV"
+      # Runtime dependencies only (the app is started, not tested); same credential
+      # helper as the check job, so the token never reaches a URL, file or log.
+      - name: Install Python dependencies
+        env:
+          RELEASE_TOKEN: ${{ secrets.RELEASE_TOKEN }}
+        run: |
+          set -euo pipefail
+          : "${RELEASE_TOKEN:?Missing RELEASE_TOKEN secret (not available to pull requests from forks)}"
+          python -m pip install --upgrade pip
+          requirements="$RUNNER_TEMP/requirements-layout.txt"
+          python tools/pyproject-deps.py > "$requirements"
+          test -s "$requirements"
+          # The empty first helper resets any helper configured on the runner.
+          export GIT_TERMINAL_PROMPT=0 GIT_CONFIG_COUNT=2 GIT_CONFIG_KEY_0=credential.helper GIT_CONFIG_VALUE_0=
+          export GIT_CONFIG_KEY_1=credential.helper
+          # shellcheck disable=SC2016 # expanded by git's helper shell at call time, not here
+          export GIT_CONFIG_VALUE_1='!f() { echo username=x-access-token; echo "password=${RELEASE_TOKEN}"; }; f'
+          pip install -r "$requirements"
+          pip check
+      - name: Install Node.js dependencies
+        run: npm ci --ignore-scripts
+      # The browser download is not cached: a cache key bound to the lockfile would save
+      # little against the system libraries that --with-deps installs on every run.
+      # The suite runs headless, so Chromium needs only the headless shell, not the full browser.
+      - name: Install browser and system libraries
+        run: |
+          target="$WIREBUDDY_LAYOUT_BROWSERS"
+          if [ "$target" = chromium ]; then target=chromium-headless-shell; fi
+          npx playwright install --with-deps "$target"
+      # Environment smoke: one login cell (tablet, light), so a broken install or an app that
+      # does not start fails here, apart from the suite below.
+      - name: Environment check (app start, one cell)
+        id: smoke
+        env:
+          WIREBUDDY_LAYOUT_OUTPUT: ${{ runner.temp }}/layout-results/output-smoke
+          WIREBUDDY_LAYOUT_JUNIT: ${{ runner.temp }}/layout-results/junit-smoke.xml
+        run: >-
+          npm run test:layout --
+          --profile quick --pages login --viewports tablet-768x1024
+          -- tests/layout/layout.spec.mjs
+      # Proves the overflow audit can fail; independent of the app, Chromium only.
+      - name: Layout audit self-test
+        if: ${{ !cancelled() && matrix.browser == 'chromium' && steps.smoke.conclusion != 'skipped' }}
+        env:
+          WIREBUDDY_LAYOUT_OUTPUT: ${{ runner.temp }}/layout-results/output-selftest
+          WIREBUDDY_LAYOUT_JUNIT: ${{ runner.temp }}/layout-results/junit-selftest.xml
+        run: npm run test:layout -- --self-test
+      # Only after a healthy environment: a failure here is a UI finding.
+      - name: Layout suite
+        if: ${{ !cancelled() && steps.smoke.outcome == 'success' }}
+        env:
+          WIREBUDDY_LAYOUT_OUTPUT: ${{ runner.temp }}/layout-results/output-suite
+          WIREBUDDY_LAYOUT_JUNIT: ${{ runner.temp }}/layout-results/junit-suite.xml
+        run: npm run test:layout -- --profile quick
+      - name: Upload layout results
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: layout-results-${{ matrix.browser }}
+          path: ${{ runner.temp }}/layout-results
+          retention-days: 7
+          if-no-files-found: ignore
+      # continue-on-error hides the red job from the run conclusion; say so in the log.
+      - name: Report non-blocking failure
+        if: ${{ failure() }}
+        run: echo "::warning title=Layout suite failed (non-blocking phase)::A layout step failed; the run stays green until continue-on-error is removed from the layout job."

@@ -50,5 +50,5 @@ def broadcast_event_to_queues(queues: list[asyncio.Queue[Any]], event: Any) -> N
 			try:
 				queue.get_nowait()
 				queue.put_nowait(event)
-			except (asyncio.QueueEmpty, asyncio.QueueFull):
+			except asyncio.QueueEmpty, asyncio.QueueFull:
 				continue

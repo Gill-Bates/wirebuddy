@@ -4,9 +4,6 @@
 # Copyright (C) 2026 Gill-Bates http://github.com/Gill-Bates
 #
 
-# SPDX-License-Identifier: MIT
-#
-
 """A crashed DNS writer must not leave the tailer thread hanging forever (P2.2).
 
 The tailer runs via ``asyncio.to_thread``, so ``Task.cancel()`` cannot interrupt

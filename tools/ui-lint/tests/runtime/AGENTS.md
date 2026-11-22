@@ -1,5 +1,5 @@
 <!-- Parent: ../AGENTS.md -->
-<!-- Generated: 2026-09-21 | Updated: 2026-10-27 -->
+<!-- Generated: 2026-09-21 | Updated: 2026-11-22 -->
 # runtime
 
 ## Purpose
@@ -11,7 +11,7 @@ Specs for runtime modules: browser runtime, DOM runtime/snapshots, runtime confi
 | File | Description |
 |---|---|
 | `browser-runtime.spec.js` | CLS helpers, console telemetry, stable screenshot diffs, `disableMotion` |
-| `dom-runtime.spec.js` | Loads the app's `core/dom.js` and `settings/components.js` from `/opt/wirebuddy/app/static/js` (`el`, `clearChildren`, `fragment`, delegated click handlers, settings component helpers) |
+| `dom-runtime.spec.js` | Loads the app's `core/dom.js`, `core/format.js` and `settings/components.js` from `<repo>/app/static/js`, resolved relative to the spec (`el`, `clearChildren`, `fragment`, delegated click handlers, settings component helpers) |
 | `dom-snapshot.spec.js` | Deterministic snapshot incl. shadow DOM |
 | `runtime-config-orchestration.spec.js` | Profiles, runtime context, legacy helpers |
 | `views-orchestration.spec.js` | Legacy matrices, plugin views, adaptive coverage |
@@ -28,15 +28,11 @@ Specs for runtime modules: browser runtime, DOM runtime/snapshots, runtime confi
 
 - Run `cd tools/ui-lint && npx playwright test tests/runtime/`; requires installed Playwright browsers.
 
-### Common Patterns
-
-- No special constraints beyond the parent directory guidance.
-
 ## Dependencies
 
 ### Internal
 
-- `../../lib/`, `/opt/wirebuddy/app/static/js`
+- `../../lib/`, `../../../../app/static/js`
 
 ### External
 

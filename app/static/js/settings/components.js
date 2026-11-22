@@ -264,7 +264,7 @@
         // Expiry info
         const expiresDate = cert.expires_at ? new Date(cert.expires_at) : null;
         const expiresStr = expiresDate
-            ? (window.WBFormat ? window.WBFormat.format(expiresDate, 'date') : expiresDate.toLocaleDateString())
+            ? window.WBFormat.format(expiresDate, 'date')
             : 'Unknown';
         const daysStr = cert.days_until_expiry !== null ? ` (${cert.days_until_expiry}d)` : '';
 
@@ -327,7 +327,7 @@
         const domains = isPending
             ? 'Pending'
             : (Number.isFinite(Number(domainsValue))
-                ? Number(domainsValue).toLocaleString()
+                ? window.WBFormat.number(domainsValue)
                 : (String(domainsValue ?? '').trim() || '—'));
 
         const updated = source.last_updated || '—';

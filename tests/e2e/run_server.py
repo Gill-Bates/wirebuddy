@@ -4,9 +4,6 @@
 # Copyright (C) 2026 Gill-Bates http://github.com/Gill-Bates
 #
 
-# SPDX-License-Identifier: MIT
-#
-
 """Start WireBuddy for browser E2E runs against a throwaway data directory.
 
     E2E_ADMIN_PASSWORD=... python tests/e2e/run_server.py DATA_DIR PORT

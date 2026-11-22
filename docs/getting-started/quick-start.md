@@ -10,7 +10,7 @@ Get WireBuddy running in under 5 minutes with Docker.
 
 Before you begin, ensure you have:
 
-- Docker Engine 20.10+ and Docker Compose
+- Docker Engine 20.10+ and the Docker Compose v2 plugin (the `docker compose` command)
 - Linux host (amd64 or arm64)
 - Root or sudo access for sysctl configuration
 
@@ -33,7 +33,8 @@ cp .env-example .env
 nano .env  # or use your preferred editor
 ```
 
-**Required:** Set a secure `WIREBUDDY_SECRET_KEY`:
+**Required:** Set a secure `WIREBUDDY_SECRET_KEY` of at least 32 bytes; a
+shorter key stops the start:
 
 ```bash
 # Generate a secure key (Linux/macOS)

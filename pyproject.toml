@@ -17,10 +17,10 @@ name = "wirebuddy"
 # at runtime, the release workflow validates the git tag against it, and
 # docker/Dockerfile copies this file into the image so the About page reports
 # the same number the tag was cut from.
-version = "1.7.0"
+version = "2.0.0"
 description = "Lightweight WireGuard Management WebUI"
 readme = "README.md"
-requires-python = ">=3.13"
+requires-python = ">=3.14"
 license = "MIT"
 license-files = ["LICENSE"]
 authors = [{ name = "Gill-Bates", email = "contact@wirebuddy.example.com" }]
@@ -30,7 +30,7 @@ classifiers = [
     "Framework :: FastAPI",
     "Intended Audience :: End Users/Desktop",
     "Operating System :: POSIX :: Linux",
-    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
     "Topic :: System :: Networking",
 ]
 
@@ -39,20 +39,26 @@ classifiers = [
 # versions.
 dependencies = [
     "aiosqlite==0.22.1",
-    "cbor2==6.1.5",
+    "cbor2==6.3.0",
     "cryptography==50.0.2",
-    "email-validator==2.3.0",
-    "fastapi==0.162.0",
-    "geoip2==5.3.0",
+    "email-validator==2.4.0",
+    "fastapi==0.165.0",
+    # gillbates-*: private shared packages, pinned by git tag (install needs git and read access).
+    "gillbates-country-flags @ git+https://github.com/Gill-Bates/python-libraries.git@gillbates-country-flags-v0.1.0#subdirectory=packages/country-flags",
+    "gillbates-geoip @ git+https://github.com/Gill-Bates/python-libraries.git@gillbates-geoip-v0.10.0#subdirectory=packages/geoip",
+    "gillbates-logging @ git+https://github.com/Gill-Bates/python-libraries.git@gillbates-logging-v0.10.0#subdirectory=packages/logging",
+    "gillbates-public-ip @ git+https://github.com/Gill-Bates/python-libraries.git@gillbates-public-ip-v0.10.0#subdirectory=packages/public-ip",
+    "gillbates-shutdown-handler @ git+https://github.com/Gill-Bates/python-libraries.git@gillbates-shutdown-handler-v0.10.0#subdirectory=packages/shutdown-handler",
+    "gillbates-speedtest @ git+https://github.com/Gill-Bates/python-libraries.git@gillbates-speedtest-v0.10.0#subdirectory=packages/speedtest",
     "httpx[http2]==0.28.1",
     "jinja2==3.1.6",
-    "markdown==3.11.2",
-    "nh3==0.3.7",
+    "markdown==3.11.3",
+    "nh3==0.3.8",
     "Pillow==13.0.0",
-    "pydantic==2.14.1",
-    "pydantic-settings==2.16.1",
-    "pyotp==2.10.0",
-    "python-multipart==0.0.32",
+    "pydantic==2.14.4",
+    "pydantic-settings==2.16.3",
+    "pyotp==2.12.1",
+    "python-multipart==0.0.34",
     "qrcode[pil]==8.2",
     "uvicorn[standard]==0.54.0",
     "webauthn==3.0.1",
@@ -61,19 +67,16 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = [
-    "pytest",
-    "pytest-asyncio",
-    "pytest-cov",
-    "ruff==0.17.3",
+    "httpx2==2.16.2",
+    "pytest==9.2.0",
+    "pytest-asyncio==1.5.0",
+    "pytest-cov==7.1.0",
+    "questionary==2.1.1",
+    "ruff==0.17.6",
 ]
 docs = [
-    "markdown",
-    "mkdocs",
-    "mkdocs-git-revision-date-localized-plugin",
-    "mkdocs-material",
-    "mkdocs-minify-plugin",
-    "mkdocs-redirects",
-    "pymdown-extensions",
+    # Zensical brings Material theme, pymdown-extensions and Markdown with it.
+    "zensical==0.1.3",
 ]
 
 [project.urls]
@@ -105,10 +108,10 @@ exclude = ["app.static*", "app.templates*"]
 # --------------------------------------------------------------------------- #
 [tool.ruff]
 line-length = 160
-target-version = "py313"
+target-version = "py314"
 # A different local ruff must not silently produce other results than the CI gate.
-required-version = "==0.17.3"
-extend-exclude = ["data", "dev-data", "site", ".mkdocs-cache"]
+required-version = "==0.17.6"
+extend-exclude = ["data", "dev-data", "site"]
 
 [tool.ruff.lint]
 select = [
@@ -244,13 +247,6 @@ extend-immutable-calls = [
 ]
 
 [tool.ruff.lint.per-file-ignores]
-# The one module that is deliberately *not* UTC: it schedules the speedtest for a
-# wall-clock hour in the operator's own timezone ("run at 2am local"), and
-# time.mktime() on a naive datetime is what applies the system's DST rules. Making
-# these aware would move the window whenever DST shifts, which is the opposite of
-# the intent. DTZ stays enabled everywhere else, where timestamps really are
-# UTC-aware (see app/utils/time.py and tests/test_time.py).
-"app/utils/speedtest_window.py" = ["DTZ001", "DTZ005", "DTZ006"]
 "tests/*" = [
     "S603",
     "S608",
@@ -272,6 +268,8 @@ extend-immutable-calls = [
     "T20",
 ]
 "tools/*.py" = ["T20"]
+# CI helper scripts write workflow commands and step summaries to stdout by design.
+".github/scripts/*.py" = ["T20"]
 # This application's job is driving `wg`, `ip`, `iptables` and `conntrack`. S603
 # fires on every direct subprocess call and cannot be satisfied while that remains
 # true, so it is exempt only in the modules that make such calls. The properties it
@@ -281,7 +279,6 @@ extend-immutable-calls = [
 # everywhere, which is what catches a binary invoked by bare name. A new module
 # calling subprocess directly is flagged and has to justify itself.
 "app/utils/conntrack.py" = ["S603"]
-"app/node/firewall.py" = ["S603"]
 "app/node/wg_manager.py" = ["S603"]
 "app/api/frontend_pages.py" = ["S603"]
 # Dynamic SQL here only ever interpolates *identifiers* the code itself owns -
@@ -316,6 +313,7 @@ testpaths = ["tests"]
 pythonpath = ["."]
 python_files = ["test_*.py"]
 addopts = "-q --strict-markers --strict-config"
+asyncio_default_fixture_loop_scope = "function"
 
 [tool.coverage.run]
 source = ["app"]

@@ -46,7 +46,7 @@
     {% block extra_css %}{% endblock %}
 </head>
 
-<body class="{% block body_class %}{% endblock %}">
+<body class="{% block body_class %}{% endblock %}" data-flag-base-url="{{ flag_base_url }}">
     <!-- Key Mismatch Warning Banner -->
     {% if key_mismatch %}
     <div id="keyMismatchBanner" class="alert alert-danger mb-0 rounded-0 py-2" role="alert">
@@ -199,11 +199,9 @@
     <!-- Core Logic Split -->
     <script src="/static/js/api.js"></script>
     <script src="/static/js/ui-state.js"></script>
-    <script src="/static/js/core/design-tokens.js"></script>
     <script src="/static/js/core/dom.js"></script>
-    <script src="/static/js/core/logger.js"></script>
+    <script src="/static/js/core/flags.js"></script>
     <script src="/static/js/core/format.js"></script>
-    <script src="/static/js/components/retention-slider.js"></script>
     <script src="/static/js/modal.js"></script>
     <script src="/static/js/toast.js"></script>
     <script src="/static/js/reconnect.js"></script>

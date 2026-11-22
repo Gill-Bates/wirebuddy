@@ -1,5 +1,5 @@
 <!-- Parent: ../AGENTS.md -->
-<!-- Generated: 2026-09-21 | Updated: 2026-09-21 -->
+<!-- Generated: 2026-09-21 | Updated: 2026-11-22 -->
 # accessibility
 
 ## Purpose
@@ -17,17 +17,9 @@ Specs for the accessibility rules and touch-target contract.
 
 ## For AI Agents
 
-### Working In This Directory
-
-- No special constraints beyond the parent directory guidance.
-
 ### Testing Requirements
 
 - Run `cd tools/ui-lint && npx playwright test tests/accessibility/`; requires installed Playwright browsers.
-
-### Common Patterns
-
-- No special constraints beyond the parent directory guidance.
 
 ## Dependencies
 

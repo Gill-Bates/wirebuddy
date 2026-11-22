@@ -2,7 +2,7 @@
  * WireBuddy Empty State Component
  * ================================
  * Consistent empty state styling for when content is not available.
- * Replaces scattered .chart-empty-state and similar patterns.
+ * Pages still use the older .chart-empty-state pattern; both coexist.
  */
 
 .wb-empty-state {

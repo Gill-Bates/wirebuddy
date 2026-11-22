@@ -4,9 +4,6 @@
 # Copyright (C) 2026 Gill-Bates http://github.com/Gill-Bates
 #
 
-# SPDX-License-Identifier: MIT
-#
-
 """Passkey login must issue its session exactly like the password login.
 
 WebAuthn verification and challenge bookkeeping are stubbed; everything from

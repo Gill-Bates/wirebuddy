@@ -84,7 +84,7 @@ For development or non-Docker deployments.
 
 ### Prerequisites
 
-- Python 3.13+
+- Python 3.14+
 - pip and venv
 - System dependencies:
   - WireGuard tools (`wg`, `wg-quick`)
@@ -93,11 +93,18 @@ For development or non-Docker deployments.
 
 ### 1. Install System Dependencies
 
-=== "Ubuntu/Debian"
+=== "Ubuntu 26.04 / Debian testing"
+    `python3.14` is packaged on Ubuntu 26.04 and Debian testing/unstable. Older
+    releases (for example Debian 13 or Ubuntu 24.04) do not ship it: install
+    Python 3.14 with [uv](https://docs.astral.sh/uv/getting-started/installation/)
+    (`uv python install 3.14`, which provides `python3.14` in `~/.local/bin`) or use
+    the Docker image instead. Skip `python3.14` and `python3.14-venv` in the package
+    list below and create the virtual environment with `uv venv --python 3.14 .venv`.
+
     ```bash
     sudo apt update
     sudo apt install -y \
-      python3.13 python3.13-venv python3-pip \
+      python3.14 python3.14-venv python3-pip \
       wireguard-tools \
       unbound \
       conntrack
@@ -106,7 +113,7 @@ For development or non-Docker deployments.
 === "Fedora/RHEL/CentOS"
     ```bash
     sudo dnf install -y \
-      python3.13 python3-pip \
+      python3.14 python3-pip \
       wireguard-tools \
       unbound \
       conntrack-tools
@@ -131,7 +138,7 @@ cd wirebuddy
 ### 3. Create Virtual Environment
 
 ```bash
-python3.13 -m venv .venv
+python3.14 -m venv .venv
 source .venv/bin/activate
 ```
 
@@ -166,7 +173,7 @@ sudo sysctl -w net.netfilter.nf_conntrack_acct=1
 ### 7. Run WireBuddy
 
 ```bash
-python run.py
+python -m app.server   # a local start does not read .env: load it first with `set -a; source .env; set +a`
 ```
 
 Or use uvicorn directly:
@@ -174,6 +181,10 @@ Or use uvicorn directly:
 ```bash
 uvicorn app:create_app --factory --host 0.0.0.0 --port 8000
 ```
+
+Started this way, the node mTLS fingerprint header is always ignored. Use
+`python -m app.server` if a proxy listed in `WIREBUDDY_MTLS_PROXIES` terminates
+mTLS.
 
 For production, keep a single worker:
 
@@ -209,52 +220,21 @@ For production use, place WireBuddy behind a reverse proxy with HTTPS.
 === "Caddy"
     ```caddyfile
     # Caddyfile (included in repository)
-    (proxy_common) {
-        header_up X-Forwarded-Proto https
-        header_up X-Forwarded-Port 443
-
-        transport http {
-            keepalive 30s
-        }
-    }
-
     vpn.example.com {
-        # Live event streams used by nodes and the admin UI: disable buffering so
-        # speedtest progress and node events reach users in real time.
-        @sse path_regexp sse ^(?:/api/nodes/events|/api/wireguard/speedtest/run/stream/[^/]+|/api/nodes/[^/]+/speedtest/stream)$
-        reverse_proxy @sse localhost:8000 {
-            import proxy_common
-            flush_interval -1
-        }
+        reverse_proxy localhost:8000
 
-        # Default reverse proxy
-        reverse_proxy localhost:8000 {
-            import proxy_common
-        }
-
-        # Compression
         encode gzip
 
-        # Cache static assets (1 year)
-        @static path /static/*
-        header @static Cache-Control "public, max-age=31536000, immutable"
-
-        # Security headers
         header {
-            Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
-            X-Content-Type-Options nosniff
-            X-Frame-Options SAMEORIGIN
-            Referrer-Policy strict-origin-when-cross-origin
             -Server
             -X-Powered-By
         }
 
-        # Request body limit
+        # App restore limit is 1 GiB; the margin covers multipart overhead.
         request_body {
-            max_size 100MB
+            max_size 1100MB
         }
 
-        # Logging
         log {
             output file /var/log/caddy/access.log {
                 roll_size 10mb
@@ -262,9 +242,9 @@ For production use, place WireBuddy behind a reverse proxy with HTTPS.
         }
     }
     ```
-    
-    !!! tip "SSE Support for Node Events"
-        The `@sse` matcher with `flush_interval -1` ensures real-time server-sent events work correctly for multi-node deployments.
+
+    !!! tip "Server-sent events"
+        Caddy streams `text/event-stream` responses without extra settings, so node events and speedtest progress need no special proxy configuration.
 
 === "Nginx"
     ```nginx
@@ -284,8 +264,8 @@ For production use, place WireBuddy behind a reverse proxy with HTTPS.
         add_header X-Frame-Options SAMEORIGIN always;
         add_header Referrer-Policy strict-origin-when-cross-origin always;
         
-        # Request body limit
-        client_max_body_size 100M;
+        # App restore limit is 1 GiB; the margin covers multipart overhead.
+        client_max_body_size 1100M;
         
         # SSE endpoint: disable buffering for real-time events
         location /api/nodes/events {
@@ -340,15 +320,19 @@ For production use, place WireBuddy behind a reverse proxy with HTTPS.
       - "traefik.http.middlewares.wirebuddy-headers.headers.frameDeny=true"
       - "traefik.http.middlewares.wirebuddy-headers.headers.customResponseHeaders.Referrer-Policy=strict-origin-when-cross-origin"
       
-      # Request body limit (100MB for backups)
-      - "traefik.http.middlewares.wirebuddy-body.buffering.maxRequestBodyBytes=104857600"
+      - "traefik.http.routers.wirebuddy.middlewares=wirebuddy-headers"
       
-      # Apply middlewares
-      - "traefik.http.routers.wirebuddy.middlewares=wirebuddy-headers,wirebuddy-body"
+      # Request body limit (1100 MiB: 1 GiB backup restore plus multipart overhead),
+      # applied only to the restore upload on its own router
+      - "traefik.http.middlewares.wirebuddy-body.buffering.maxRequestBodyBytes=1153433600"
+      - "traefik.http.routers.wirebuddy-restore.rule=Host(`vpn.example.com`) && Path(`/api/backup/restore`)"
+      - "traefik.http.routers.wirebuddy-restore.entrypoints=websecure"
+      - "traefik.http.routers.wirebuddy-restore.tls.certresolver=letsencrypt"
+      - "traefik.http.routers.wirebuddy-restore.middlewares=wirebuddy-headers,wirebuddy-body"
     ```
     
-    !!! tip "SSE Support"
-        Traefik automatically handles SSE correctly by default. No special configuration needed for `/api/nodes/events`.
+    !!! warning "Server-sent events"
+        Traefik streams `text/event-stream` responses without extra settings, but the buffering middleware also buffers responses. Keep it off the routes that serve node events (`/api/nodes/events`) and speed test progress, as above; the longer restore rule takes priority over the main router.
 
 ## Firewall Configuration
 

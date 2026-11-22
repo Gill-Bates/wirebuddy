@@ -1,5 +1,5 @@
 <!-- Parent: ../AGENTS.md -->
-<!-- Generated: 2026-09-21 | Updated: 2026-09-21 -->
+<!-- Generated: 2026-09-21 | Updated: 2026-11-22 -->
 # rules
 
 ## Purpose
@@ -26,25 +26,22 @@ Lint rules executed against each audited view. A manifest lists the rule modules
 
 ### Working In This Directory
 
-- A new rule needs: a module registering via `registerRule(new RuleBuilder(meta)...)`, a `RULE_MANIFEST` entry, and a spec in `tests/`. `tests/rules/index.spec.js` checks manifest and catalog stay aligned.
-- Rule `check` bodies run in the page; keep them self-contained.
+- A new rule needs: a module that exports `meta`, builds the rule with `RuleBuilder.<category>(id, name, run)`, assigns `rule.meta = meta`, calls `registerRule(rule)` and default-exports it; a `RULE_MANIFEST` entry; and a spec in `tests/`. `tests/rules/index.spec.js` checks manifest and catalog stay aligned.
+- Functions a rule passes to `page.evaluate` run in the page; keep them self-contained.
 
 ### Testing Requirements
 
-- Covered by `tests/rules/index.spec.js`, `tests/rules/rule-registry-orchestration.spec.js`. Run `cd tools/ui-lint && npx playwright test <spec>` (no playwright.config file; defaults apply).
+- Covered by `tests/rules/index.spec.js`, `tests/rules/rule-registry-orchestration.spec.js`. Run `cd tools/ui-lint && npx playwright test <spec>`.
 
 ### Common Patterns
 
-- Each rule exports `meta` (id, category, severity, browsers, devices, requires, capabilities, performanceCost, tags, executionMode, scopes) and registers itself on import.
+- The file header carries a `// Rule: <summary>` line after the copyright.
+- `meta` fields: id, category, severity, browsers, devices, requires, optional, capabilities, performanceCost, tags, executionMode, scopes, severityByBrowser; the registry normalises them (`lib/rule-orchestration/registry-engine.mjs`).
 
 ## Dependencies
 
 ### Internal
 
 - `../lib/rule-registry.mjs`, `../lib/` diagnostics helpers
-
-### External
-
-- None
 
 <!-- MANUAL: Any manually added notes below this line are preserved on regeneration -->

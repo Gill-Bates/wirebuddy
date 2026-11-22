@@ -4,9 +4,6 @@
 # Copyright (C) 2026 Gill-Bates http://github.com/Gill-Bates
 #
 
-# SPDX-License-Identifier: MIT
-#
-
 """Startup and scheduled-task input readers, shared by app/main.py and app/tasks."""
 
 from __future__ import annotations
@@ -37,6 +34,8 @@ from ..dns import unbound
 
 _log = logging.getLogger(__name__)
 
+NETWORK_STATS_RETENTION_DAYS = 7
+
 __all__ = [
 	"check_adblocker_timer_sync",
 	"load_blocklist_update_inputs_sync",
@@ -45,8 +44,7 @@ __all__ = [
 	"read_blocklist_enabled_sync",
 	"read_country_traffic_inputs_sync",
 	"read_dns_retention_days_sync",
-	"read_speedtest_retention_days_sync",
-	"read_tsdb_retention_days_sync",
+	"read_tsdb_retention_plan_sync",
 	"reload_unbound_for_adblocker_async",
 	"should_unbound_run_sync",
 ]
@@ -111,14 +109,24 @@ def read_dns_retention_days_sync(db_path: Path) -> int:
 	return db_call(db_path, get_dns_log_retention_days)
 
 
-def read_tsdb_retention_days_sync(db_path: Path) -> int:
-	"""Read TSDB retention days synchronously."""
-	return db_call(db_path, get_tsdb_retention_days)
+def read_tsdb_retention_plan_sync(db_path: Path) -> tuple[int, dict[str, int]]:
+	"""Read the TSDB retention plan: default days and per-series-group overrides.
 
+	Single source for every job that prunes the TSDB, so no path applies one
+	value to all series (speedtest history keeps its own, longer retention).
+	Read errors propagate: callers must not delete anything on failure.
+	"""
 
-def read_speedtest_retention_days_sync(db_path: Path) -> int:
-	"""Read speedtest retention days synchronously."""
-	return db_call(db_path, get_speedtest_retention_days)
+	def _read(conn) -> tuple[int, dict[str, int]]:
+		tsdb_ret = get_tsdb_retention_days(conn)
+		return tsdb_ret, {
+			"speedtest": get_speedtest_retention_days(conn),
+			"geo_traffic": tsdb_ret,
+			"asn_traffic": tsdb_ret,
+			"network": NETWORK_STATS_RETENTION_DAYS,
+		}
+
+	return db_call(db_path, _read)
 
 
 def should_unbound_run_sync(db_path: Path) -> bool:

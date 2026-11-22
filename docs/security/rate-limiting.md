@@ -15,14 +15,16 @@ Each route is decorated with one of these classes, defined in
 
 | Class | Limit | Applied to |
 |---|---:|---|
-| Authentication | `5/minute` | Login and MFA verification |
-| Critical | `3/minute` | Secret-bearing and high-impact operations: peer config/QR download, backup restore, node create/delete/token, WireGuard settings changes |
-| Heavy | `10/minute` | Expensive operations: peer creation, DNS start/stop/restart, DNS config and blocklist changes |
-| General API | `120/minute` | Ordinary authenticated API reads and writes |
-| Default | `60/minute` | Everything else, including the public `/status` page |
+| Authentication | `5/minute` | Login, MFA verification, logout, OTP setup, passkey flows, and user management |
+| Critical | `3/minute` | Secret-bearing and high-impact operations: peer config/QR download, backup restore, node create/update/delete/token/restart, WireGuard settings changes, global preshared key reveal |
+| Heavy | `10/minute` | Expensive operations: peer creation, interface create/update/delete, DNS start/stop/restart, DNS config and blocklist changes |
+| General API | `120/minute` | Ordinary authenticated API reads and writes, including dashboard layout saves and resets |
+| Default | `60/minute` | UI pages, Swagger, and the public `/status` page |
 
 `WIREBUDDY_RATE_LIMIT_UI_HEAVY` (default `60/minute`) overrides the limit for
-expensive UI routes. The other classes are application constants.
+expensive UI routes. The other classes are application constants. Network
+statistics (`/api/network/stats`) is not rate-limited, because the dashboard
+polls it every 2 seconds.
 
 Limits are keyed on the client IP, so correct trusted-proxy configuration is a
 prerequisite — see [Operational Guidance](#operational-guidance).

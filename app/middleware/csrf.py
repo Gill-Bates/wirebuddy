@@ -37,6 +37,7 @@ _CSRF_EXEMPT_API_PATHS = frozenset(
 	}
 )
 _CSRF_FORM_MAX_BYTES = 16_384
+_CSRF_COOKIE_MAX_AGE = 3600
 
 
 def _default_port_for_scheme(scheme: str) -> int | None:
@@ -196,15 +197,16 @@ class CSRFMiddleware(BaseHTTPMiddleware):
 		# 4. Process request
 		response = await call_next(request)
 
-		# 5. Set cookie only when a token was newly generated.
-		if new_token:
+		# 5. Set the cookie for a new token; on safe requests re-send the unchanged
+		# token so its lifetime slides while the browser session stays active.
+		if new_token or request.method in SAFE_METHODS:
 			response.set_cookie(
 				key="csrf_token",
 				value=csrf_token,
 				httponly=False,  # Needs to be readable by JavaScript
 				secure=_is_secure_cookie_request(request),
 				samesite="strict",
-				max_age=3600,
+				max_age=_CSRF_COOKIE_MAX_AGE,
 				path="/",
 			)
 

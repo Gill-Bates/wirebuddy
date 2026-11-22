@@ -793,8 +793,11 @@ async def _reload_impl() -> tuple[bool, str]:
 	Pre-validates config with unbound-checkconf before sending SIGHUP.
 	If validation fails, returns error without reloading (prevents crash).
 	"""
-	# First validate config to prevent crash on reload
-	code, _, stderr = await run_exec("unbound-checkconf", str(UNBOUND_CONF), timeout=30.0)
+	# First validate config to prevent crash on reload. Same trusted absolute path
+	# as the start path; never fall back to a bare name resolved through PATH.
+	if not is_unbound_installed() or _unbound_checkconf_bin is None:
+		return False, "unbound-checkconf not found at a trusted path"
+	code, _, stderr = await run_exec(_unbound_checkconf_bin, str(UNBOUND_CONF), timeout=30.0)
 	if code != 0:
 		error_msg = stderr.strip().split("\n")[-1] if stderr.strip() else "unknown error"
 		_log.error("DNS_RELOAD config validation failed: %s", error_msg)
@@ -925,7 +928,6 @@ async def watchdog(should_be_running_func: Callable[[], bool | Awaitable[bool]])
 	if not is_unbound_installed():
 		return
 
-	# Check if DNS service should be running
 	result = should_be_running_func()
 	# Handle both sync and async callables. isawaitable (not iscoroutine) so
 	# Futures/Tasks/custom awaitables match the declared Awaitable[bool]

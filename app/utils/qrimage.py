@@ -73,7 +73,7 @@ def _load_font(size: int, variation_name: str | None = None) -> ImageFont.ImageF
 		if variation_name and hasattr(font, "set_variation_by_name"):
 			font.set_variation_by_name(variation_name)
 		return font
-	except (AttributeError, OSError, ValueError):
+	except AttributeError, OSError, ValueError:
 		if _SUPPORTS_DEFAULT_FONT_SIZE:
 			return ImageFont.load_default(size=size)
 		return ImageFont.load_default()

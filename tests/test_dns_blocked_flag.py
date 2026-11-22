@@ -4,9 +4,6 @@
 # Copyright (C) 2026 Gill-Bates http://github.com/Gill-Bates
 #
 
-# SPDX-License-Identifier: MIT
-#
-
 """``DnsQueryPoint.blocked`` mirrors what Unbound actually refused.
 
 The flag feeds the DNS page's blocked/allowed filter, the blockrate KPIs and

@@ -4,9 +4,6 @@
 # Copyright (C) 2026 Gill-Bates http://github.com/Gill-Bates
 #
 
-# SPDX-License-Identifier: MIT
-#
-
 """Per-interface DNS precedence when building peer client configs.
 
 With the ad-blocker off, a generated .conf/QR config must use the
@@ -19,6 +16,9 @@ from __future__ import annotations
 
 import sqlite3
 
+import pytest
+
+from app.api.wireguard_peers_config import _validate_hostname
 from app.api.wireguard_settings import get_dns_for_peer
 from app.db.sqlite_interfaces import create_interface
 
@@ -56,3 +56,22 @@ def test_adblocker_on_returns_internal_resolver_unchanged(conn: sqlite3.Connecti
 	iface = _make_iface(conn, dns="192.0.2.53")
 	# Ad-blocker on ignores the interface dns column and returns the gateway IP.
 	assert get_dns_for_peer(conn, iface, use_adblocker=True, default_dns=_DEFAULT_DNS) == "10.13.13.1"
+
+
+@pytest.mark.parametrize(
+	("host", "expected"),
+	[
+		("203.0.113.7", "203.0.113.7"),
+		("node.example.org", "node.example.org"),
+		("[2001:db8::1]", "[2001:db8::1]"),
+		("2001:db8:0:0::1", "[2001:db8::1]"),
+	],
+)
+def test_node_endpoint_host_accepts_dns_and_ip_literals(host, expected):
+	assert _validate_hostname(host) == expected
+
+
+@pytest.mark.parametrize("host", ["", " node", "bad host", "[node.example.org]", "[203.0.113.7]", "-bad.example", "a\nb"])
+def test_node_endpoint_host_rejects_invalid(host):
+	with pytest.raises(ValueError):
+		_validate_hostname(host)

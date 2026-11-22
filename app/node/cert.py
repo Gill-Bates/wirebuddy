@@ -21,6 +21,7 @@ from pathlib import Path
 from cryptography import x509
 from cryptography.hazmat.primitives import serialization
 
+from ..utils.fs import fsync_dir
 from ..utils.node_token import generate_node_cert, get_cert_fingerprint
 
 _log = logging.getLogger(__name__)
@@ -52,7 +53,7 @@ def _clear_node_cert_unlocked(data_dir: Path) -> None:
 			path.unlink()
 			_log.info("Removed old certificate file: %s", path.name)
 
-	_fsync_dir(data_dir)
+	fsync_dir(data_dir)
 
 
 def ensure_node_cert(data_dir: Path, node_id: str) -> tuple[bytes, bytes]:
@@ -179,18 +180,6 @@ def _validate_cert_key_pair(cert_pem: bytes, key_pem: bytes) -> None:
 		raise ValueError("Certificate and private key do not match")
 
 
-def _fsync_dir(path: Path) -> None:
-	"""Fsync the containing directory so renames are durable across crashes."""
-	flags = os.O_RDONLY
-	if hasattr(os, "O_DIRECTORY"):
-		flags |= os.O_DIRECTORY
-	dir_fd = os.open(path, flags)
-	try:
-		os.fsync(dir_fd)
-	finally:
-		os.close(dir_fd)
-
-
 def _write_file(path: Path, data: bytes, mode: int = 0o600) -> None:
 	"""Write data to file atomically with specified permissions.
 
@@ -212,7 +201,7 @@ def _write_file(path: Path, data: bytes, mode: int = 0o600) -> None:
 			handle.flush()
 			os.fsync(handle.fileno())
 		tmp_path.replace(path)
-		_fsync_dir(path.parent)
+		fsync_dir(path.parent)
 	except Exception:
 		if fd != -1:
 			os.close(fd)

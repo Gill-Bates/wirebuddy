@@ -24,7 +24,7 @@
     {% if _valid_cc %}
     <img alt=""
       aria-hidden="true"
-         src="https://cdn.jsdelivr.net/npm/flag-icons@7.3.2/flags/4x3/{{ _cc }}.svg"
+         src="{{ flag_base_url }}/{{ _cc }}.svg"
       width="{{ _sz[0] }}"
       height="{{ _sz[1] }}"
          decoding="async"
@@ -50,7 +50,7 @@
       width="16"
       height="12"
       decoding="async"
-      src="https://cdn.jsdelivr.net/npm/flag-icons@7.3.2/flags/4x3/{{ _cc }}.svg">
+      src="{{ flag_base_url }}/{{ _cc }}.svg">
     {% endif %}
     <code class="ipv6">{{ _ip.replace(':', ':\u200b').replace('/', '/\u200b') }}</code>
   </div>

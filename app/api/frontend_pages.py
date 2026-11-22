@@ -11,7 +11,6 @@ from __future__ import annotations
 import asyncio
 import ipaddress
 import logging
-import os
 import re
 import sqlite3
 import subprocess
@@ -26,6 +25,7 @@ import markdown as _markdown
 import nh3
 from fastapi import Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse, PlainTextResponse, RedirectResponse, Response
+from gillbates_country_flags import normalize_country_code
 from pydantic import BaseModel
 
 from ..api.speedtest import SPEEDTEST_TSDB_KEY, SPEEDTEST_TSDB_METRIC
@@ -51,7 +51,7 @@ from ..utils.time import is_peer_stale, utcnow
 from ..utils.tls import describe_gui_certificate
 from ..utils.tsdb_helpers import build_latest_by_node
 from ..utils.version import BUILD_INFO, VERSION
-from .acme import get_certs_dir, get_challenge_response
+from .acme import ACME_TOKEN_RE, get_certs_dir, get_challenge_response
 from .auth import coerce_db_bool, get_current_user_optional
 from .frontend_shared import (
 	extract_geo_fields,
@@ -74,12 +74,11 @@ _APP_ROOT = Path("/app")
 # _APP_ROOT handles Docker deployments where the project is mounted at /app.
 # _PROJECT_ROOT handles local development checkouts.
 _SEARCH_ROOTS = (_PROJECT_ROOT, _APP_ROOT)
-_ACME_TOKEN_RE = re.compile(r"^[A-Za-z0-9_-]{1,256}$")
 
 # Configuration constants
 _GEO_SEMAPHORE_LIMIT = 20  # Max concurrent GeoIP lookups
 _SUBPROCESS_TIMEOUT = 5  # Timeout for system tool version checks (seconds)
-# Python 3.10+ asyncio semaphores are loop-agnostic at creation time.
+# Created at import time; asyncio primitives bind to the loop lazily.
 _geo_lookup_semaphore = asyncio.Semaphore(_GEO_SEMAPHORE_LIMIT)
 
 
@@ -120,8 +119,7 @@ async def _resolve_geo_fields_for_fqdns(fqdns: list[str | None]) -> dict[str, di
 		labels = [label for label in hostname.split(".") if label]
 		if not labels:
 			return None
-		cc_tld = labels[-1]
-		return cc_tld if len(cc_tld) == 2 and cc_tld.isalpha() else None
+		return normalize_country_code(labels[-1])
 
 	resolved_ip_by_fqdn: dict[str, str | None] = {}
 	unique_ips: list[str] = []
@@ -412,41 +410,6 @@ def _render_changelog() -> str:
 	return "<p>Changelog not found.</p>"
 
 
-def _get_configured_timezone() -> str:
-	"""Return the configured timezone name for display on the About page.
-
-	Calls ``get_config()`` first so environment-backed settings are loaded before
-	reading ``TZ``. Resolution order:
-	1. ``TZ`` environment variable
-	2. ``/etc/timezone``
-	3. ``/etc/localtime`` symlink relative to ``/usr/share/zoneinfo``
-	4. ``System local time`` fallback
-	"""
-	get_config()  # Ensure settings.env is loaded before reading env vars.
-
-	tz_name = os.getenv("TZ", "").strip()
-	if tz_name:
-		return tz_name
-
-	tz_file = Path("/etc/timezone")
-	try:
-		tz_text = tz_file.read_text(encoding="utf-8").strip()
-		if tz_text:
-			return tz_text
-	except OSError:
-		pass
-
-	try:
-		localtime_path = Path("/etc/localtime").resolve()
-		zoneinfo_root = Path("/usr/share/zoneinfo")
-		if zoneinfo_root in localtime_path.parents:
-			return str(localtime_path.relative_to(zoneinfo_root))
-	except OSError:
-		pass
-
-	return "System local time"
-
-
 @lru_cache(maxsize=1)
 def _get_about_data() -> dict:
 	"""Compute and cache About page data for the process lifetime.
@@ -464,7 +427,7 @@ def _get_about_data() -> dict:
 		"version": VERSION,
 		"build_info": BUILD_INFO,
 		"python_version": python_version,
-		"timezone": _get_configured_timezone(),
+		"timezone": "UTC",
 		"wireguard_version": _get_system_tool_version(_WG_PATH, r"v([\d.]+)", "--version"),
 		"unbound_version": _get_system_tool_version(_UNBOUND_PATH, r"(\d+\.\d+(?:\.\d+)?)", "-V"),
 		"dependencies": _resolve_dependencies(requirements_versions),
@@ -473,7 +436,7 @@ def _get_about_data() -> dict:
 	}
 
 
-# Python 3.10+ asyncio locks/semaphores are loop-agnostic at creation time.
+# Created at import time; asyncio primitives bind to the loop lazily.
 # This lock serializes concurrent first-load calls into _get_about_data().
 _about_data_lock = asyncio.Lock()
 
@@ -1040,7 +1003,7 @@ def acme_challenge(token: str) -> PlainTextResponse:
 	``get_challenge_response`` performs file I/O and should not block the event loop.
 	"""
 	# Always return 404 for invalid or missing tokens to prevent timing attacks
-	if not _ACME_TOKEN_RE.fullmatch(token):
+	if not ACME_TOKEN_RE.fullmatch(token):
 		_log.warning("ACME challenge: invalid token format rejected")
 		return PlainTextResponse("Challenge not found", status_code=404)
 

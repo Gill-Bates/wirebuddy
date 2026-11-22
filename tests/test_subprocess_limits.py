@@ -18,6 +18,10 @@ suite carries no such dependency.
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import os
+import signal
+from pathlib import Path
 
 import pytest
 
@@ -139,3 +143,27 @@ def test_non_positive_timeouts_are_rejected(bad):
 def test_missing_binary_raises_file_not_found():
 	with pytest.raises(FileNotFoundError):
 		_run(run_command("wirebuddy-no-such-binary", timeout=5.0))
+
+
+def _is_gone(pid: int) -> bool:
+	"""True when the process no longer exists or is only an unreaped zombie."""
+	try:
+		state = Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()[0]
+	except FileNotFoundError, ProcessLookupError:
+		return True
+	return state == "Z"
+
+
+def test_group_member_ignoring_sigterm_is_killed_after_leader_exit(tmp_path):
+	"""The leader dies on SIGTERM, a group member ignoring it must still get SIGKILL."""
+	pid_file = tmp_path / "child.pid"
+	script = f'(trap "" TERM; exec sleep 60) >/dev/null 2>&1 & echo $! > {pid_file}; exec sleep 60'
+	try:
+		with pytest.raises(asyncio.TimeoutError):
+			_run(run_command("sh", "-c", script, timeout=1.0, kill_timeout=1.0))
+		child = int(pid_file.read_text())
+		assert _is_gone(child)
+	finally:
+		if pid_file.exists():
+			with contextlib.suppress(ProcessLookupError):
+				os.kill(int(pid_file.read_text()), signal.SIGKILL)

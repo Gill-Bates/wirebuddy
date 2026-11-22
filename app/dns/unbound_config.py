@@ -72,7 +72,7 @@ def _get_field(obj: Any, key: str, default: Any = None) -> Any:
 	"""Safely get a field from dict, sqlite3.Row, or object."""
 	try:
 		return obj[key]
-	except (KeyError, TypeError, IndexError):
+	except KeyError, TypeError, IndexError:
 		pass
 	try:
 		return obj.get(key, default)
@@ -339,7 +339,6 @@ def generate_config(
 
 	upstream = _resolve_upstream(upstream_dns)
 
-	# Check if DNSSEC root key is available
 	dnssec_available = is_dnssec_available() and enable_dnssec
 	num_threads = _auto_num_threads()
 	slabs = _slabs_for_threads(num_threads)

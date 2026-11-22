@@ -1,5 +1,5 @@
 <!-- Parent: ../AGENTS.md -->
-<!-- Generated: 2026-09-21 | Updated: 2026-09-21 -->
+<!-- Generated: 2026-09-21 | Updated: 2026-11-22 -->
 # visual-diff
 
 ## Purpose
@@ -15,23 +15,11 @@ Screenshot comparison producing diff artifacts.
 
 ## For AI Agents
 
-### Working In This Directory
-
-- No special constraints beyond the parent directory guidance.
-
 ### Testing Requirements
 
-- Covered by `tests/runtime/browser-runtime.spec.js`. Run `cd tools/ui-lint && npx playwright test <spec>` (no playwright.config file; defaults apply).
-
-### Common Patterns
-
-- No special constraints beyond the parent directory guidance.
+- Covered by `tests/runtime/browser-runtime.spec.js`. Run `cd tools/ui-lint && npx playwright test <spec>`.
 
 ## Dependencies
-
-### Internal
-
-- No special constraints beyond the parent directory guidance.
 
 ### External
 

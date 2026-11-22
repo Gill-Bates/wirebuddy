@@ -104,3 +104,35 @@ def test_spoofed_forwarded_proto_from_untrusted_peer_is_ignored(conn: sqlite3.Co
 	req = _request("http", "203.0.113.5", forwarded_proto="https")
 	with pytest.raises(HTTPException):
 		auth_api._enforce_https_transport(conn, req, "test")
+
+
+# ─── node bearer authentication follows the same transport rule ──────────────
+
+
+def _node_auth(conn: sqlite3.Connection, monkeypatch, request: Request, *, flag: bool, gui_https: bool) -> None:
+	from app.api import nodes_sync
+	from app.db.sqlite_settings import set_setting
+
+	monkeypatch.setattr(nodes_sync, "get_config", lambda: _FakeConfig(flag))
+	monkeypatch.setattr(config_mod, "get_config", lambda: _FakeConfig(flag))
+	set_setting(conn, "gui_https_enabled", "1" if gui_https else "0")
+	nodes_sync.get_current_node(request, "Bearer unknown-secret", conn)
+
+
+def test_node_auth_rejects_plain_http_when_gui_https_enabled(conn: sqlite3.Connection, monkeypatch) -> None:
+	with pytest.raises(HTTPException) as exc:
+		_node_auth(conn, monkeypatch, _request("http", "203.0.113.5"), flag=False, gui_https=True)
+	assert exc.value.status_code == 400
+
+
+def test_node_auth_loopback_http_passes_transport_check(conn: sqlite3.Connection, monkeypatch) -> None:
+	# Transport accepted; the unknown secret is then rejected with 401, not 400.
+	with pytest.raises(HTTPException) as exc:
+		_node_auth(conn, monkeypatch, _request("http", "127.0.0.1"), flag=False, gui_https=True)
+	assert exc.value.status_code == 401
+
+
+def test_node_auth_plain_http_allowed_by_default(conn: sqlite3.Connection, monkeypatch) -> None:
+	with pytest.raises(HTTPException) as exc:
+		_node_auth(conn, monkeypatch, _request("http", "203.0.113.5"), flag=False, gui_https=False)
+	assert exc.value.status_code == 401

@@ -108,37 +108,20 @@ async def sqlite_integrity_check() -> None:
 
 
 async def tsdb_retention_cleanup() -> None:
-	"""Purge expired time-series data using unified TSDB maintenance logic.
+	"""Purge expired time-series data with the same retention plan as ``maintain_tsdb``.
 
-	Consolidates cleanup by delegating to tsdb.run_maintenance, which handles
-	both file rotation and retention pruning correctly with locks.
+	A failed retention read aborts the run without deleting anything.
 	"""
 	from ..db import tsdb
-	from ..db.sqlite_runtime import close_connection, connect
-	from ..db.sqlite_settings import DEFAULT_TSDB_RETENTION_DAYS, get_tsdb_retention_days
+	from .db_inputs import read_tsdb_retention_plan_sync
 
 	cfg = get_config()
 	tsdb_dir = Path(cfg.tsdb_dir)
-
 	if not await asyncio.to_thread(tsdb_dir.exists):
 		return
-
 	try:
-
-		def _read_retention() -> int:
-			conn = connect(cfg.db_path)
-			try:
-				return get_tsdb_retention_days(conn)
-			except Exception:
-				return DEFAULT_TSDB_RETENTION_DAYS
-			finally:
-				close_connection(conn)
-
-		retention_days = await asyncio.to_thread(_read_retention)
-
-		# Delegate to unified maintenance logic
-		stats = await asyncio.to_thread(tsdb.run_maintenance, tsdb_dir, retention_days)
-
+		retention_days, synthetic_retention = await asyncio.to_thread(read_tsdb_retention_plan_sync, cfg.db_path)
+		stats = await asyncio.to_thread(tsdb.run_maintenance, tsdb_dir, retention_days, synthetic_retention)
 		if stats.get("pruned", 0) > 0:
 			_log.info("MAINTENANCE TSDB retention cleanup: pruned %d series (total series: %d)", stats["pruned"], stats["series"])
 		else:

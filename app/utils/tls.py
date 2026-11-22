@@ -89,10 +89,7 @@ def load_certificate_expiry(cert_path: Path) -> dt.datetime | None:
 	except Exception:
 		_log.warning("TLS_CERT_UNPARSEABLE path=%s", cert_path)
 		return None
-	try:
-		return cert.not_valid_after_utc
-	except AttributeError:  # cryptography < 42
-		return cert.not_valid_after.replace(tzinfo=dt.UTC)
+	return cert.not_valid_after_utc
 
 
 def normalize_hostname(fqdn: str | None) -> str:
@@ -116,7 +113,7 @@ def normalize_hostname(fqdn: str | None) -> str:
 		# Punycode first so an IDN survives; the codec passes ASCII labels
 		# through unchecked, hence the pattern test afterwards.
 		candidate = raw.encode("idna").decode("ascii").lower()
-	except (UnicodeError, ValueError):
+	except UnicodeError, ValueError:
 		candidate = ""
 
 	if not candidate or _HOSTNAME_RE.fullmatch(candidate) is None:
@@ -139,11 +136,50 @@ def _public_key_matches(certfile: Path, keyfile: Path) -> bool:
 		return False
 
 
+def _san_matches(pattern: str, host: str) -> bool:
+	"""RFC 6125 match: a wildcard covers exactly one left-most label."""
+	pattern = pattern.lower().rstrip(".")
+	if pattern.startswith("*."):
+		head, _, rest = host.partition(".")
+		return bool(head) and bool(rest) and rest == pattern[2:]
+	return pattern == host
+
+
+def _certificate_problem(certfile: Path, domain: str, now: dt.datetime) -> str | None:
+	"""Return why the certificate cannot serve ``domain``, or None when it can.
+
+	Checks the start of the validity period and the subject alternative names;
+	the key match and the expiry are checked separately.
+	"""
+	try:
+		cert = x509.load_pem_x509_certificate(certfile.read_bytes())
+		not_before = cert.not_valid_before_utc
+		if not_before > now:
+			return f"not valid before {not_before.isoformat()}"
+		try:
+			san = cert.extensions.get_extension_for_class(x509.SubjectAlternativeName).value
+		except x509.ExtensionNotFound:
+			return "no subject alternative name"
+		try:
+			wanted_ip = ipaddress.ip_address(domain)
+		except ValueError:
+			host = domain.lower().rstrip(".")
+			if any(_san_matches(name, host) for name in san.get_values_for_type(x509.DNSName)):
+				return None
+		else:
+			if wanted_ip in san.get_values_for_type(x509.IPAddress):
+				return None
+		return "host name not covered by the subject alternative names"
+	except Exception:
+		# Unreadable or malformed material is unusable for the listener.
+		return "certificate cannot be evaluated"
+
+
 def _letsencrypt_material(certs_dir: Path, domain: str) -> TlsMaterial | None:
 	"""Return usable ACME material for ``domain``, if present and valid.
 
-	Staging certificates are ignored: they live in ``certs/<domain>_staging/``
-	and are never looked at here, because they are not trusted by clients and
+	Staging certificates are ignored: they are saved with a ``_staging`` suffix
+	(``fullchain_staging.pem``) and are never looked at here, because they are not trusted by clients and
 	silently serving them would look like a broken production setup.
 	"""
 	domain_dir = certs_dir / domain
@@ -167,6 +203,14 @@ def _letsencrypt_material(certs_dir: Path, domain: str) -> TlsMaterial | None:
 			"TLS_LE_CERT_EXPIRED domain=%s expired_at=%s - falling back to self-signed",
 			domain,
 			expires_at.isoformat(),
+		)
+		return None
+	problem = _certificate_problem(certfile, domain, now)
+	if problem is not None:
+		_log.warning(
+			"TLS_LE_CERT_UNUSABLE domain=%s reason=%s - falling back to self-signed",
+			domain,
+			problem,
 		)
 		return None
 	if not _public_key_matches(certfile, keyfile):

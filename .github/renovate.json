@@ -58,14 +58,29 @@
             ]
         },
         {
-            "description": "Trivy security scanner: keep updated always",
-            "matchPackageNames": [
-                "aquasecurity/trivy-action"
+            "description": "Pinned workflow tool versions (actionlint, zizmor, Trivy CLI): reviewed, never auto-merged. ACTIONLINT_SHA256 and TRIVY_SHA256 in ci.yml are not bumped by Renovate, so such a PR fails closed at sha256sum --check until a human updates the checksum from the release's checksums file",
+            "matchManagers": [
+                "custom.regex"
             ],
-            "automerge": true,
+            "automerge": false,
+            "labels": [
+                "ci-tooling"
+            ]
+        },
+        {
+            "description": "Trivy scanner (actions and pinned CLI version): reviewed bump, never auto-merged",
+            "matchPackageNames": [
+                "aquasecurity/trivy-action",
+                "aquasecurity/trivy"
+            ],
+            "groupName": "trivy",
+            "automerge": false,
             "minimumReleaseAge": "1 day",
             "schedule": [
                 "at any time"
+            ],
+            "labels": [
+                "security"
             ]
         },
         {
@@ -85,5 +100,17 @@
             "security",
             "critical"
         ]
-    }
+    },
+    "customManagers": [
+        {
+            "description": "Tool versions in workflow env/with values, marked by a '# renovate:' comment on the line above",
+            "customType": "regex",
+            "managerFilePatterns": [
+                "/^\\.github/workflows/[^/]+\\.ya?ml$/"
+            ],
+            "matchStrings": [
+                "# renovate: datasource=(?<datasource>\\S+) depName=(?<depName>\\S+)\\s+[A-Za-z_]+:\\s*[\"']?(?<currentValue>[^\"'\\s]+)[\"']?"
+            ]
+        }
+    ]
 }

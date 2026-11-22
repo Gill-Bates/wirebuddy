@@ -17,6 +17,16 @@ from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
+from gillbates_speedtest import (
+	DEFAULT_SPEEDTEST_COOLDOWN_SECONDS,
+	ProgressCallback,
+	ProgressEvent,
+	SpeedtestBusyError,
+	SpeedtestCooldownError,
+	SpeedtestRunLease,
+	acquire_speedtest_run_lease_async,
+	run_speedtest,
+)
 from pydantic import BaseModel, field_validator
 from starlette.concurrency import run_in_threadpool
 
@@ -34,15 +44,9 @@ from ..db.sqlite_settings import (
 	set_speedtest_last_run_at,
 	set_speedtest_retention_days,
 )
-from ..speedtest import (
-	DEFAULT_SPEEDTEST_COOLDOWN_SECONDS,
-	SpeedtestBusyError,
-	SpeedtestCooldownError,
-	acquire_speedtest_run_lease,
-)
-from ..speedtest.tester import ProgressCallback, ProgressEvent, run_speedtest
 from ..utils.config import Config
 from ..utils.deps import get_config, get_conn
+from ..utils.geoip import resolve_speedtest_server_country
 from ..utils.rate_limit import RATE_LIMIT_CRITICAL, RATE_LIMIT_HEAVY, RATE_LIMIT_UI_HEAVY, rate_limit
 from ..utils.time import utcnow
 from ..utils.tsdb_helpers import build_latest_by_node
@@ -134,13 +138,12 @@ def _record_speedtest_error(session: _SpeedtestStreamSession, reason: str) -> No
 async def _run_speedtest_stream_session(
 	session: _SpeedtestStreamSession,
 	cfg: Config,
-	lease: Any,
+	lease: SpeedtestRunLease,
 ) -> None:
 	"""Run a started speedtest and fan out progress updates to SSE subscribers."""
-	loop = asyncio.get_running_loop()
 
-	def _on_progress(event: ProgressEvent) -> None:
-		loop.call_soon_threadsafe(_record_speedtest_progress, session, dict(event))
+	async def _on_progress(event: ProgressEvent) -> None:
+		_record_speedtest_progress(session, dict(event))
 
 	try:
 		async with lease:
@@ -149,6 +152,9 @@ async def _run_speedtest_stream_session(
 				progress_callback=_on_progress,
 				persist_last_run_on_failure=False,
 			)
+			if result.get("status") == "ok":
+				# Records the cooldown on release, so the documented 429 cooldown also covers manual runs.
+				lease.mark_success()
 		_record_speedtest_result(session, result, stored)
 	except HTTPException as exc:
 		_record_speedtest_error(session, str(exc.detail))
@@ -359,7 +365,7 @@ async def update_speedtest_settings(
 		)
 	except ValueError as exc:
 		raise HTTPException(status_code=422, detail=str(exc)) from None
-	except (sqlite3.OperationalError, sqlite3.IntegrityError):
+	except sqlite3.OperationalError, sqlite3.IntegrityError:
 		_log.exception("SPEEDTEST_SETTINGS_UPDATE_FAILED")
 		raise HTTPException(status_code=500, detail="Failed to persist speedtest settings") from None
 
@@ -371,10 +377,10 @@ async def _acquire_speedtest_lease(
 	*,
 	cooldown_seconds: float = DEFAULT_SPEEDTEST_COOLDOWN_SECONDS,
 	update_cooldown: bool = True,
-):
+) -> SpeedtestRunLease:
 	"""Acquire the shared speedtest lease or raise the corresponding HTTP error."""
 	try:
-		return acquire_speedtest_run_lease(
+		return await acquire_speedtest_run_lease_async(
 			tsdb_dir,
 			cooldown_seconds=cooldown_seconds,
 			update_cooldown=update_cooldown,
@@ -415,12 +421,11 @@ async def _run_speedtest_core(
 	result: dict[str, Any] | None = None
 	persisted_result: dict[str, Any] | None = None
 	try:
-		raw_result = await asyncio.wait_for(
-			run_speedtest(progress_callback=progress_callback),
+		result = await asyncio.wait_for(
+			run_speedtest(progress_callback=progress_callback, country_resolver=resolve_speedtest_server_country),
 			timeout=SPEEDTEST_RUN_TIMEOUT_SECONDS,
 		)
 		run_completed = True
-		result = raw_result if isinstance(raw_result, dict) else {"status": "error", "reason": "Invalid result type"}
 		if result.get("status") != "error":
 			persisted_result = result
 	except TimeoutError:
@@ -434,10 +439,7 @@ async def _run_speedtest_core(
 	finally:
 		should_persist_last_run = persist_last_run_on_failure or run_completed
 		if should_persist_last_run:
-			try:
-				await _persist_speedtest_state(cfg.db_path, result=persisted_result)
-			except Exception as exc:
-				_log.warning("SPEEDTEST_STATE_DB_WRITE_FAILED: %s", exc)
+			await _persist_speedtest_state(cfg.db_path, result=persisted_result)
 
 	stored = False
 	if result is not None and result.get("status") != "error":
@@ -488,13 +490,8 @@ async def trigger_speedtest_stream(
 	if session is None:
 		raise HTTPException(status_code=404, detail="Speed test stream not found")
 
-	async def event_generator():
-		"""Generate SSE events for speedtest progress."""
-		async for event in _stream_speedtest_session(request, session):
-			yield event
-
 	return StreamingResponse(
-		event_generator(),
+		_stream_speedtest_session(request, session),
 		media_type="text/event-stream",
 		headers={
 			"Cache-Control": "no-cache",
@@ -590,7 +587,6 @@ async def get_speedtest_nodes(
 	"""
 	cfg = get_config(request)
 
-	# Get all nodes from DB
 	try:
 		nodes = await _run_in_threadpool_with_timeout(
 			SPEEDTEST_SQLITE_TIMEOUT_SECONDS,
@@ -685,8 +681,6 @@ async def get_speedtest_storage_stats(
 	conn: sqlite3.Connection = Depends(get_conn),
 ):
 	"""Get speedtest storage statistics."""
-	from ..db import tsdb
-
 	cfg = get_config(request)
 	try:
 		stats = await _run_in_threadpool_with_timeout(

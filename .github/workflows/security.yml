@@ -1,0 +1,193 @@
+#
+# .github/workflows/security.yml
+# Copyright (C) 2026 Gill-Bates http://github.com/Gill-Bates
+#
+# Purpose: weekly rescan of the stable WireBuddy image `latest` serves on
+#   Docker Hub. The release gate in docker-build.yml answers "was the image
+#   acceptable when it was built"; this answers "is it acceptable today".
+#   Read-only: it scans each platform child by digest and never builds, tags,
+#   pushes or deletes anything. A red run means the published image needs a
+#   new release; a failed run opens or updates one tracking issue.
+# Related: docker-build.yml (release gate and scan policy), ci.yml (source
+#   secret scan); .github/scripts/release_tags.py, trivy_report.py,
+#   failure_issue.py; .github/workflows/AGENTS.md.
+#
+name: Security rescan
+run-name: security-rescan-${{ github.run_number }}
+
+on:
+  schedule:
+    # Weekly is enough; a daily run mostly re-reports the same finding.
+    - cron: '37 4 * * 1'
+  workflow_dispatch:
+
+concurrency:
+  group: security-rescan
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  # Must equal the platforms of the build matrix in docker-build.yml. The index
+  # may not lose a child silently, so the list is explicit; pinned by
+  # .github/scripts/test_workflow_contracts.py.
+  EXPECTED_PLATFORMS: 'linux/amd64 linux/arm64'
+
+jobs:
+  # The newest stable version tag (the one `latest` points at) is the subject, so
+  # the report names a version; a prerelease is not rescanned. When a newest
+  # prerelease has pruned every stable version tag, `latest` itself is scanned and
+  # the report names its resolved index digest. The image is public, so neither
+  # listing nor inspection logs in.
+  resolve:
+    name: Resolve published digests
+    runs-on: ubuntu-26.04
+    timeout-minutes: 10
+    outputs:
+      version: ${{ steps.resolve.outputs.version }}
+      index_digest: ${{ steps.resolve.outputs.index_digest }}
+      matrix: ${{ steps.resolve.outputs.matrix }}
+    steps:
+      - name: Checkout job helper and scripts
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+          sparse-checkout: .github/scripts
+
+      - name: Set up Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: '3.14'
+
+      - name: Agent banner and job temp directory
+        run: python3 .github/scripts/ci_job_setup.py
+
+      # Reads the complete Docker Hub listing; falls back to `latest` when no
+      # stable version tag is listed and fails only when neither exists.
+      - name: Find the rescan subject
+        id: latest
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+        run: python3 .github/scripts/release_tags.py stable-latest
+
+      # Resolves the version into its index and per-platform digests. Fails when
+      # the tag does not resolve or its platform list differs from
+      # EXPECTED_PLATFORMS, so a missing child is a failure and not a shorter scan.
+      - name: Resolve index and platform digests
+        id: resolve
+        env:
+          IMAGE_NAME: ${{ format('docker.io/{0}/wirebuddy', secrets.DOCKERHUB_USERNAME) }}
+          VERSION: ${{ steps.latest.outputs.version }}
+        run: python3 .github/scripts/release_tags.py resolve
+
+      - name: Summarize the scan subject
+        env:
+          VERSION: ${{ steps.resolve.outputs.version }}
+          INDEX_DIGEST: ${{ steps.resolve.outputs.index_digest }}
+        run: |
+          set -euo pipefail
+          echo "Rescanning release ${VERSION} (${INDEX_DIGEST})"
+          echo "### Rescan of ${VERSION} (${INDEX_DIGEST})" >> "$GITHUB_STEP_SUMMARY"
+
+  scan:
+    name: Rescan ${{ matrix.arch }} digest
+    needs: resolve
+    runs-on: ubuntu-26.04
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.resolve.outputs.matrix) }}
+    steps:
+      # Full checkout of the default branch: the .trivyignore in force today
+      # decides, not the one of the release tag.
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: '3.14'
+
+      - name: Agent banner and job temp directory
+        run: python3 .github/scripts/ci_job_setup.py
+
+      # Same policy as the release gate in docker-build.yml (action revision,
+      # scanners, severity, ignore-unfixed, .trivyignore); the platform child is
+      # addressed by digest.
+      - name: Trivy vulnerability scan
+        id: trivy
+        # Pinned to an immutable commit SHA, see GHSA-69fq-xp46-6x23.
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          cache: 'true'
+          image-ref: ${{ format('docker.io/{0}/wirebuddy@{1}', secrets.DOCKERHUB_USERNAME, matrix.digest) }}
+          format: 'json'
+          output: 'trivy-${{ matrix.arch }}.json'
+          exit-code: '1'
+          ignore-unfixed: true
+          # Lists every package, so a clean scan still proves which targets it covered.
+          list-all-pkgs: true
+          # Source secrets are gated in ci.yml.
+          scanners: 'vuln'
+          vuln-type: 'os,library'
+          severity: 'CRITICAL,HIGH'
+          timeout: '10m'
+          trivyignores: '.trivyignore'
+
+      # An unreadable report or one without OS and Python package results fails
+      # here instead of passing as "0 findings"; the scan step above carries the
+      # blocking exit code for findings.
+      - name: Summarize Trivy report
+        if: ${{ !cancelled() && steps.trivy.conclusion != 'skipped' }}
+        env:
+          ARCH: ${{ matrix.arch }}
+          DIGEST: ${{ matrix.digest }}
+          VERSION: ${{ needs.resolve.outputs.version }}
+        run: |
+          set -euo pipefail
+          python3 .github/scripts/trivy_report.py status "trivy-${ARCH}.json" \
+            --expect-class os-pkgs --expect-class lang-pkgs \
+            --expect-ref "$DIGEST" \
+            --summary-title "Trivy (${VERSION}, ${ARCH}, ${DIGEST})" --list 20 >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload Trivy report (${{ matrix.arch }})
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: trivy-rescan-${{ matrix.arch }}
+          path: trivy-${{ matrix.arch }}.json
+          retention-days: 30
+          if-no-files-found: warn
+
+  # One tracking issue per failure, not one per run. Only this job may write issues.
+  report-failure:
+    name: Report failed rescan
+    needs: [resolve, scan]
+    if: ${{ failure() }}
+    runs-on: ubuntu-26.04
+    timeout-minutes: 5
+    permissions:
+      contents: read  # sparse checkout of the scripts
+      issues: write
+    steps:
+      - name: Checkout job helper and scripts
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+          sparse-checkout: .github/scripts
+
+      - name: Set up Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: '3.14'
+
+      - name: Agent banner and job temp directory
+        run: python3 .github/scripts/ci_job_setup.py
+
+      - name: Open or update the tracking issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 .github/scripts/failure_issue.py --title "Security rescan failed"

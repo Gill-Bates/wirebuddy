@@ -35,8 +35,7 @@ Usernames are normalized to lowercase and must:
 
 Passwords must:
 
-- contain at least 8 characters
-- fit within 72 UTF-8 bytes
+- contain 8–256 characters
 - avoid control characters and known common passwords
 - satisfy at least three of these four categories:
   - uppercase letter
@@ -55,42 +54,42 @@ password must provide the current password.
 
 Administrators can change another account's username, role, and active status.
 Deleting or deactivating an account invalidates its access. Deletion also
-removes the account's OTP and passkey records through database relationships.
+removes the account's 2FA and passkey records through database relationships.
 
 Users may update their own username through the API, but the current web user
 management page is administrator-only.
 
-## TOTP Multi-Factor Authentication
+## Two-factor authentication (2FA)
 
-Users can enroll TOTP with an authenticator application. Administrators can
+Users can enroll two-factor authentication with an authenticator application (TOTP). Administrators can
 initiate enrollment for another user; that user completes setup on their next
 login.
 
 Enrollment flow:
 
-1. Open **Users → OTP Settings** for the account.
-2. Start OTP enrollment.
-3. The account owner scans the QR code on the OTP setup page.
-4. Confirm with a valid 6–8 digit TOTP code.
+1. Open **Users → 2FA Settings** for the account.
+2. Start 2FA enrollment.
+3. The account owner scans the QR code on the 2FA setup page.
+4. Confirm with a valid 6–8 digit authenticator code (TOTP).
 5. Download and store the one-time recovery-code ZIP.
 
 WireBuddy generates eight single-use recovery codes. Recovery codes are not
 returned by later API calls and cannot be regenerated from stored hashes.
 
-Enrollment cannot be started again for an account that already has OTP enabled;
-the request is rejected with `409`. Disable OTP first, which enforces the
+Enrollment cannot be started again for an account that already has 2FA enabled;
+the request is rejected with `409`. Disable 2FA first, which enforces the
 reauthentication described below, then enroll again.
 
-Disabling OTP requires reauthentication:
+Disabling 2FA requires reauthentication:
 
-- Account owner: current password or a valid OTP code
+- Account owner: current password or a valid authenticator code (TOTP)
 - Administrator acting on another user: the administrator's own password
 
-TOTP codes are single-use. A code accepted for signing in, for confirming
-enrollment or for disabling OTP cannot be used a second time within its
+Authenticator codes are single-use. A code accepted for signing in, for confirming
+enrollment or for disabling 2FA cannot be used a second time within its
 30-second window, so a code observed in one step cannot be replayed in another.
 
-Enabling, confirming, or disabling OTP revokes existing sessions where needed.
+Enabling, confirming, or disabling 2FA revokes existing sessions where needed.
 
 ## Passkeys
 

@@ -94,7 +94,7 @@ def _conntrack_accounting_requirements_met() -> bool:
 	"""Check conntrack accounting availability without mutating host state."""
 	try:
 		return _CONNTRACK_ACCT_PATH.read_text(encoding="ascii").strip() == "1"
-	except (OSError, ValueError):
+	except OSError, ValueError:
 		return False
 
 
@@ -301,7 +301,7 @@ async def _regenerate_split_dns(conn: sqlite3.Connection, fqdn: str | None = Non
 
 	try:
 		count, resolved_fqdn = await run_in_threadpool(_prepare)
-	except (OSError, RuntimeError, ValueError):
+	except OSError, RuntimeError, ValueError:
 		_log.exception("SPLIT_DNS_REGENERATE_FAILED")
 		return False
 
@@ -310,7 +310,7 @@ async def _regenerate_split_dns(conn: sqlite3.Connection, fqdn: str | None = Non
 
 	try:
 		ok, msg = await unbound.reload_config()
-	except (OSError, RuntimeError, ValueError):
+	except OSError, RuntimeError, ValueError:
 		_log.exception("SPLIT_DNS_REGENERATE_FAILED")
 		return False
 	if ok:

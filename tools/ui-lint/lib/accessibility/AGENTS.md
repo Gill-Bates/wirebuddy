@@ -1,5 +1,5 @@
 <!-- Parent: ../AGENTS.md -->
-<!-- Generated: 2026-09-21 | Updated: 2026-09-21 -->
+<!-- Generated: 2026-09-21 | Updated: 2026-11-22 -->
 # accessibility
 
 ## Purpose
@@ -23,10 +23,6 @@ Runs axe-core against a page and normalises its violations into the linter's fin
 ### Testing Requirements
 
 - No dedicated spec under `tests/`; it is exercised indirectly through `run-ui-lint.mjs` (via the `orchestration/audit-runner.mjs` facade). Verify with a real audit run against a running WireBuddy (`npm run audit`, needs `UI_LINT_USERNAME`/`UI_LINT_PASSWORD`).
-
-### Common Patterns
-
-- No special constraints beyond the parent directory guidance.
 
 ## Dependencies
 

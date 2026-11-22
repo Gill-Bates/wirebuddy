@@ -4,9 +4,6 @@
 # Copyright (C) 2026 Gill-Bates http://github.com/Gill-Bates
 #
 
-# SPDX-License-Identifier: MIT
-#
-
 """Seed a ready-to-use admin into a fresh WireBuddy database, for CI only.
 
 The Playwright audit (``tools/ui-lint/run-ui-lint.mjs``) logs in and then walks
@@ -28,7 +25,7 @@ server starts* is both shorter and closes the gate at the root: with a user
 present, ``ensure_default_admin()`` returns False, the gate is never armed, and
 ``create_user()`` leaves ``must_change_password`` at its column default of 0.
 
-Not for production, and it refuses to touch a database that already has users -
+Not for production, and it refuses to touch a database that already has users of any kind -
 see ``ensure_default_admin`` for the real first-boot path.
 
     WIREBUDDY_SECRET_KEY=... WIREBUDDY_DATA_DIR=... \
@@ -39,6 +36,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import sqlite3
 import sys
 from pathlib import Path
 
@@ -49,8 +47,16 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from app.db.sqlite_runtime import close_connection, connect
 from app.db.sqlite_schema import init_schema, insert_default_settings
 from app.db.sqlite_settings import set_setting, validate_secret_key
-from app.db.sqlite_users import count_admins, create_user
+from app.db.sqlite_users import create_user
 from app.utils.config import load_config
+
+
+def _existing_user_count(conn: sqlite3.Connection) -> int:
+	"""Return the number of users of any kind, 0 when the users table does not exist yet."""
+	has_table = conn.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'users'").fetchone()
+	if not has_table:
+		return 0
+	return int(conn.execute("SELECT COUNT(*) FROM users").fetchone()[0])
 
 
 def main() -> int:
@@ -69,7 +75,7 @@ def main() -> int:
 		action="store_true",
 		help="set gui_localhost_only=false so the server binds 0.0.0.0 instead of 127.0.0.1",
 	)
-	# run.py reads the listener from the settings table (gui_port /
+	# app.server reads the listener from the settings table (gui_port /
 	# gui_localhost_only) and honours no HOST/PORT environment variable, so a
 	# port other than 8000 can only be requested here.
 	parser.add_argument(
@@ -100,6 +106,16 @@ def main() -> int:
 
 	conn = connect(cfg.db_path)
 	try:
+		# Checked before any write: appending a known-password admin to a real
+		# database is the failure mode worth being loud about.
+		existing_users = _existing_user_count(conn)
+		if existing_users:
+			print(
+				f"ERROR: this database already has {existing_users} user(s); refusing to seed. Use an empty data dir.",
+				file=sys.stderr,
+			)
+			return 1
+
 		init_schema(conn)
 
 		# Before any other setting is written. validate_secret_key() installs
@@ -116,18 +132,6 @@ def main() -> int:
 			return 1
 
 		insert_default_settings(conn)
-
-		# Refuse to add a second admin to a database that is already set up:
-		# this script exists for a throwaway CI instance, and silently
-		# appending an account with a known password to a real one is the
-		# failure mode worth being loud about.
-		existing_admins = count_admins(conn)
-		if existing_admins:
-			print(
-				f"ERROR: this database already has {existing_admins} active admin(s); refusing to seed.",
-				file=sys.stderr,
-			)
-			return 1
 
 		user_id = create_user(conn, args.username, password, is_admin=True)
 		if user_id is None:

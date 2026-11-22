@@ -1,5 +1,5 @@
 <!-- Parent: ../AGENTS.md -->
-<!-- Generated: 2026-09-21 | Updated: 2026-09-21 -->
+<!-- Generated: 2026-09-21 | Updated: 2026-11-22 -->
 # utilities
 
 ## Purpose
@@ -9,7 +9,7 @@ Tiny single-purpose helper classes, mostly replacing inline `style=` attributes 
 | File | Description |
 |------|-------------|
 | `wb-state.css` | `.is-hidden`, `.is-empty` and similar state classes toggled by JS (`js/ui-state.js`) |
-| `state-extended.css` | Extra state/display helpers (hidden-by-default, disabled interaction replacing inline `pointer-events: none`) |
+| `state-extended.css` | `.wb-cell-half` only |
 | `icons.css` | Material Icons baseline alignment and size modifiers |
 
 ## For AI Agents
@@ -17,7 +17,7 @@ Tiny single-purpose helper classes, mostly replacing inline `style=` attributes 
 - Keep helpers atomic; prefer adding a class here over inline styles. `wb-state.css` is also `@import`ed by some page sheets.
 
 ### Testing Requirements
-`node tools/ui-lint/run-ui-lint.mjs`
+See `../../AGENTS.md`.
 
 ### Common Patterns
 - `is-*` state classes; `!important` is acceptable only for hide/disable helpers.

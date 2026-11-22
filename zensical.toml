@@ -1,0 +1,152 @@
+# zensical.toml
+# Copyright (C) 2026 Gill-Bates http://github.com/Gill-Bates
+#
+# Zensical configuration of the WireBuddy documentation site (replaces docs/mkdocs.yml).
+# Build: zensical build --config-file zensical.toml --strict --clean
+[project]
+site_name = "WireBuddy Documentation"
+site_description = "Modern WireGuard VPN Management with DNS Ad-Blocking"
+site_author = "Gill-Bates"
+site_url = "https://gill-bates.github.io/wirebuddy/"
+repo_name = "Gill-Bates/wirebuddy"
+repo_url = "https://github.com/Gill-Bates/wirebuddy"
+edit_uri = "edit/main/docs/"
+docs_dir = "docs"
+site_dir = "site"
+use_directory_urls = true
+copyright = "Copyright &copy; 2026 Gill-Bates | Licensed under MIT"
+extra_css = ["stylesheets/extra.css"]
+# AGENTS.md files are repository notes, not site content.
+exclude_docs = """
+AGENTS.md
+**/AGENTS.md
+"""
+# Copied in from the repository root by docs-build.yml, linked from pages.
+not_in_nav = """
+changelog.md
+license.md
+"""
+nav = [
+  { "Home" = "index.md" },
+  { "Getting Started" = [
+    { "Quick Start" = "getting-started/quick-start.md" },
+    { "Installation" = "getting-started/installation.md" },
+    { "First Steps" = "getting-started/first-steps.md" },
+    { "Docker Setup" = "getting-started/docker.md" },
+  ] },
+  { "Features" = [
+    { "WireGuard Management" = "features/wireguard.md" },
+    { "Multi-Node Deployment" = "features/multi-node.md" },
+    { "DNS Ad-Blocking" = "features/dns.md" },
+    { "Speed Test" = "features/speedtest.md" },
+    { "Monitoring & Analytics" = "features/monitoring.md" },
+    { "GeoIP & Maps" = "features/geoip.md" },
+    { "User Management" = "features/users.md" },
+    { "Let's Encrypt" = "features/acme.md" },
+    { "Backup & Restore" = "features/backup.md" },
+  ] },
+  { "Configuration" = [
+    { "Environment Variables" = "configuration/environment.md" },
+    { "WireGuard Settings" = "configuration/wireguard.md" },
+    { "DNS Settings" = "configuration/dns.md" },
+    { "Security Settings" = "configuration/security.md" },
+    { "Monitoring Settings" = "configuration/monitoring.md" },
+    { "Status Page" = "configuration/status-page.md" },
+  ] },
+  { "Security" = [
+    { "Overview" = "security/overview.md" },
+    { "Authentication" = "security/authentication.md" },
+    { "Passkeys (WebAuthn)" = "security/passkeys.md" },
+    { "Rate Limiting" = "security/rate-limiting.md" },
+    { "Best Practices" = "security/best-practices.md" },
+  ] },
+  { "API Reference" = [
+    { "Overview" = "api/overview.md" },
+    { "Authentication" = "api/authentication.md" },
+    { "Endpoints" = "api/endpoints.md" },
+  ] },
+  { "Development" = [
+    { "Setup" = "development/setup.md" },
+    { "Architecture" = "development/architecture.md" },
+    { "Contributing" = "development/contributing.md" },
+  ] },
+  { "Troubleshooting" = "troubleshooting.md" },
+]
+
+[project.theme]
+# classic keeps the Material look and the custom CSS of the MkDocs site.
+variant = "classic"
+language = "en"
+favicon = "assets/favicon.png"
+font.text = "Roboto"
+font.code = "Roboto Mono"
+features = [
+  "navigation.instant",
+  "navigation.tracking",
+  "navigation.tabs",
+  "navigation.sections",
+  "navigation.expand",
+  "navigation.top",
+  "navigation.footer",
+  "navigation.prune",
+  "search.suggest",
+  "search.highlight",
+  "search.share",
+  "content.code.copy",
+  "content.code.annotate",
+  "content.tabs.link",
+]
+# custom: the WireBuddy red comes from stylesheets/extra.css, per scheme.
+palette = [
+  { media = "(prefers-color-scheme: light)", scheme = "default", primary = "custom", accent = "custom", toggle = { icon = "material/brightness-7", name = "Switch to dark mode" } },
+  { media = "(prefers-color-scheme: dark)", scheme = "slate", primary = "custom", accent = "custom", toggle = { icon = "material/brightness-4", name = "Switch to light mode" } },
+]
+icon.repo = "fontawesome/brands/github"
+icon.edit = "material/pencil"
+icon.view = "material/eye"
+
+[project.plugins.search]
+separator = '[\s\-\.]+'
+
+[project.plugins.minify]
+minify_html = true
+
+[project.markdown_extensions]
+abbr = {}
+admonition = {}
+attr_list = {}
+def_list = {}
+footnotes = {}
+md_in_html = {}
+toc.permalink = true
+toc.toc_depth = 3
+pymdownx.betterem.smart_enable = "all"
+pymdownx.caret = {}
+pymdownx.details = {}
+pymdownx.emoji.emoji_index = "zensical.extensions.emoji.twemoji"
+pymdownx.emoji.emoji_generator = "zensical.extensions.emoji.to_svg"
+pymdownx.highlight.anchor_linenums = true
+pymdownx.highlight.line_spans = "__span"
+pymdownx.highlight.pygments_lang_class = true
+pymdownx.inlinehilite = {}
+pymdownx.keys = {}
+pymdownx.mark = {}
+pymdownx.smartsymbols = {}
+pymdownx.superfences.custom_fences = [
+  { name = "mermaid", class = "mermaid", format = "pymdownx.superfences.fence_code_format" },
+]
+pymdownx.tabbed.alternate_style = true
+pymdownx.tasklist.custom_checkbox = true
+pymdownx.tilde = {}
+
+[project.extra]
+homepage = "https://gill-bates.github.io/wirebuddy/"
+generator = false
+
+[[project.extra.social]]
+icon = "fontawesome/brands/github"
+link = "https://github.com/Gill-Bates"
+
+[[project.extra.social]]
+icon = "fontawesome/brands/docker"
+link = "https://hub.docker.com/r/giiibates/wirebuddy"

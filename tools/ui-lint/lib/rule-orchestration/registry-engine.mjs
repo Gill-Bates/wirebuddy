@@ -80,6 +80,7 @@ function normalizeRuleMeta(rule) {
         executionMode: meta.executionMode || 'parallel',
         browsers: uniqueStrings(meta.browsers || rule.browsers),
         devices: uniqueStrings(meta.devices || rule.devices),
+        scopes: uniqueStrings(meta.scopes || rule.scopes),
         requires: uniqueStrings(requirements),
         optional: uniqueStrings(meta.optional || rule.optional),
         capabilities: uniqueStrings(meta.capabilities || rule.capabilities),

@@ -189,7 +189,7 @@ always one of:
 A passkey signature is bound to the origin, so a lookalike site cannot obtain
 anything replayable; a TOTP code can be relayed by an attacker-controlled proxy.
 Passkeys require a registered device, so register a second authenticator (see
-[For Users](#for-users)). How the methods map onto the login flow is described in
+[For Users](#for-users_1)). How the methods map onto the login flow is described in
 [Authentication](authentication.md#authentication-methods).
 
 ## Resources

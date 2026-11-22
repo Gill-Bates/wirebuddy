@@ -1,8 +1,31 @@
 /* Custom styles for WireBuddy documentation */
 
+/* WireBuddy red, taken from the app tokens in app/static/css/style.css */
 :root {
-    --wb-primary: #4f46e5;
-    --wb-accent: #3b82f6;
+    --wb-primary: #88171a;
+    --wb-primary-hover: #6f1215;
+    --wb-accent: #b4234d;
+}
+/* Theme palette is "custom" in zensical.toml; these variables supply it. */
+[data-md-color-primary="custom"] {
+    --md-primary-fg-color: var(--wb-primary);
+    --md-primary-fg-color--light: #a52a2d;
+    --md-primary-fg-color--dark: var(--wb-primary-hover);
+    --md-primary-bg-color: #ffffff;
+    --md-primary-bg-color--light: rgba(255, 255, 255, 0.7);
+}
+[data-md-color-accent="custom"] {
+    --md-accent-fg-color: var(--wb-accent);
+    --md-accent-fg-color--transparent: rgba(180, 35, 77, 0.1);
+    --md-accent-bg-color: #ffffff;
+    --md-accent-bg-color--light: rgba(255, 255, 255, 0.7);
+}
+/* Dark red text is unreadable on the dark background: links and accents use the light red. */
+[data-md-color-scheme="slate"] {
+    --wb-accent: #ff8aa5;
+    --md-accent-fg-color: var(--wb-accent);
+    --md-accent-fg-color--transparent: rgba(255, 138, 165, 0.1);
+    --md-typeset-a-color: #ff8aa5;
 }
 
 /* Dark mode: Match WireBuddy background colors */
@@ -27,23 +50,12 @@
     border-left-color: var(--wb-accent);
 }
 
-/* Grid cards styling */
+/* Grid cards: wider tracks and more air than the theme default; card chrome comes from the theme. */
 .grid.cards {
     display: grid;
     grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
     gap: 1rem;
     margin: 2rem 0;
-}
-
-.grid.cards>* {
-    border: 1px solid var(--md-default-fg-color--lightest);
-    border-radius: 8px;
-    padding: 1.5rem;
-    transition: box-shadow 0.2s;
-}
-
-.grid.cards>*:hover {
-    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
 }
 
 /* Material icon sizing in lists */

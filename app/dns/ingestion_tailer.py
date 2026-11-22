@@ -286,11 +286,15 @@ class UnboundLogTailer:
 					return
 				self.tracker.advance_read(self._active_inode, 0)
 
-		self._drain_active_file(q)
+		drained = self._drain_active_file(q)
 
 		# Detect logrotate: has the path moved on to a different inode than
 		# the descriptor we've been reading? That descriptor was just drained
-		# to its EOF above, so switching now loses nothing.
+		# to its EOF above, so switching now loses nothing. When the chunk limit
+		# stopped the drain early, unread lines remain in the old file: keep it
+		# and continue next cycle instead of dropping them.
+		if not drained:
+			return
 		try:
 			path_inode = self.log_path.stat().st_ino
 		except OSError:
@@ -305,17 +309,22 @@ class UnboundLogTailer:
 				self.tracker.advance_read(self._active_inode, 0)
 				self._drain_active_file(q)
 
-	def _drain_active_file(self, q: queue.Queue[TailItem]) -> None:
-		"""Read all currently-available lines from the active file (blocking I/O)."""
+	def _drain_active_file(self, q: queue.Queue[TailItem]) -> bool:
+		"""Read currently-available lines from the active file (blocking I/O).
+
+		Returns False when lines may remain unread (chunk limit reached or the
+		enqueue was aborted by shutdown), so the caller must not drop this file
+		yet; True once it was read to its current EOF (or could not be read).
+		"""
 		f = self._active_file
 		if f is None:
-			return
+			return True
 
 		try:
 			current_size = os.fstat(f.fileno()).st_size
 		except OSError as e:
 			_log.warning("DNS_TAIL fstat failed: %s", e)
-			return
+			return True
 
 		current_offset = f.tell()
 
@@ -328,12 +337,12 @@ class UnboundLogTailer:
 
 		# Nothing new to read
 		if current_size <= current_offset:
-			return
+			return True
 
 		# Read new lines (chunk-limited to prevent OOM)
 		lines_read = 0
 		blocked_time = 0.0
-
+		drained = True
 		try:
 			# Use readline() instead of iterator to allow f.tell()
 			for _ in range(CHUNK_LINE_LIMIT):
@@ -351,6 +360,7 @@ class UnboundLogTailer:
 				# Runs in thread pool, so blocking is safe here
 				start = time.monotonic()
 				if not _put_with_shutdown(q, item, self._stop):
+					drained = False
 					break
 				delay = time.monotonic() - start
 				if delay > 0.01:
@@ -360,9 +370,10 @@ class UnboundLogTailer:
 			else:
 				# Chunk limit reached (loop completed without break)
 				_log.debug("DNS_TAIL chunk limit reached, will continue next cycle")
+				drained = False
 		except Exception as e:
 			_log.warning("DNS_TAIL read error: %s", e)
-			return
+			return True
 
 		if lines_read > 0:
 			_log.debug("DNS_TAIL read %d lines", lines_read)
@@ -370,3 +381,4 @@ class UnboundLogTailer:
 		# Log backpressure for observability (queue was full, we blocked)
 		if blocked_time > 0.1:
 			_log.warning("DNS_TAIL backpressure: blocked %.2fs while enqueuing %d lines", blocked_time, lines_read)
+		return drained

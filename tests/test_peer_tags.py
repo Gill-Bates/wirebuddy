@@ -4,9 +4,6 @@
 # Copyright (C) 2026 Gill-Bates http://github.com/Gill-Bates
 #
 
-# SPDX-License-Identifier: MIT
-#
-
 """Unbound peer-tag regeneration has one policy, whoever triggers it.
 
 A disabled global ad-blocker clears every peer tag, including the custom-rules
@@ -50,3 +47,16 @@ def test_enabled_adblocker_writes_peer_tags(conn: sqlite3.Connection, written):
 
 	assert len(written) == 1
 	assert [peer["peer_address"] for peer in written[0]] == ["10.13.13.2/32"]
+
+
+@pytest.mark.parametrize(("stored", "expected"), [(None, True), (0, False), (1, True)])
+def test_null_adblocker_is_effective_on_everywhere(conn: sqlite3.Connection, monkeypatch: pytest.MonkeyPatch, stored, expected):
+	from app.api.wireguard_utils import effective_use_adblocker
+
+	calls: list[list[dict]] = []
+	monkeypatch.setattr(unbound, "write_peer_tags", lambda peers: calls.append(list(peers)))
+	monkeypatch.setattr(wireguard_peers, "get_all_peers", lambda conn: [{**_PEER, "use_adblocker": stored}])
+	set_dns_blocklist_enabled(conn, True)
+	wireguard_peers.regenerate_all_peer_tags(conn)
+	assert effective_use_adblocker(stored) is expected
+	assert calls[0][0]["use_adblocker"] is expected

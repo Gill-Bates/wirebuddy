@@ -77,4 +77,4 @@ setup.conf
 
 # Build context files not copied into the runtime image
 Caddyfile
-run.py
+node_modules/

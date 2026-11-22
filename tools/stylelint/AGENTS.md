@@ -1,5 +1,5 @@
 <!-- Parent: ../AGENTS.md -->
-<!-- Generated: 2026-10-01 | Updated: 2026-10-27 -->
+<!-- Generated: 2026-10-01 | Updated: 2026-11-22 -->
 # stylelint
 
 ## Purpose
@@ -21,11 +21,10 @@ Standalone Stylelint setup (private ES-module package `wirebuddy-stylelint`) for
 - Never descend into or edit `node_modules/` (git-ignored).
 - Fix the CSS rather than loosening a rule. A new override belongs in `stylelint.config.mjs` with its reasoning beside it.
 - The selector patterns mirror names used verbatim in templates and `app/static/js/*.js`; do not rename a selector to satisfy a pattern without changing the HTML/JS side too.
-- `dashboard.css` (map and page rules) and `pages/dashboard.css` (GridStack grid and KPI tiles) now lint clean and no longer duplicate selectors; still review any `lint:fix` diff before keeping it.
 
 ### Testing Requirements
 
-- No CI workflow runs this tool, and `npm run lint` is not a gate yet; the config states the promotion criterion.
+- `npm run lint` is a blocking gate: the `stylelint` job in `.github/workflows/ci.yml` runs `npm ci --ignore-scripts && npm run lint` here. The tree is at zero findings; fix the CSS instead of adding ignores.
 - Run locally:
 
   ```bash

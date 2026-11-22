@@ -1,9 +1,10 @@
 # .trivyignore
 #
-# CVEs accepted for the published WireBuddy image, consumed by the Trivy scan in
-# .github/workflows/docker-build.yml. The scan already passes --ignore-unfixed,
-# so every entry here is a finding that HAS a fix available and is accepted
-# anyway. Each entry needs a reason and an `exp:` date, after which Trivy
+# Trivy exceptions, consumed by the image scan in .github/workflows/docker-build.yml,
+# the weekly rescan in security.yml, the docs dependency scan in docs-build.yml and
+# the source secret scan in ci.yml. The three vulnerability scans already pass
+# --ignore-unfixed, so every CVE entry here is a finding that HAS a fix available
+# and is accepted anyway. Each entry needs a reason and an `exp:` date, after which Trivy
 # reports it again and forces a re-check.
 #
 # Format: `<id> exp:YYYY-MM-DD`, with the reason in a comment above it.

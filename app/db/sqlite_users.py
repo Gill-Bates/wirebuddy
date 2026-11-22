@@ -441,7 +441,6 @@ def disable_user_passkeys(conn: sqlite3.Connection, user_id: int) -> int:
 		Number of passkeys deleted
 	"""
 	with transaction(conn):
-		# Delete all passkeys
 		cur = conn.execute("DELETE FROM passkeys WHERE user_id = ?", (user_id,))
 		deleted = cur.rowcount
 

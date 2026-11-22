@@ -1,4 +1,18 @@
+#
+# .github/workflows/docker-build.yml
+# Copyright (C) 2026 Gill-Bates http://github.com/Gill-Bates
+#
+# Purpose: release on a v* tag - validate metadata, run the CI gate, build and
+#   smoke-test both architectures, Trivy-scan, push the architecture images,
+#   assemble a candidate index, verify and promote it to the version tag (and
+#   `latest`), clean up and prune Docker Hub tags and publish the GitHub Release.
+# Related: ci.yml (gate, called below), security.yml (weekly rescan of the
+#   published image), docs-build.yml (rebuilds after a release);
+#   .github/scripts/release_tags.py, toolchain_parity.py, release_notes.py,
+#   release_publish.cjs; .github/workflows/AGENTS.md.
+#
 name: Docker Multi-Arch Build
+run-name: docker-build-${{ github.ref_name }}-${{ github.run_number }}
 
 on:
   push:
@@ -21,24 +35,30 @@ jobs:
   # main-ancestry check in meta only proves the commit is on main, not that CI
   # for it finished green - a tag pushed right after the merge could otherwise
   # start publishing while CI was still running.
+  # Runs after meta, so a bad tag, version or secret fails within seconds instead
+  # of after the full gate (cheap first).
   ci:
     name: CI gate
+    needs: meta
     uses: ./.github/workflows/ci.yml
     permissions:
       contents: read
+    secrets:
+      # Read access to the private gillbates-* git dependencies.
+      RELEASE_TOKEN: ${{ secrets.RELEASE_TOKEN }}
 
   meta:
     name: Validate build metadata
-    needs: ci
-    # Named, not ubuntu-latest, and on 26.04 ahead of the migration
-    # (actions/runner-images#14748: x64 only, rolled out 2026-10-19 to
-    # 2026-11-19) - weeks in which two runs of one tag could disagree about the
-    # OS. This job resolves the versions both architectures are then built
-    # against, so a runner image that can differ between two runs is exactly
-    # the kind of unannounced change the resolution steps below exist to rule
-    # out.
+    # Named, not ubuntu-latest: this job resolves the versions both
+    # architectures are then built against, so a runner image that can differ
+    # between two runs is exactly the kind of unannounced change the resolution
+    # steps below exist to rule out.
     runs-on: ubuntu-26.04
     timeout-minutes: 10
+    # Holds the Docker Hub credentials of the is_newest listing. Every job that
+    # touches registry or release credentials references this environment, so a
+    # deployment rule on it (tags v* only) guards all of them.
+    environment: release
     permissions:
       contents: read
     outputs:
@@ -49,22 +69,28 @@ jobs:
       is_newest: ${{ steps.newest.outputs.is_newest }}
       python_base: ${{ steps.rolling.outputs.python_base }}
       wireguard_tools_ref: ${{ steps.rolling.outputs.wireguard_tools_ref }}
+      matrix: ${{ steps.matrix.outputs.matrix }}
+      arches: ${{ steps.matrix.outputs.arches }}
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v5
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
+          persist-credentials: false
           # Full history, so the main-ancestry check below can actually walk
           # from the tagged commit back to main.
           fetch-depth: 0
 
-      # tomllib (stdlib since 3.11) reads the version back out of
-      # pyproject.toml below; pinned so the runner's system Python cannot
-      # drift out from under this step.
+      # tomllib (stdlib) reads the version back out of pyproject.toml below and
+      # the release scripts need 3.14; pinned so the runner's system Python
+      # cannot drift out from under this job.
       - name: Set up Python
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
         with:
-          python-version: '3.13'
+          python-version: '3.14'
+
+      - name: Agent banner and job temp directory
+        run: python3 .github/scripts/ci_job_setup.py
 
       - name: Validate Docker Hub secrets
         env:
@@ -105,9 +131,8 @@ jobs:
             exit 1
           fi
 
-          # A release must always run from the v<VERSION> tag. Previously this
-          # check was skipped for workflow_dispatch, so a manual run on a branch
-          # could republish an existing ${VERSION} image from a different commit
+          # A release must always run from the v<VERSION> tag, so a manual run on
+          # a branch cannot republish an existing version from a different commit
           # and move 'latest' with it. Re-runs are still possible: pick the tag
           # as the ref when dispatching manually.
           if [[ "$GITHUB_REF_TYPE" != "tag" ]]; then
@@ -123,10 +148,9 @@ jobs:
           fi
 
           # The tag checks above only prove the name agrees with the manifest,
-          # not that the commit underneath ever passed anything. ci.yml gates
-          # main; this workflow gates tags, and a tag can be pushed from any
-          # commit on any branch. Without this, a v<VERSION> cut from a stale or
-          # unreviewed commit publishes to Docker Hub and moves 'latest'.
+          # not that the commit underneath ever passed anything. A tag can be
+          # pushed from any commit on any branch; without this, a v<VERSION> cut
+          # from a stale or unreviewed commit publishes to Docker Hub.
           git fetch --no-tags origin '+refs/heads/main:refs/remotes/origin/main'
           if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
             echo "ERROR: ${GITHUB_REF_NAME} points at ${GITHUB_SHA}, which is not contained in main."
@@ -137,13 +161,10 @@ jobs:
           BUILD_DATE="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
           TAG="v${VERSION}"
 
-          # Cache buster for the Dockerfile's apt layer (ARG APT_CACHE_DATE).
-          # Resolved here, once, for the same reason every other rolling input
-          # is: the two architecture jobs must key that layer on one value, or a
-          # release that straddles midnight UTC upgrades one image against a
-          # different package snapshot than the other. A date rather than
-          # BUILD_DATE's timestamp, so re-running the same release within a day
-          # still restores the layer from cache.
+          # Cache buster for the Dockerfile's apt layer (ARG APT_CACHE_DATE),
+          # resolved once so both architectures key that layer on one value. A
+          # date rather than BUILD_DATE's timestamp, so re-running the same
+          # release within a day still restores the layer from cache.
           APT_CACHE_DATE="${BUILD_DATE%%T*}"
 
           {
@@ -154,39 +175,29 @@ jobs:
           } >> "$GITHUB_OUTPUT"
 
       # Everything the Dockerfile deliberately leaves rolling is resolved here,
-      # once, and handed to every architecture as a build arg.
-      #
-      # Two inputs mean "whatever is newest at the moment this layer runs": the
-      # python:3.13-slim tag, and wireguard-tools' master branch, which
-      # docker/Dockerfile pulls with `ADD ...#${WIREGUARD_TOOLS_REF}`. That is
-      # the intent for a local build - but the amd64 and arm64 jobs are separate
-      # runners that reach those layers minutes apart, so each would resolve
-      # "newest" on its own. An upstream wireguard-tools commit or a new push of
-      # the base tag landing in that window would put different toolchains in
-      # the two halves of one manifest.
-      #
-      # Resolving once and pinning only for the duration of the build keeps both
-      # properties: the release still picks up the current stable of everything,
-      # and both images contain identical versions of it.
+      # once, and handed to every architecture as a build arg: the
+      # python:3.14-slim tag and wireguard-tools' master branch. The two
+      # architecture jobs reach those layers minutes apart, so each would
+      # otherwise resolve "newest" on its own and could put different toolchains
+      # in the two halves of one manifest.
       - name: Resolve rolling toolchain versions
         id: rolling
         run: |
           set -euo pipefail
 
           # The base image by digest, so both architectures build on the same
-          # multi-arch index even if a new python:3.13-slim is pushed mid-run.
-          python_base="python:3.13-slim"
+          # multi-arch index even if a new python:3.14-slim is pushed mid-run.
+          python_base="python:3.14-slim"
           digest="$(docker buildx imagetools inspect "$python_base" \
             --format '{{.Manifest.Digest}}')"
           case "$digest" in
             sha256:*) ;;
             *) echo "ERROR: could not resolve a digest for ${python_base}"; exit 1 ;;
           esac
-          python_base="python:3.13-slim@${digest}"
+          python_base="python:3.14-slim@${digest}"
 
-          # wireguard-tools master -> one commit SHA. docker/Dockerfile compiles
-          # it on both architectures, so this is the single value that decides
-          # which wg and wg-quick the release ships.
+          # wireguard-tools master -> one commit SHA, compiled on both
+          # architectures by docker/Dockerfile.
           wireguard_tools_ref="$(git ls-remote https://git.zx2c4.com/wireguard-tools.git refs/heads/master | cut -f1)"
           if [[ ! "$wireguard_tools_ref" =~ ^[0-9a-f]{40}$ ]]; then
             echo "ERROR: could not resolve wireguard-tools master (got '${wireguard_tools_ref}')"
@@ -202,210 +213,78 @@ jobs:
           echo "  python base      : ${python_base}"
           echo "  wireguard-tools  : ${wireguard_tools_ref}"
 
-      # A release must not travel backwards. Re-running this workflow on an older
-      # tag - v1.5.0 while 1.6.1 is published - passes every check above, because
-      # pyproject.toml at that commit really does read 1.5.0. It would then move
-      # 'latest' onto the older image and let the cleanup job delete the newer
-      # 1.6.1 tag. Both are irreversible on Docker Hub.
-      #
-      # So the already-published tags decide: only the highest version this
-      # repository has ever published moves 'latest' or prunes anything. An older
-      # re-run still rebuilds and republishes its own version tag, which is what
-      # a re-run is for - it just cannot rewrite the newer release's history.
+      # The only place architectures are declared. Both run on native runners -
+      # no QEMU - because both compile wireguard-tools from source. Both runners
+      # name an image rather than following ubuntu-latest; if the arm64 job
+      # starts queueing for capacity, ubuntu-24.04-arm is the fallback.
+      # release_tags.py checks the list against the architectures every release
+      # must carry, and the candidate, parity and cleanup steps take their
+      # expected architectures from this output, never from downloaded artifacts.
+      - name: Declare build matrix
+        id: matrix
+        env:
+          BUILD_MATRIX: >-
+            {"include": [
+            {"arch": "amd64", "runner": "ubuntu-26.04", "platform": "linux/amd64"},
+            {"arch": "arm64", "runner": "ubuntu-26.04-arm", "platform": "linux/arm64"}
+            ]}
+        run: python3 .github/scripts/release_tags.py matrix
+
+      # A release must not travel backwards: re-running an older tag would
+      # otherwise move 'latest' onto the older image and let the pruning delete
+      # the newer release, both irreversible on Docker Hub. Only the highest
+      # version ever published (prereleases included) moves 'latest' or prunes.
+      # This is a hint for the log and the build; promote and the pruning each
+      # list Docker Hub again and decide on their own fresh listing. The listing
+      # fails closed on anything but a first-page 404 (no repository yet).
       - name: Determine whether this is the newest release
         id: newest
         env:
           DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
           DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
-          REPOSITORY: wirebuddy
           VERSION: ${{ steps.meta.outputs.version }}
-        run: |
-          set -euo pipefail
-
-          hub_token="$(
-            jq -nc \
-              --arg username "$DOCKERHUB_USERNAME" \
-              --arg password "$DOCKERHUB_TOKEN" \
-              '{username: $username, password: $password}' \
-            | curl -fsSL \
-                -H 'Content-Type: application/json' \
-                -d @- \
-                'https://hub.docker.com/v2/users/login/' \
-            | jq -r '.token // .access_token // empty'
-          )"
-
-          if [[ -z "$hub_token" ]]; then
-            echo "ERROR: Failed to obtain Docker Hub API token"
-            exit 1
-          fi
-
-          api_base="https://hub.docker.com/v2/namespaces/${DOCKERHUB_USERNAME}/repositories/${REPOSITORY}/tags"
-          first_url="${api_base}?page_size=100"
-          next_url="$first_url"
-          : > published-tags.txt
-
-          # This listing decides is_newest, which in turn moves 'latest' and
-          # releases the destructive tag cleanup. An empty answer therefore
-          # cannot be allowed to mean "nothing newer exists" - a 401, a 429, a
-          # 5xx or a dropped connection would then read exactly like a pristine
-          # repository and hand an old re-run permission to prune the releases
-          # that came after it. So only a 404 on the very first page is
-          # tolerated, which is the one case that genuinely has no tags: the
-          # repository does not exist yet. Everything else stops the release.
-          response_body="$(mktemp)"
-          trap 'rm -f "$response_body"' EXIT
-
-          while [[ -n "$next_url" && "$next_url" != "null" ]]; do
-            # No -f: the status code has to be inspected rather than collapsed
-            # into a generic failure. A transport error still aborts here,
-            # because the assignment inherits curl's exit status under set -e.
-            status_code="$(curl -sS --proto '=https' --tlsv1.2 \
-              --retry 5 --retry-delay 2 \
-              -o "$response_body" -w '%{http_code}' \
-              -H "Authorization: Bearer ${hub_token}" \
-              "$next_url")"
-
-            if [[ "$status_code" == "404" && "$next_url" == "$first_url" ]]; then
-              echo "Docker Hub has no ${DOCKERHUB_USERNAME}/${REPOSITORY} repository yet;" \
-                   "treating this as the first release." >&2
-              break
-            fi
-
-            if [[ "$status_code" != "200" ]]; then
-              echo "ERROR: Docker Hub tag listing returned HTTP ${status_code} for ${next_url}." >&2
-              echo "Refusing to decide whether ${VERSION} is the newest release on an incomplete listing." >&2
-              exit 1
-            fi
-
-            jq -r '.results[].name' < "$response_body" >> published-tags.txt
-            next_url="$(jq -r '.next // empty' < "$response_body")"
-          done
-
-          # Only the is_newest line goes to GITHUB_OUTPUT, which accepts
-          # key=value and nothing else; the reasoning goes to the log.
-          python3 - <<'PY' >> "$GITHUB_OUTPUT"
-          import os
-          import re
-          import sys
-
-          # Architecture fragments (1.6.1-amd64) parse as prereleases of 1.6.1
-          # and would otherwise be compared as versions. They are build
-          # artefacts of this workflow, not releases.
-          ARCH_SUFFIXES = {
-              "amd64", "arm64", "arm", "armv6", "armv7", "386",
-              "ppc64le", "s390x", "riscv64", "mips64le", "loong64",
-          }
-          VERSION_RE = re.compile(r"^(\d+(?:\.\d+)*)(?:-([0-9A-Za-z.-]+))?$")
-
-          def suffix_key(suffix):
-              # Identifier-wise, like PEP 440 / semver: numeric parts compare as
-              # numbers, so rc.10 sorts above rc.2 - a plain string comparison
-              # gets that backwards, and this decides whether the destructive
-              # tag cleanup is allowed to run.
-              parts = []
-              for part in suffix.split("."):
-                  if part.isdigit():
-                      parts.append((0, int(part), ""))
-                  else:
-                      parts.append((1, 0, part))
-              return tuple(parts)
-
-          def key(tag):
-              match = VERSION_RE.match(tag)
-              if not match:
-                  return None
-              suffix = match.group(2)
-              if suffix in ARCH_SUFFIXES:
-                  return None
-              # Padded to a fixed width so a hypothetical 1.7 and 1.7.0 are one
-              # version rather than (1, 7) < (1, 7, 0). WireBuddy tags strict
-              # X.Y.Z, but the cost of being wrong here is a deleted release.
-              release = tuple(int(part) for part in match.group(1).split("."))
-              if len(release) < 3:
-                  release += (0,) * (3 - len(release))
-              # A prerelease sorts below its own release: 1.7.0-rc.1 < 1.7.0. GNU
-              # `sort -V` gets this backwards, which is why the comparison is
-              # done here rather than in the shell.
-              return (release, (0, suffix_key(suffix)) if suffix else (1, ()))
-
-          current = os.environ["VERSION"]
-          current_key = key(current)
-          assert current_key is not None, f"unparseable version: {current}"
-
-          with open("published-tags.txt", encoding="utf-8") as handle:
-              published = {line.strip() for line in handle if line.strip()}
-
-          newer = sorted(
-              tag for tag in published
-              if (tag_key := key(tag)) is not None and tag_key > current_key
-          )
-
-          if newer:
-              print(f"Newer versions already published: {', '.join(newer)}", file=sys.stderr)
-              print(f"{current} will be republished, but 'latest' stays put "
-                    "and nothing is pruned.", file=sys.stderr)
-              print("is_newest=false")
-          else:
-              print(f"{current} is the newest published version.", file=sys.stderr)
-              print("is_newest=true")
-          PY
+        run: python3 .github/scripts/release_tags.py newest
 
   build:
     name: Build ${{ matrix.arch }} image
-    needs: meta
-    env:
-      VERSION: ${{ needs.meta.outputs.version }}
-      IMAGE_NAME: ${{ format('{0}/wirebuddy', secrets.DOCKERHUB_USERNAME) }}
+    needs: [meta, ci]
     strategy:
       fail-fast: false
-      matrix:
-        # The only place architectures are declared. The manifest and cleanup
-        # jobs discover them from the digests these jobs publish, so adding an
-        # entry here is all it takes. Both run on native runners - no QEMU -
-        # which matters because both compile wireguard-tools from source: the
-        # architectures must not differ in how those binaries were produced.
-        #
-        # Both runners name an image rather than following ubuntu-latest, which
-        # migrates from 24.04 to 26.04 in a staged rollout between 2026-10-19
-        # and 2026-11-19 - a window in which two runs of one tag could land on
-        # different operating systems. Both name the same generation: 26.04 went
-        # generally available for x64 and arm64 on 2026-09-17, so the arm64 job
-        # no longer has to trail a release behind.
-        #
-        # The host contributes nothing to what ships - every layer is produced
-        # inside python:3.13-slim - so these only have to supply Docker and
-        # buildx. If the arm64 job starts queueing for capacity or failing for
-        # reasons the amd64 job does not, ubuntu-24.04-arm is the fallback.
-        include:
-          - arch: amd64
-            runner: ubuntu-26.04
-            platform: linux/amd64
-            cache_scope: amd64
-            test_image: wirebuddy:test-amd64
-            container_name: wirebuddy-test-amd64
-            image_suffix: amd64
-          - arch: arm64
-            runner: ubuntu-26.04-arm
-            platform: linux/arm64
-            cache_scope: arm64
-            test_image: wirebuddy:test-arm64
-            container_name: wirebuddy-test-arm64
-            image_suffix: arm64
+      matrix: ${{ fromJSON(needs.meta.outputs.matrix) }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 60
+    # Holds the Docker Hub credentials of the base-image pull and the push.
+    environment: release
     # No actions: write. The gha cache backend authenticates with the runner's
     # cache token (ACTIONS_RUNTIME_TOKEN), not with GITHUB_TOKEN.
     permissions:
       contents: read
+    env:
+      VERSION: ${{ needs.meta.outputs.version }}
+      IMAGE_NAME: ${{ format('{0}/wirebuddy', secrets.DOCKERHUB_USERNAME) }}
+      # Matrix values reach run: bodies only through these variables.
+      ARCH: ${{ matrix.arch }}
+      PLATFORM: ${{ matrix.platform }}
+      TEST_IMAGE: ${{ format('wirebuddy:test-{0}', matrix.arch) }}
+      CONTAINER_NAME: ${{ format('wirebuddy-test-{0}', matrix.arch) }}
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v5
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
+          persist-credentials: false
           fetch-depth: 1
 
+      - name: Set up Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: '3.14'
+
+      - name: Agent banner and job temp directory
+        run: python3 .github/scripts/ci_job_setup.py
+
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v4
+        uses: docker/setup-buildx-action@4d04d5d9486b7bd6fa91e7baf45bbb4f8b9deedd # v4.0.0
         with:
           cache-binary: false
 
@@ -413,38 +292,52 @@ jobs:
       # again right before the push; the third-party Trivy action runs in
       # between with no registry credentials on the runner.
       - name: Log in to Docker Hub (build)
-        uses: docker/login-action@v4
+        uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121 # v4.1.0
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
       # PYTHON_BASE, WIREGUARD_TOOLS_REF and APT_CACHE_DATE are the rolling
-      # inputs the meta job resolved once. Passing them here is what makes the
-      # two architectures' toolchains identical - and what keeps their layer
-      # caches keyed on the same values instead of one arch reusing an older
-      # resolution. The parity gate in create-manifest checks that it worked.
+      # inputs the meta job resolved once; passing them here keeps the two
+      # architectures' toolchains and layer caches identical. The parity gate
+      # in create-manifest checks that it worked. The gha cache is scoped per
+      # arch and written only by this tag-triggered job, so no lower-trust run
+      # (PR, branch) feeds the release cache. The private gillbates-* packages
+      # are read through the BuildKit secret python_libraries_token, never a
+      # build arg.
       - name: Build image for smoke tests
+        env:
+          PYTHON_BASE: ${{ needs.meta.outputs.python_base }}
+          WIREGUARD_TOOLS_REF: ${{ needs.meta.outputs.wireguard_tools_ref }}
+          APT_CACHE_DATE: ${{ needs.meta.outputs.apt_cache_date }}
+          APP_VERSION: ${{ needs.meta.outputs.tag }}
+          BUILD_DATE: ${{ needs.meta.outputs.build_date }}
+          VCS_REF: ${{ github.sha }}
+          RELEASE_TOKEN: ${{ secrets.RELEASE_TOKEN }}
         run: |
           set -euo pipefail
+          : "${RELEASE_TOKEN:?Missing RELEASE_TOKEN secret}"
           docker buildx build \
             --pull \
-            --platform "${{ matrix.platform }}" \
+            --platform "$PLATFORM" \
             --target runtime \
             --load \
-            --cache-from type=gha,scope=${{ matrix.cache_scope }} \
-            --cache-to type=gha,mode=max,scope=${{ matrix.cache_scope }} \
-            --build-arg "PYTHON_BASE=${{ needs.meta.outputs.python_base }}" \
-            --build-arg "WIREGUARD_TOOLS_REF=${{ needs.meta.outputs.wireguard_tools_ref }}" \
-            --build-arg "APT_CACHE_DATE=${{ needs.meta.outputs.apt_cache_date }}" \
-            --build-arg "APP_VERSION=${{ needs.meta.outputs.tag }}" \
-            --build-arg "BUILD_DATE=${{ needs.meta.outputs.build_date }}" \
-            --build-arg "VCS_REF=${{ github.sha }}" \
-            -t "${{ matrix.test_image }}" \
+            --cache-from "type=gha,scope=${ARCH}" \
+            --cache-to "type=gha,mode=max,scope=${ARCH}" \
+            --secret id=python_libraries_token,env=RELEASE_TOKEN \
+            --build-arg "PYTHON_BASE=${PYTHON_BASE}" \
+            --build-arg "WIREGUARD_TOOLS_REF=${WIREGUARD_TOOLS_REF}" \
+            --build-arg "APT_CACHE_DATE=${APT_CACHE_DATE}" \
+            --build-arg "APP_VERSION=${APP_VERSION}" \
+            --build-arg "BUILD_DATE=${BUILD_DATE}" \
+            --build-arg "VCS_REF=${VCS_REF}" \
+            -t "$TEST_IMAGE" \
             -f docker/Dockerfile \
             .
 
       - name: Log out of Docker Hub
+        if: always()
         run: docker logout
 
       - name: Smoke test (Master mode)
@@ -453,26 +346,26 @@ jobs:
 
           # shellcheck disable=SC2317,SC2329  # invoked by the trap below, not inline (shellcheck >= 0.11 reports SC2329)
           cleanup() {
-            docker rm -f "${{ matrix.container_name }}" 2>/dev/null || true
+            docker rm -f "${CONTAINER_NAME}" 2>/dev/null || true
           }
           trap cleanup EXIT
 
-          docker run -d --name "${{ matrix.container_name }}" \
-            --platform "${{ matrix.platform }}" \
+          docker run -d --name "${CONTAINER_NAME}" \
+            --platform "${PLATFORM}" \
             -e WIREBUDDY_SECRET_KEY="ci-smoke-test-key-not-for-production" \
             -e WIREBUDDY_SKIP_NETWORK_CHECK="1" \
-            "${{ matrix.test_image }}"
+            "${TEST_IMAGE}"
 
           echo "Waiting for in-container health endpoint..."
           for i in $(seq 1 45); do
-            if ! docker ps -q -f name="${{ matrix.container_name }}" | grep -q .; then
+            if ! docker ps -q -f name="${CONTAINER_NAME}" | grep -q .; then
               echo "✗ Container exited during startup after ${i}s"
               echo "=== Container logs ==="
-              docker logs "${{ matrix.container_name }}" 2>&1 || echo "Could not retrieve logs"
+              docker logs "${CONTAINER_NAME}" 2>&1 || echo "Could not retrieve logs"
               exit 1
             fi
 
-            if docker exec "${{ matrix.container_name }}" \
+            if docker exec "${CONTAINER_NAME}" \
                 curl -fsS --max-time 2 "http://127.0.0.1:8000/api/system/status" > /dev/null 2>&1; then
               echo "✓ Master mode: in-container health check passed after ${i}s"
               exit 0
@@ -483,9 +376,9 @@ jobs:
 
           echo "✗ Health check timeout after 45s"
           echo "=== Container logs ==="
-          docker logs "${{ matrix.container_name }}" 2>&1 || echo "Could not retrieve logs"
+          docker logs "${CONTAINER_NAME}" 2>&1 || echo "Could not retrieve logs"
           echo "=== Container status ==="
-          docker ps -a -f name="${{ matrix.container_name }}"
+          docker ps -a -f name="${CONTAINER_NAME}"
           exit 1
 
       - name: Smoke test (Node mode)
@@ -493,17 +386,17 @@ jobs:
           set -euo pipefail
 
           echo "Testing node daemon module import..."
-          docker run --rm --platform "${{ matrix.platform }}" --entrypoint python "${{ matrix.test_image }}" \
+          docker run --rm --platform "${PLATFORM}" --entrypoint python "${TEST_IMAGE}" \
             -c "from app.node.daemon import run, main; print('✓ Node daemon module imports OK')"
 
           echo "Testing node mode startup (expecting graceful exit)..."
           EXIT_CODE=0
           LOGS=$(timeout 30s docker run --rm \
-            --platform "${{ matrix.platform }}" \
+            --platform "${PLATFORM}" \
             -e SERVER_MODE=node \
             -e LOG_LEVEL=DEBUG \
             -e WIREBUDDY_SECRET_KEY="ci-node-test-key" \
-            "${{ matrix.test_image }}" 2>&1) || EXIT_CODE=$?
+            "${TEST_IMAGE}" 2>&1) || EXIT_CODE=$?
 
           if [ "$EXIT_CODE" -eq 1 ] && echo "$LOGS" | grep -Eq "ENROLLMENT_TOKEN|enrollment token"; then
             echo "✓ Node mode: Startup path OK (expected exit: missing enrollment token)"
@@ -523,18 +416,15 @@ jobs:
       # The evidence behind the parity gate in create-manifest. Read out of the
       # finished image rather than from the build args, so it reflects what was
       # actually installed - a stale cached layer would reuse an older toolchain
-      # no build arg can reveal.
-      #
-      # The smoke-test containers above are removed by their own cleanup traps,
-      # so this starts a fresh one. bash overrides the entrypoint because
+      # no build arg can reveal. bash overrides the entrypoint because
       # entrypoint.sh would otherwise boot the whole application.
       - name: Record toolchain versions (${{ matrix.arch }})
         run: |
           set -euo pipefail
           mkdir -p toolchain
 
-          docker run --rm --platform "${{ matrix.platform }}" \
-            --entrypoint bash "${{ matrix.test_image }}" -c '
+          docker run --rm --platform "${PLATFORM}" \
+            --entrypoint bash "${TEST_IMAGE}" -c '
               set -euo pipefail
               printf "python=%s\n" "$(python -c "import platform; print(platform.python_version())")"
               printf "wireguard_tools=%s\n" "$(wg --version | awk "{print \$2}")"
@@ -544,32 +434,26 @@ jobs:
               printf "openssl=%s\n" "$(openssl version | awk "{print \$2}")"
               printf "app_version=%s\n" "$(python -c "import tomllib; print(tomllib.load(open(\"/app/pyproject.toml\", \"rb\"))[\"project\"][\"version\"])")"
               printf "build_info=%s\n" "$(cat /app/BUILD_INFO)"
-            ' > "toolchain/${{ matrix.image_suffix }}.txt"
+            ' > "toolchain/${ARCH}.txt"
 
-          echo "--- ${{ matrix.image_suffix }} ---"
-          cat "toolchain/${{ matrix.image_suffix }}.txt"
+          echo "--- ${ARCH} ---"
+          cat "toolchain/${ARCH}.txt"
 
-          # A truncated capture would make the parity comparison pass on an
-          # empty intersection rather than fail.
-          if [ ! -s "toolchain/${{ matrix.image_suffix }}.txt" ]; then
-            echo "ERROR: no toolchain versions were captured"
-            exit 1
-          fi
-
+      # 30 days, so a rerun of a later job within GitHub's rerun window still
+      # finds the build evidence.
       - name: Upload toolchain versions (${{ matrix.arch }})
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: toolchain-${{ matrix.image_suffix }}
-          path: toolchain/${{ matrix.image_suffix }}.txt
-          retention-days: 14
+          name: toolchain-${{ matrix.arch }}
+          path: toolchain/${{ matrix.arch }}.txt
+          retention-days: 30
           if-no-files-found: error
 
       - name: Tag image for push
-        run: |
-          set -euo pipefail
-          docker tag "${{ matrix.test_image }}" "${IMAGE_NAME}:${VERSION}-${{ matrix.image_suffix }}"
+        run: docker tag "${TEST_IMAGE}" "${IMAGE_NAME}:${VERSION}-${ARCH}"
 
       - name: Trivy vulnerability scan
+        id: trivy
         # Pinned to an immutable commit SHA, not a mutable ref. In March 2026
         # (GHSA-69fq-xp46-6x23) an attacker force-pushed 76 of 77 trivy-action
         # tags to a credential-stealing commit; this step runs between the two
@@ -577,786 +461,395 @@ jobs:
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           cache: 'false'
-          image-ref: '${{ matrix.test_image }}'
-          # Trivy itself floats to the newest release on purpose; the action stays
-          # SHA-pinned (Renovate bumps it) and runs with no registry credentials.
-          version: 'latest'
+          image-ref: ${{ format('wirebuddy:test-{0}', matrix.arch) }}
+          # No `version: latest`: the scanner is the release the pinned action ships
+          # with, so a gate result is reproducible; Renovate bumps the action.
+          # Lists every package, so a clean report still proves the scan read the image.
+          list-all-pkgs: true
           format: 'json'
-          output: 'trivy-${{ matrix.image_suffix }}.json'
+          output: 'trivy-${{ matrix.arch }}.json'
           exit-code: '1'
           ignore-unfixed: true
-          # Vulnerabilities only. No gate owns secret/misconfig scanning yet
-          # (open gap, would be a Trivy fs job in ci.yml).
+          # Vulnerabilities only; the source secret scan is the source-scan job in ci.yml.
           scanners: 'vuln'
           vuln-type: 'os,library'
           severity: 'CRITICAL,HIGH'
           timeout: '10m'
           trivyignores: '.trivyignore'
 
-      - name: Generate Trivy summary (${{ matrix.arch }})
-        if: always()
+      # Scanner failure (no valid report, or no OS and Python package results)
+      # and findings are separate verdicts: an unreadable report fails here
+      # instead of passing as "0 findings". The scan step carries the blocking
+      # exit code for findings.
+      - name: Summarize Trivy report (${{ matrix.arch }})
+        if: ${{ !cancelled() && steps.trivy.conclusion != 'skipped' }}
         run: |
           set -euo pipefail
-          ARCH="${{ matrix.image_suffix }}"
-          FILE="trivy-${ARCH}.json"
-
-          if [[ ! -f "$FILE" ]]; then
-            echo "### Trivy (${ARCH}): Scan failed — no results file" >> "$GITHUB_STEP_SUMMARY"
-            exit 0
-          fi
-
-          CRITICAL=$(jq '[.Results[]?.Vulnerabilities[]? | select(.Severity == "CRITICAL")] | length' "$FILE" 2>/dev/null || echo 0)
-          HIGH=$(jq '[.Results[]?.Vulnerabilities[]? | select(.Severity == "HIGH")] | length' "$FILE" 2>/dev/null || echo 0)
-
-          if (( CRITICAL == 0 && HIGH == 0 )); then
-            SUMMARY="✅ No HIGH/CRITICAL vulnerabilities found"
-          else
-            SUMMARY="⚠️ ${CRITICAL} CRITICAL, ${HIGH} HIGH vulnerabilities"
-          fi
-
-          echo "### Trivy Scan Results (${ARCH})" >> "$GITHUB_STEP_SUMMARY"
-          if (( CRITICAL > 0 || HIGH > 0 )); then
-            echo '```' >> "$GITHUB_STEP_SUMMARY"
-            jq -r '.Results[]?.Vulnerabilities[]? | select(.Severity == "CRITICAL" or .Severity == "HIGH") | "\(.Severity)\t\(.VulnerabilityID)\t\(.PkgName)\t\(.InstalledVersion)"' \
-              "$FILE" 2>/dev/null | head -20 >> "$GITHUB_STEP_SUMMARY" || true
-            echo '```' >> "$GITHUB_STEP_SUMMARY"
-          else
-            echo "$SUMMARY" >> "$GITHUB_STEP_SUMMARY"
-          fi
+          python3 .github/scripts/trivy_report.py status "trivy-${ARCH}.json" \
+            --expect-class os-pkgs --expect-class lang-pkgs \
+            --expect-ref "wirebuddy:test-${ARCH}" \
+            --summary-title "Trivy (${VERSION}, ${ARCH})" --list 20 >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload Trivy findings (${{ matrix.arch }})
-        if: always()
-        uses: actions/upload-artifact@v7
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: trivy-findings-${{ matrix.image_suffix }}
-          path: trivy-${{ matrix.image_suffix }}.json
-          retention-days: 14
+          name: trivy-findings-${{ matrix.arch }}
+          path: trivy-${{ matrix.arch }}.json
+          retention-days: 30
           if-no-files-found: warn
 
       - name: Log in to Docker Hub (push)
-        uses: docker/login-action@v4
+        uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121 # v4.1.0
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
+      # The push output is kept: the digest Docker reports for this push is the
+      # image the index is assembled from, so no later tag lookup can swap it.
       - name: Push arch-specific image
         run: |
           set -euo pipefail
-          docker push "${IMAGE_NAME}:${VERSION}-${{ matrix.image_suffix }}"
+          docker push "${IMAGE_NAME}:${VERSION}-${ARCH}" 2>&1 | tee "${RUNNER_TEMP}/push-${ARCH}.log"
 
-      # The manifest is assembled from these digests rather than from the
-      # ${VERSION}-<arch> tag names. Tags are mutable and the fragment cleanup
-      # job deletes them moments later; a digest is the image itself and can
-      # never become a reference that does not resolve.
-      #
-      # This runs immediately after the push, so a digest artifact exists for
-      # exactly those architectures whose tag reached Docker Hub. The fragment
-      # cleanup job relies on that correspondence.
+      - name: Log out of Docker Hub (push)
+        if: always()
+        run: docker logout
+
       - name: Record image digest
         run: |
           set -euo pipefail
-          mkdir -p digests
-
-          digest="$(docker buildx imagetools inspect \
-            "${IMAGE_NAME}:${VERSION}-${{ matrix.image_suffix }}" \
-            --format '{{.Manifest.Digest}}')"
-
-          case "$digest" in
-            sha256:*) ;;
-            *)
-              echo "ERROR: unexpected digest for ${{ matrix.image_suffix }}: '${digest}'"
-              exit 1
-              ;;
-          esac
-
-          printf '%s' "$digest" > "digests/${{ matrix.image_suffix }}"
-          echo "${{ matrix.image_suffix }} -> ${digest}"
+          PUSH_OUTPUT_FILE="${RUNNER_TEMP}/push-${ARCH}.log" DIGEST_FILE="digests/${ARCH}" \
+            python3 .github/scripts/release_tags.py record-pushed-digest
 
       - name: Upload image digest (${{ matrix.arch }})
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: image-digest-${{ matrix.image_suffix }}
-          path: digests/${{ matrix.image_suffix }}
-          retention-days: 1
+          name: image-digest-${{ matrix.arch }}
+          path: digests/${{ matrix.arch }}
+          retention-days: 30
           if-no-files-found: error
 
+  # Candidate first: the index is pushed under a run-specific candidate tag and
+  # read back from the registry, so no public tag moves before the index is
+  # proven to describe exactly the build digests.
   create-manifest:
-    name: Create multi-arch manifest
+    name: Create and verify candidate index
     needs: [meta, build]
     if: needs.build.result == 'success'
     runs-on: ubuntu-26.04
     timeout-minutes: 15
-    env:
-      VERSION: ${{ needs.meta.outputs.version }}
-      IMAGE_NAME: ${{ format('{0}/wirebuddy', secrets.DOCKERHUB_USERNAME) }}
-      IS_NEWEST: ${{ needs.meta.outputs.is_newest }}
+    # Holds the registry credentials of the candidate push.
+    environment: release
     permissions:
       contents: read
+    outputs:
+      candidate: ${{ steps.candidate.outputs.candidate }}
+      index_digest: ${{ steps.candidate.outputs.index_digest }}
+    env:
+      VERSION: ${{ needs.meta.outputs.version }}
+      ARCHES: ${{ needs.meta.outputs.arches }}
+      IMAGE_NAME: ${{ format('{0}/wirebuddy', secrets.DOCKERHUB_USERNAME) }}
 
     steps:
-      - name: Log in to Docker Hub
-        uses: docker/login-action@v4
+      - name: Checkout release scripts
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
-          registry: ${{ env.REGISTRY }}
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
+          persist-credentials: false
+          sparse-checkout: .github/scripts
+
+      - name: Set up Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: '3.14'
+
+      - name: Agent banner and job temp directory
+        run: python3 .github/scripts/ci_job_setup.py
 
       - name: Download image digests
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
         with:
           pattern: image-digest-*
           path: digests/
           merge-multiple: true
 
       - name: Download toolchain versions
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
         with:
           pattern: toolchain-*
           path: toolchain/
           merge-multiple: true
 
-      # The release gate for "both images contain the same versions". Runs
-      # before the manifest is created, so a mismatch stops the publish rather
-      # than being discovered in an already-tagged image.
+      # The release gate for "both images contain the same versions": exactly
+      # the matrix architectures, every required field present, no difference.
       - name: Verify architectures carry identical versions
-        run: |
-          set -euo pipefail
-          python3 - <<'PY'
-          import pathlib
-          import sys
+        run: python3 .github/scripts/toolchain_parity.py --dir toolchain --arches "$ARCHES"
 
-          files = sorted(pathlib.Path("toolchain").glob("*.txt"))
-          if not files:
-              sys.exit("FAIL: no toolchain manifests were published by the build jobs")
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@4d04d5d9486b7bd6fa91e7baf45bbb4f8b9deedd # v4.0.0
+        with:
+          cache-binary: false
 
-          def read(path):
-              out = {}
-              for line in path.read_text(encoding="utf-8").splitlines():
-                  line = line.strip()
-                  if not line:
-                      continue
-                  name, _, value = line.partition("=")
-                  out[name] = value
-              return out
+      - name: Log in to Docker Hub
+        uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121 # v4.1.0
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-          recorded = {path.stem: read(path) for path in files}
-          for arch, versions in recorded.items():
-              print(f"--- {arch} ---")
-              for name, value in sorted(versions.items()):
-                  print(f"  {name}={value}")
+      # Tag candidate-<version>-<run_id>-<run_attempt>; promote reuses this
+      # output, so a rerun of promote alone verifies the same candidate.
+      - name: Create and verify candidate index
+        id: candidate
+        env:
+          DIGEST_DIR: digests
+        run: python3 .github/scripts/release_tags.py create-candidate
 
-          if len(recorded) == 1:
-              print("\nOnly one architecture was built; nothing to compare.")
-              sys.exit(0)
+      - name: Log out of Docker Hub
+        if: always()
+        run: docker logout
 
-          names = sorted({name for versions in recorded.values() for name in versions})
-          mismatches = []
-          for name in names:
-              seen = {arch: versions.get(name, "<missing>") for arch, versions in recorded.items()}
-              if len(set(seen.values())) > 1:
-                  detail = ", ".join(f"{arch}={value}" for arch, value in sorted(seen.items()))
-                  mismatches.append(f"{name}: {detail}")
-
-          if mismatches:
-              print("\nFAIL: the architectures do not carry the same versions:", file=sys.stderr)
-              for mismatch in mismatches:
-                  print(f"  {mismatch}", file=sys.stderr)
-              print(
-                  "\nEvery rolling component is resolved once in the meta job and passed "
-                  "to both builds, so this means a build arg did not reach the Dockerfile, "
-                  "or a stale cached layer was reused.",
-                  file=sys.stderr,
-              )
-              sys.exit(1)
-
-          print(f"\nOK: {', '.join(sorted(recorded))} carry identical versions of all {len(names)} components")
-          PY
-
-      - name: Create and push manifest
-        run: |
-          set -euo pipefail
-
-          # One file per architecture, named after it, containing its digest.
-          # Discovered rather than hardcoded, so the build matrix stays the only
-          # place architectures are declared.
-          shopt -s nullglob
-          digest_files=(digests/*)
-          if (( ${#digest_files[@]} == 0 )); then
-            echo "ERROR: no image digests were published by the build jobs"
-            exit 1
-          fi
-
-          declare -a sources=()
-          declare -a platforms=()
-          echo "Assembling index from:"
-          for file in "${digest_files[@]}"; do
-            arch="$(basename "$file")"
-            digest="$(tr -d '[:space:]' < "$file")"
-            sources+=("${IMAGE_NAME}@${digest}")
-            platforms+=("linux/${arch}")
-            echo "  linux/${arch}  ${digest}"
-          done
-
-          docker buildx imagetools create \
-            --tag "${IMAGE_NAME}:${VERSION}" \
-            "${sources[@]}"
-          echo "Pushed manifest: ${IMAGE_NAME}:${VERSION}"
-
-          # 'latest' moves only for a stable release, and only when this really
-          # is the newest one - see the meta job's is_newest probe.
-          if [[ "$VERSION" == *-* ]]; then
-            echo "Skipping 'latest': ${VERSION} is a prerelease"
-          elif [[ "$IS_NEWEST" != "true" ]]; then
-            echo "Skipping 'latest': a newer version is already published, and 'latest' must never move backwards"
-          else
-            docker buildx imagetools create \
-              --tag "${IMAGE_NAME}:latest" \
-              "${sources[@]}"
-            echo "Pushed manifest: ${IMAGE_NAME}:latest"
-            touch latest-pushed
-          fi
-
-          printf '%s\n' "${platforms[@]}" > expected-platforms.txt
-
-      # imagetools create reports success as soon as the registry accepts the
-      # index - it does not confirm the index describes what was intended. A
-      # missing or duplicated architecture would otherwise surface as `docker
-      # pull` quietly selecting the wrong image on a user's machine.
-      - name: Verify manifest
-        run: |
-          set -euo pipefail
-
-          cat > verify_manifest.py <<'PY'
-          import json
-          import sys
-
-          manifest_file, expected_file = sys.argv[1], sys.argv[2]
-
-          with open(manifest_file, encoding="utf-8") as handle:
-              index = json.load(handle)
-          with open(expected_file, encoding="utf-8") as handle:
-              expected = sorted(line.strip() for line in handle if line.strip())
-
-          manifests = index.get("manifests")
-          if manifests is None:
-              sys.exit(f"FAIL: {manifest_file} is not a manifest index")
-
-          # Identity includes the variant, so linux/arm/v6 and linux/arm/v7 are
-          # two entries rather than a duplicate; the expected set is compared at
-          # os/architecture level, because that is how the build matrix names
-          # them.
-          identities = []
-          found = set()
-          for entry in manifests:
-              platform = entry.get("platform") or {}
-              architecture = platform.get("architecture")
-              # Attestations ride along as unknown/unknown entries.
-              if not architecture or architecture == "unknown":
-                  continue
-              operating_system = platform.get("os")
-              identities.append(
-                  (operating_system, architecture, platform.get("variant") or "")
-              )
-              found.add(f"{operating_system}/{architecture}")
-
-          duplicates = sorted({
-              "/".join(part for part in identity if part)
-              for identity in identities
-              if identities.count(identity) > 1
-          })
-          if duplicates:
-              sys.exit(f"FAIL: index lists duplicate platforms: {', '.join(duplicates)}")
-
-          if sorted(found) != expected:
-              sys.exit(f"FAIL: index describes {sorted(found)}, expected {expected}")
-
-          print(f"OK: {manifest_file} describes {', '.join(sorted(found))}")
-          PY
-
-          docker buildx imagetools inspect --raw "${IMAGE_NAME}:${VERSION}" > manifest-version.json
-          python3 verify_manifest.py manifest-version.json expected-platforms.txt
-
-          if [[ -f latest-pushed ]]; then
-            docker buildx imagetools inspect --raw "${IMAGE_NAME}:latest" > manifest-latest.json
-            python3 verify_manifest.py manifest-latest.json expected-platforms.txt
-          fi
-
-  # Deliberately always(): the arch tags are pushed by the build jobs, but only
-  # the manifest above makes them redundant. If a later architecture fails, or
-  # the manifest step does, the earlier architectures' tags are already on Docker
-  # Hub with nothing left to remove them, and the repository advertises a
-  # half-published release until the next successful run happens to prune it.
-  # This job removes them on every outcome, cancellation included.
-  #
-  # It deletes exactly the tags the build jobs reported pushing - one digest
-  # artifact per pushed tag - so it never has to guess at architecture names, and
-  # a build that failed before its push leaves nothing to clean up.
-  cleanup-arch-tags:
-    name: Remove architecture fragment tags
-    needs: [meta, build, create-manifest]
-    if: always()
+  # Re-reads the candidate, lists Docker Hub again and decides is_newest on that
+  # fresh listing (the meta value is only a hint), then publishes the version tag
+  # and - for the newest stable release only - `latest`, reading each back.
+  # A rerun republishes its own version tag onto the newly verified candidate.
+  promote:
+    name: Promote candidate
+    needs: [meta, create-manifest]
     runs-on: ubuntu-26.04
     timeout-minutes: 15
+    environment: release
     permissions:
       contents: read
+    outputs:
+      is_newest: ${{ steps.promote.outputs.is_newest }}
+      latest_moved: ${{ steps.promote.outputs.latest_moved }}
 
     steps:
-      # continue-on-error: the build jobs may have failed before uploading
-      # anything, and "no artifact" is a valid state this job handles below.
+      - name: Checkout release scripts
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+          sparse-checkout: .github/scripts
+
+      - name: Set up Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: '3.14'
+
+      - name: Agent banner and job temp directory
+        run: python3 .github/scripts/ci_job_setup.py
+
       - name: Download image digests
-        id: digests
-        continue-on-error: true
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
         with:
           pattern: image-digest-*
           path: digests/
           merge-multiple: true
 
-      - name: Delete architecture tags
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@4d04d5d9486b7bd6fa91e7baf45bbb4f8b9deedd # v4.0.0
+        with:
+          cache-binary: false
+
+      # The script logs in to Docker Hub itself (password on stdin) and logs out
+      # on every outcome.
+      - name: Promote verified candidate
+        id: promote
         env:
           DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
           DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
-          REPOSITORY: wirebuddy
+          IMAGE_NAME: ${{ format('{0}/wirebuddy', secrets.DOCKERHUB_USERNAME) }}
           VERSION: ${{ needs.meta.outputs.version }}
-        run: |
-          set -euo pipefail
+          ARCHES: ${{ needs.meta.outputs.arches }}
+          CANDIDATE: ${{ needs.create-manifest.outputs.candidate }}
+          INDEX_DIGEST: ${{ needs.create-manifest.outputs.index_digest }}
+          META_IS_NEWEST: ${{ needs.meta.outputs.is_newest }}
+          DIGEST_DIR: digests
+        run: python3 .github/scripts/release_tags.py promote
 
-          # meta itself may have failed, in which case there is no version and
-          # certainly no pushed tag.
-          if [[ -z "${VERSION}" ]]; then
-            echo "No version resolved - nothing was pushed, nothing to clean up."
-            exit 0
-          fi
-
-          shopt -s nullglob
-          digest_files=(digests/*)
-          if (( ${#digest_files[@]} == 0 )); then
-            echo "No image digests were published - no architecture tags exist."
-            exit 0
-          fi
-
-          hub_token="$(
-            jq -nc \
-              --arg username "$DOCKERHUB_USERNAME" \
-              --arg password "$DOCKERHUB_TOKEN" \
-              '{username: $username, password: $password}' \
-            | curl -fsSL \
-                -H 'Content-Type: application/json' \
-                -d @- \
-                'https://hub.docker.com/v2/users/login/' \
-            | jq -r '.token // .access_token // empty'
-          )"
-
-          if [[ -z "$hub_token" ]]; then
-            echo "ERROR: Failed to obtain Docker Hub API token"
-            exit 1
-          fi
-
-          api_base="https://hub.docker.com/v2/namespaces/${DOCKERHUB_USERNAME}/repositories/${REPOSITORY}/tags"
-
-          for file in "${digest_files[@]}"; do
-            tag="${VERSION}-$(basename "$file")"
-            status_code="$(curl -sS -o /dev/null -w '%{http_code}' \
-              -X DELETE \
-              -H "Authorization: Bearer ${hub_token}" \
-              "${api_base}/${tag}")"
-
-            case "$status_code" in
-              202|204) echo "Deleted fragment tag: ${tag}" ;;
-              404)     echo "Fragment tag already absent: ${tag}" ;;
-              *)
-                echo "ERROR: Failed to delete '${tag}' (HTTP ${status_code})"
-                exit 1
-                ;;
-            esac
-          done
-
-  # This is the destructive one: it deletes every published tag except the
-  # current version and 'latest'. It is therefore gated on is_newest as well -
-  # an older re-run must not be able to delete the newer releases that came
-  # after it, which is irreversible on Docker Hub. Ordered after the fragment
-  # cleanup so the two are not racing to delete the same arch tags, which would
-  # make this job's final assertion non-deterministic.
-  cleanup-dockerhub-tags:
-    name: Keep only latest and current version tag
-    needs: [meta, create-manifest, cleanup-arch-tags]
-    if: >-
-      needs.create-manifest.result == 'success' &&
-      needs.cleanup-arch-tags.result == 'success' &&
-      needs.meta.outputs.is_newest == 'true'
+  # Deliberately always(): the architecture tags are pushed by the build jobs,
+  # but only a promoted index makes them redundant. If a later architecture,
+  # the candidate or the promotion fails, the earlier tags are already on Docker
+  # Hub with nothing left to remove them. This job deletes `<version>-<arch>`
+  # for every matrix architecture on every outcome (absent is fine) and the
+  # candidate tag only after a successful promote; otherwise the candidate stays
+  # for a rerun and a later newest release's pruning removes it.
+  cleanup-arch-tags:
+    name: Remove architecture fragment tags
+    needs: [meta, build, create-manifest, promote]
+    # Without a version from meta nothing was pushed.
+    if: always() && needs.meta.result == 'success'
     runs-on: ubuntu-26.04
-    # Deletion is verified with polling loops, so cap the total runtime.
-    timeout-minutes: 30
+    timeout-minutes: 15
+    environment: release
     permissions:
       contents: read
 
     steps:
+      - name: Checkout release scripts
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+          sparse-checkout: .github/scripts
+
+      - name: Set up Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: '3.14'
+
+      - name: Agent banner and job temp directory
+        run: python3 .github/scripts/ci_job_setup.py
+
+      - name: Delete fragment tags
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+          VERSION: ${{ needs.meta.outputs.version }}
+          ARCHES: ${{ needs.meta.outputs.arches }}
+          CANDIDATE: ${{ needs.create-manifest.outputs.candidate }}
+          DELETE_CANDIDATE: ${{ needs.promote.result == 'success' }}
+        run: python3 .github/scripts/release_tags.py cleanup-fragments
+
+  # This is the destructive one: it deletes every published tag except the
+  # current version and 'latest'. It runs only when promote's fresh listing
+  # found this release to be the newest, and it lists again itself: a newer
+  # release appearing in between makes it fail instead of deleting. Ordered
+  # after the fragment cleanup so the two do not race on the same tags.
+  cleanup-dockerhub-tags:
+    name: Keep only latest and current version tag
+    needs: [meta, promote, cleanup-arch-tags]
+    if: >-
+      needs.promote.result == 'success' &&
+      needs.cleanup-arch-tags.result == 'success' &&
+      needs.promote.outputs.is_newest == 'true'
+    runs-on: ubuntu-26.04
+    # Deletion is verified with polling loops, so cap the total runtime.
+    timeout-minutes: 30
+    environment: release
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout release scripts
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+          sparse-checkout: .github/scripts
+
+      - name: Set up Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: '3.14'
+
+      - name: Agent banner and job temp directory
+        run: python3 .github/scripts/ci_job_setup.py
+
       - name: Delete all non-current Docker Hub tags
         env:
           DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
           DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
-          REPOSITORY: wirebuddy
           VERSION: ${{ needs.meta.outputs.version }}
-        run: |
-          set -euo pipefail
-
-          if ! command -v jq >/dev/null 2>&1; then
-            echo "ERROR: jq is required for Docker Hub tag cleanup"
-            exit 1
-          fi
-
-          keep_version="${VERSION}"
-          keep_latest="latest"
-          api_base="https://hub.docker.com/v2/namespaces/${DOCKERHUB_USERNAME}/repositories/${REPOSITORY}/tags"
-
-          list_tags() {
-            local next_url="${api_base}?page_size=100"
-            local response=""
-
-            while [[ -n "$next_url" && "$next_url" != "null" ]]; do
-              response="$(curl -fsSL \
-                -H "Authorization: Bearer ${hub_token}" \
-                "$next_url")"
-
-              printf '%s' "$response" | jq -r '.results[].name'
-              next_url="$(printf '%s' "$response" | jq -r '.next // empty')"
-            done
-          }
-
-          wait_for_tag_absent() {
-            local tag="$1"
-            local tag_url="${api_base}/${tag}"
-            local status_code=""
-
-            for _ in $(seq 1 12); do
-              status_code="$(curl -sS -o /dev/null -w '%{http_code}' \
-                -H "Authorization: Bearer ${hub_token}" \
-                "$tag_url")"
-
-              case "$status_code" in
-                404)
-                  echo "Confirmed tag absent: $tag"
-                  return 0
-                  ;;
-                200)
-                  sleep 5
-                  ;;
-                *)
-                  echo "ERROR: Failed to verify deletion for '$tag' (HTTP $status_code)"
-                  return 1
-                  ;;
-              esac
-            done
-
-            echo "ERROR: Tag still visible after cleanup propagation: $tag"
-            return 1
-          }
-
-          echo "Keeping Docker Hub tags:"
-          echo "  ${DOCKERHUB_USERNAME}/${REPOSITORY}:${keep_version}"
-          echo "  ${DOCKERHUB_USERNAME}/${REPOSITORY}:${keep_latest}"
-
-          token_response="$(
-            jq -nc \
-              --arg username "$DOCKERHUB_USERNAME" \
-              --arg password "$DOCKERHUB_TOKEN" \
-              '{username: $username, password: $password}' \
-            | curl -fsSL \
-                -H 'Content-Type: application/json' \
-                -d @- \
-                'https://hub.docker.com/v2/users/login/'
-          )"
-
-          hub_token="$(printf '%s' "$token_response" | jq -r '.token // .access_token // empty')"
-          if [[ -z "$hub_token" ]]; then
-            echo "ERROR: Failed to obtain Docker Hub API token"
-            printf '%s\n' "$token_response"
-            exit 1
-          fi
-
-          declare -a tags_to_delete=()
-          while IFS= read -r tag; do
-            [[ -n "$tag" ]] || continue
-
-            if [[ "$tag" == "$keep_version" || "$tag" == "$keep_latest" ]]; then
-              echo "Keeping tag: $tag"
-              continue
-            fi
-
-            tags_to_delete+=("$tag")
-          done < <(list_tags)
-
-          for tag in "${tags_to_delete[@]}"; do
-            echo "Deleting tag: $tag"
-            status_code="$(curl -sS -o /dev/null -w '%{http_code}' \
-              -X DELETE \
-              -H "Authorization: Bearer ${hub_token}" \
-              "${api_base}/${tag}")"
-
-            case "$status_code" in
-              202|204)
-                echo "Deleted tag: $tag"
-                wait_for_tag_absent "$tag"
-                ;;
-              404)
-                echo "Tag already absent: $tag"
-                ;;
-              *)
-                echo "ERROR: Failed to delete tag '$tag' (HTTP $status_code)"
-                exit 1
-                ;;
-            esac
-          done
-
-          declare -A remaining_tags=()
-          while IFS= read -r tag; do
-            [[ -n "$tag" ]] || continue
-            remaining_tags["$tag"]=1
-
-            if [[ "$tag" != "$keep_version" && "$tag" != "$keep_latest" ]]; then
-              echo "ERROR: Unexpected tag remained after cleanup: $tag"
-              exit 1
-            fi
-          done < <(list_tags | sort -u)
-
-          # Prereleases never publish 'latest' (see create-manifest), so only
-          # require it for stable releases. Demanding it unconditionally made
-          # the first prerelease fail here, after the images were already pushed.
-          declare -a expected_tags=("$keep_version")
-          if [[ "$VERSION" != *-* ]]; then
-            expected_tags+=("$keep_latest")
-          fi
-
-          for tag in "${expected_tags[@]}"; do
-            if [[ -z "${remaining_tags[$tag]:-}" ]]; then
-              echo "ERROR: Expected tag missing after cleanup: $tag"
-              exit 1
-            fi
-          done
+        run: python3 .github/scripts/release_tags.py prune
 
   create-release:
     name: Create GitHub Release
-    needs: [meta, create-manifest, cleanup-dockerhub-tags]
-    # A published manifest is what a release documents. The pruning job is
-    # skipped for an older re-run (see is_newest), and a skipped result must not
-    # suppress the release notes for a version that really was republished -
-    # only an outright cleanup failure should.
+    needs: [meta, create-manifest, promote, cleanup-dockerhub-tags]
+    # A promoted index is what a release documents. The pruning job is skipped
+    # for an older re-run (see is_newest), and a skipped result must not
+    # suppress the release for a version that really was republished - only an
+    # outright pruning failure should.
     #
     # !cancelled() is what makes that work: without a status function in this
     # expression GitHub adds an implicit success() over every entry in needs,
-    # and a skipped dependency does not satisfy it - so the exact re-run this
-    # condition was written for would have skipped the release too. always()
-    # would also do it, but it would additionally publish a release out of a
-    # cancelled run.
+    # and a skipped dependency does not satisfy it. always() would also do it,
+    # but it would additionally publish a release out of a cancelled run.
     if: >-
       !cancelled() &&
-      needs.create-manifest.result == 'success' &&
+      needs.promote.result == 'success' &&
       needs.cleanup-dockerhub-tags.result != 'failure'
     runs-on: ubuntu-26.04
     timeout-minutes: 10
-    env:
-      VERSION: ${{ needs.meta.outputs.version }}
-      IMAGE_NAME: ${{ format('{0}/wirebuddy', secrets.DOCKERHUB_USERNAME) }}
-      IS_NEWEST: ${{ needs.meta.outputs.is_newest }}
+    # The default GITHUB_TOKEN creates the release; docs-build.yml reacts to
+    # this workflow through workflow_run, so no `release` event is needed.
+    environment: release
     permissions:
       contents: write
-      actions: read
+    env:
+      VERSION: ${{ needs.meta.outputs.version }}
+      ARCHES: ${{ needs.meta.outputs.arches }}
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v5
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
+          persist-credentials: false
           fetch-depth: 1
 
+      - name: Set up Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: '3.14'
+
+      - name: Agent banner and job temp directory
+        run: python3 .github/scripts/ci_job_setup.py
+
       - name: Download Trivy findings
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
         with:
           pattern: trivy-findings-*
           path: trivy-reports/
           merge-multiple: false
 
-      - name: Create or update GitHub Release
-        uses: actions/github-script@v9
+      # A missing CHANGELOG section becomes a hint text; a missing or unproven
+      # Trivy report fails the release.
+      - name: Compose release notes
+        env:
+          IMAGE_NAME: ${{ format('{0}/wirebuddy', secrets.DOCKERHUB_USERNAME) }}
+          INDEX_DIGEST: ${{ needs.create-manifest.outputs.index_digest }}
+          LATEST_MOVED: ${{ needs.promote.outputs.latest_moved }}
+        run: |
+          set -euo pipefail
+          repo_url="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}"
+          reports=()
+          for arch in $ARCHES; do
+            reports+=(--trivy-report "${arch}=trivy-reports/trivy-findings-${arch}/trivy-${arch}.json")
+          done
+          python3 .github/scripts/release_notes.py \
+            --version "$VERSION" \
+            --changelog CHANGELOG.md \
+            --image "$IMAGE_NAME" \
+            --index-digest "$INDEX_DIGEST" \
+            --latest-moved "$LATEST_MOVED" \
+            --run-url "${repo_url}/actions/runs/${GITHUB_RUN_ID}" \
+            --asset-base "${repo_url}/releases/download/v${VERSION}" \
+            --repo-url "$repo_url" \
+            "${reports[@]}" \
+            --output "${RUNNER_TEMP}/release-notes.md"
+
+      # Draft first, reports attached and verified, then published. A rerun
+      # republished :<version>, so an already published release whose notes
+      # differ gets this run's body and reports. GitHub "Latest" follows the
+      # Docker `latest` decision of `promote`.
+      - name: Publish GitHub Release
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          LATEST_MOVED: ${{ needs.promote.outputs.latest_moved }}
         with:
           script: |
-            const fs = require('node:fs');
             const path = require('node:path');
-            const version = process.env.VERSION;
-            const imageName = process.env.IMAGE_NAME;
-            const isPrerelease = version.includes('-');
-            // Mirrors the condition create-manifest applies. Listing ':latest'
-            // unconditionally would document a tag this run deliberately left
-            // pointing at a newer release.
-            const isNewest = process.env.IS_NEWEST === 'true';
-            const movedLatest = !isPrerelease && isNewest;
-            const tagName = 'v' + version;
-
-            function parseTrivyStatus(arch) {
-              const file = path.join('trivy-reports', `trivy-findings-${arch}`, `trivy-${arch}.json`);
-              try {
-                const data = JSON.parse(fs.readFileSync(file, 'utf8'));
-                let critical = 0, high = 0;
-                for (const result of (data.Results || [])) {
-                  for (const vuln of (result.Vulnerabilities || [])) {
-                    if (vuln.Severity === 'CRITICAL') critical++;
-                    else if (vuln.Severity === 'HIGH') high++;
-                  }
-                }
-                return (critical === 0 && high === 0)
-                  ? '✅ No HIGH/CRITICAL vulnerabilities found'
-                  : `⚠️ ${critical} CRITICAL, ${high} HIGH vulnerabilities`;
-              } catch {
-                return '❓ Report unavailable';
-              }
-            }
-
-            function extractVersionSection(markdown, targetVersion) {
-              const headingPattern = /^## \[([^\]]+)\] - .+$/gm;
-              let startIndex = -1;
-              let endIndex = markdown.length;
-              let match;
-
-              while ((match = headingPattern.exec(markdown)) !== null) {
-                if (startIndex === -1 && match[1] === targetVersion) {
-                  startIndex = match.index;
-                  continue;
-                }
-                if (startIndex !== -1) {
-                  endIndex = match.index;
-                  break;
-                }
-              }
-
-              if (startIndex === -1) {
-                return null;
-              }
-              // The changelog wraps everything after the newest entry in a
-              // <details><summary>Previous versions...</summary> block so it
-              // collapses on GitHub. That markup has no business in release
-              // notes, so strip it if the newest version's section happens to
-              // include the opening tag (it always does, since the block is
-              // opened right after the latest entry's bullets).
-              return markdown.slice(startIndex, endIndex)
-                .replace(/<details[^>]*>\s*<summary>.*?<\/summary>/gs, '')
-                .replace(/<\/details>/g, '')
-                .trim();
-            }
-
-            let changelogSection = null;
-            try {
-              const changelogText = fs.readFileSync('CHANGELOG.md', 'utf8');
-              changelogSection = extractVersionSection(changelogText, version);
-              if (!changelogSection) {
-                console.log('No matching changelog section found for version ' + version);
-              }
-            } catch (err) {
-              console.log('Could not read CHANGELOG.md: ' + err.message);
-            }
-
-            const tags = [
-              '- `' + imageName + ':' + version + '` (multi-arch)'
-            ];
-            if (movedLatest) {
-              tags.push('- `' + imageName + ':latest` (multi-arch)');
-            } else if (!isPrerelease) {
-              tags.push('- `' + imageName + ':latest` was left on a newer release');
-            }
-
-            const runUrl = `https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
-            // Reports are attached to the release below; run artifacts expire.
-            const assetBase = `https://github.com/${context.repo.owner}/${context.repo.repo}/releases/download/${tagName}`;
-            const trivyAmd64 = parseTrivyStatus('amd64');
-            const trivyArm64 = parseTrivyStatus('arm64');
-
-            const body = [
-              '## WireBuddy ' + version,
-              '',
-              '**Docker Image:** `docker pull ' + imageName + ':' + version + '`',
-              '',
-              '### Available Tags',
-              ...tags,
-              '',
-              '### Security Scan Results',
-              '',
-              '| Architecture | Status | Findings |',
-              '|---|---|---|',
-              '| amd64 | ' + trivyAmd64 + ' | [trivy-amd64.json](' + assetBase + '/trivy-amd64.json) |',
-              '| arm64 | ' + trivyArm64 + ' | [trivy-arm64.json](' + assetBase + '/trivy-arm64.json) |',
-              '| run | workflow details | [Actions Run](' + runUrl + ') |',
-              '',
-              '> Scanned with [Trivy](https://trivy.dev/) for HIGH and CRITICAL severity vulnerabilities (unfixed CVEs ignored).',
-              '',
-              '### Changelog',
-              changelogSection || '_No matching CHANGELOG entry found for this version._',
-              '',
-              '**Source:** [WireBuddy Repository](https://github.com/' + context.repo.owner + '/' + context.repo.repo + ')'
-            ].join('\n');
-
-            const releaseFields = {
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              tag_name: tagName,
-              name: 'WireBuddy ' + version,
-              body: body,
-              draft: false,
-              prerelease: isPrerelease
-            };
-
-            // Look the release up first. Treating every 422 as "already exists"
-            // also swallowed unrelated validation errors and then failed in a
-            // confusing way inside the recovery path.
-            let release = null;
-            try {
-              ({ data: release } = await github.rest.repos.getReleaseByTag({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                tag: tagName
-              }));
-            } catch (e) {
-              if (e.status !== 404) throw e;
-            }
-
-            if (release) {
-              ({ data: release } = await github.rest.repos.updateRelease({
-                ...releaseFields,
-                release_id: release.id
-              }));
-              console.log('Updated release ' + tagName);
-            } else {
-              ({ data: release } = await github.rest.repos.createRelease(releaseFields));
-              console.log('Created release ' + tagName);
-            }
-
-            // Attach the scan reports to the release. The body links to them,
-            // but run artifacts expire after retention-days, which left older
-            // releases pointing at downloads that no longer exist.
-            for (const arch of ['amd64', 'arm64']) {
-              const assetName = `trivy-${arch}.json`;
-              const file = path.join('trivy-reports', `trivy-findings-${arch}`, assetName);
-              try {
-                const data = fs.readFileSync(file);
-                const existing = (release.assets || []).find(a => a.name === assetName);
-                if (existing) {
-                  await github.rest.repos.deleteReleaseAsset({
-                    owner: context.repo.owner,
-                    repo: context.repo.repo,
-                    asset_id: existing.id
-                  });
-                }
-                await github.rest.repos.uploadReleaseAsset({
-                  owner: context.repo.owner,
-                  repo: context.repo.repo,
-                  release_id: release.id,
-                  name: assetName,
-                  data: data,
-                  headers: {
-                    'content-type': 'application/json',
-                    'content-length': data.length
-                  }
-                });
-                console.log('Attached ' + assetName);
-              } catch (err) {
-                console.log('Could not attach ' + assetName + ': ' + err.message);
-              }
-            }
+            const { publishRelease } = require('./.github/scripts/release_publish.cjs');
+            const arches = process.env.ARCHES.split(/\s+/).filter(Boolean);
+            await publishRelease({
+              github,
+              context,
+              core,
+              version: process.env.VERSION,
+              releaseNotesFile: path.join(process.env.RUNNER_TEMP, 'release-notes.md'),
+              assets: arches.map((arch) => ({
+                name: `trivy-${arch}.json`,
+                path: path.join('trivy-reports', `trivy-findings-${arch}`, `trivy-${arch}.json`),
+              })),
+              latestMoved: process.env.LATEST_MOVED === 'true',
+            });

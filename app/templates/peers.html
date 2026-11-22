@@ -9,7 +9,7 @@
 {% endblock %}
 
 {% block content %}
-<div id="peers-app" data-can-manage-peers="{{ '1' if user['is_admin'] else '0' }}" data-flag-icon-base-url="https://cdn.jsdelivr.net/npm/flag-icons@7.3.2/flags/4x3" hidden></div>
+<div id="peers-app" data-can-manage-peers="{{ '1' if user['is_admin'] else '0' }}" hidden></div>
 <div class="container-fluid wb-page">
 <div class="wb-page-header">
     <h1 class="page-title"><span class="material-icons me-2" aria-hidden="true">devices</span>Peers</h1>
@@ -360,12 +360,12 @@
                     <!-- Warning: Server FQDN not configured -->
                     <div id="peer-fqdn-warning" class="alert alert-warning d-none" role="alert">
                         <strong>⚠ Server FQDN / IP not configured</strong><br>
-                        Please set the <strong>Server FQDN / IP</strong> in Settings → WireGuard before creating peers.
+                        Please set the <strong>Server FQDN / IP</strong> in Settings → General before creating peers.
                         Otherwise, the peer configuration will contain a placeholder address.
                     </div>
                     
                     <div class="mb-2">
-                        <label for="peer-name" class="form-label">Device Name <span class="text-danger">*</span></label>
+                        <label for="peer-name" class="form-label">Peer name <span class="text-danger">*</span></label>
                         <input type="text" class="form-control" id="peer-name" maxlength="128" placeholder="e.g., John's iPhone" pattern="[a-zA-Z0-9._\-# ']+" required>
                         <div class="invalid-feedback" id="peer-name-feedback">Peer name is required</div>
                     </div>
@@ -430,7 +430,7 @@
                     <h6 class="text-muted text-uppercase small mb-2">Basics</h6>
 
                     <div class="mb-2">
-                        <label for="edit-peer-name" class="form-label">Device Name <span class="text-danger">*</span></label>
+                        <label for="edit-peer-name" class="form-label">Peer name <span class="text-danger">*</span></label>
                         <input type="text" class="form-control" id="edit-peer-name" maxlength="128" placeholder="e.g., John's iPhone" pattern="[a-zA-Z0-9._\-# ']+" required>
                         <div class="invalid-feedback" id="edit-peer-name-feedback">Peer name is required</div>
                     </div>

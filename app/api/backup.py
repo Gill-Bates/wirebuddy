@@ -235,7 +235,7 @@ def _get_retention_days(conn: sqlite3.Connection) -> int:
 	try:
 		val = int(raw)
 		return val if val in BACKUP_RETENTION_OPTIONS else BACKUP_RETENTION_DAYS
-	except (ValueError, TypeError):
+	except ValueError, TypeError:
 		_log.warning("Invalid retention_days in DB: %r, using default", raw)
 		return BACKUP_RETENTION_DAYS
 
@@ -337,7 +337,8 @@ def _validate_tar_members(tar: tarfile.TarFile) -> None:
 def _safe_tar_extract(tar: tarfile.TarFile, dest: Path) -> None:
 	"""Safely extract tar archive, preventing path traversal attacks.
 
-	Python 3.13+ always supports filter='data', which rejects unsafe members.
+	The "data" extraction filter rejects absolute paths, links escaping the
+	destination and special files.
 	"""
 	_validate_tar_members(tar)
 	tar.extractall(dest, filter="data")
@@ -841,7 +842,7 @@ def _line_is_in_range(line: bytes, cutoff: datetime) -> bool:
 	"""
 	try:
 		ts = datetime.fromisoformat(json.loads(line)["ts"])
-	except (ValueError, KeyError, TypeError):
+	except ValueError, KeyError, TypeError:
 		return False
 	if ts.tzinfo is None:
 		ts = ts.replace(tzinfo=UTC)
@@ -1074,7 +1075,6 @@ def get_backup_settings(
 			backup_count += 1
 			backup_size += f.stat().st_size
 
-		# Get disk space info
 		disk_free = shutil.disk_usage(backup_dir).free
 		# Warn if less than 500MB free or if free space < 2x current backup size
 		disk_warning = disk_free < 500 * 1024 * 1024 or (backup_size > 0 and disk_free < backup_size * 2)
@@ -1561,7 +1561,6 @@ def run_scheduled_backup(data_dir: Path, db_path: Path, secret_key: str) -> dict
 				_log.error("Insufficient disk space for backup: %d bytes free, need %d", disk_free, min_required)
 				raise OSError(f"Insufficient disk space: {disk_free // (1024 * 1024)}MB free, need at least 100MB")
 
-			# Create backup archive
 			tmp_path, filename, file_size = _create_backup_archive(data_dir, db_path, secret_key, options)
 
 			# Move to backup directory

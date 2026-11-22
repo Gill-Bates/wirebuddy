@@ -35,6 +35,7 @@ except ImportError:
 	idna = None  # type: ignore
 	_IDNAError = UnicodeError  # type: ignore[misc,assignment]
 
+from ..utils.network import is_unsafe_outbound_address
 from . import unbound_config
 from .custom_rules import (
 	ParsedRule,
@@ -170,7 +171,7 @@ def _normalize_domain(raw: str) -> str | None:
 		# IDNA 2008 via the idna package when available (better modern TLD
 		# support), otherwise the stdlib's IDNA 2003 codec.
 		ascii_domain = idna.encode(domain, uts46=True).decode("ascii").rstrip(".") if idna else domain.encode("idna").decode("ascii")
-	except (UnicodeError, _IDNAError):
+	except UnicodeError, _IDNAError:
 		return None
 	except Exception:
 		# Unexpected error from idna library - log and skip
@@ -369,19 +370,6 @@ async def _iter_response_lines(resp: httpx.Response):
 		yield buffer.decode("utf-8", errors="replace")
 
 
-def _is_ip_unsafe(addr: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
-	"""Check if an IP address is unsafe (private, loopback, etc.).
-
-	Handles IPv4-mapped IPv6 addresses (e.g., ::ffff:127.0.0.1) which
-	Python < 3.11 does not correctly identify as loopback/private.
-	"""
-	check = addr
-	# Unwrap IPv4-mapped IPv6 addresses for proper safety checks
-	if isinstance(addr, ipaddress.IPv6Address) and addr.ipv4_mapped:
-		check = addr.ipv4_mapped
-	return check.is_private or check.is_loopback or check.is_link_local or check.is_reserved or check.is_multicast or check.is_unspecified
-
-
 def _is_safe_url(url: str) -> bool:
 	"""Validate URL and reject SSRF targets (private IPs, localhost, etc.).
 
@@ -399,17 +387,16 @@ def _is_safe_url(url: str) -> bool:
 	if not hostname:
 		return False
 
-	# Check if hostname is an IP address
 	try:
 		addr = ipaddress.ip_address(hostname)
-		if _is_ip_unsafe(addr):
+		if is_unsafe_outbound_address(addr):
 			return False
 	except ValueError:
 		# It's a hostname, not an IP — resolve and check all addresses
 		try:
 			for info in socket.getaddrinfo(hostname, None):
 				addr = ipaddress.ip_address(info[4][0])
-				if _is_ip_unsafe(addr):
+				if is_unsafe_outbound_address(addr):
 					return False
 		except socket.gaierror:
 			return False
@@ -699,7 +686,6 @@ async def update_blocklists(
 		except _CapacityExceededError as exc:
 			_log.warning("DNS_CUSTOM_RULES capacity limit: %s", exc)
 
-		# Remove allowed domains from the tag map
 		for domain in custom_removed:
 			domain_tags.pop(domain, None)
 

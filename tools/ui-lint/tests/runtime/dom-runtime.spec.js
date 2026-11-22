@@ -4,10 +4,12 @@
 //
 
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 import { expect, test } from '@playwright/test';
 
-const domScriptPath = path.resolve('/opt/wirebuddy/app/static/js/core/dom.js');
+const appJsDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../../../app/static/js');
+const domScriptPath = path.join(appJsDir, 'core/dom.js');
 
 test.beforeEach(async ({ page }) => {
     await page.setContent('<!doctype html><html><body></body></html>');
@@ -53,7 +55,7 @@ test('el stays XSS-safe, returns live nodes, and fragment/clearChildren manage c
 });
 
 test('settings action buttons bind through delegated runtime events', async ({ page }) => {
-    await page.addScriptTag({ path: path.resolve('/opt/wirebuddy/app/static/js/settings/components.js') });
+    await page.addScriptTag({ path: path.join(appJsDir, 'settings/components.js') });
 
     const result = await page.evaluate(() => {
         let clicked = 0;
@@ -80,8 +82,8 @@ test('settings action buttons bind through delegated runtime events', async ({ p
 });
 
 test('settings components sanitize datasets and boolean attributes deterministically', async ({ page }) => {
-    await page.addScriptTag({ path: path.resolve('/opt/wirebuddy/app/static/js/core/format.js') });
-    await page.addScriptTag({ path: path.resolve('/opt/wirebuddy/app/static/js/settings/components.js') });
+    await page.addScriptTag({ path: path.join(appJsDir, 'core/format.js') });
+    await page.addScriptTag({ path: path.join(appJsDir, 'settings/components.js') });
 
     const result = await page.evaluate(() => {
         const { actionButton, blocklistItem, certificateRow } = window.WB.settingsComponents;

@@ -1,5 +1,5 @@
 <!-- Parent: ../AGENTS.md -->
-<!-- Generated: 2026-09-21 | Updated: 2026-09-21 -->
+<!-- Generated: 2026-09-21 | Updated: 2026-11-22 -->
 # layout
 
 ## Purpose
@@ -16,26 +16,14 @@ Layout rules.
 
 ## For AI Agents
 
-### Working In This Directory
-
-- No special constraints beyond the parent directory guidance.
-
 ### Testing Requirements
 
-- Covered by `tests/layout/form-switch-spacing.spec.js`, `tests/layout/settings-logs-layout.spec.js`, `tests/overflow/mobile-overflow.spec.js`. Run `cd tools/ui-lint && npx playwright test <spec>` (no playwright.config file; defaults apply).
-
-### Common Patterns
-
-- Header comment `// Rule: ...`; `meta` object + `registerRule`.
+- Covered by `tests/layout/form-switch-spacing.spec.js`, `tests/layout/settings-logs-layout.spec.js`, `tests/overflow/mobile-overflow.spec.js`. Run `cd tools/ui-lint && npx playwright test <spec>`.
 
 ## Dependencies
 
 ### Internal
 
 - `../../lib/layout-diagnostics.mjs`
-
-### External
-
-- None
 
 <!-- MANUAL: Any manually added notes below this line are preserved on regeneration -->

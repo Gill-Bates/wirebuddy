@@ -45,7 +45,6 @@
         purgeLogsBtn: null,
     };
 
-    const FLAG_ICON_BASE_URL = 'https://cdn.jsdelivr.net/npm/flag-icons@7.3.2/flags/4x3';
     const SPEEDTEST_RETENTION_VALUES = [0, 7, 30, 90, 180, 365];
     const VALID_COUNTRY_CODE = /^[a-z]{2}$/;
 
@@ -144,7 +143,7 @@
         img.alt = `Country flag: ${code.toUpperCase()}`;
         img.loading = 'lazy';
         img.decoding = 'async';
-        img.src = `${FLAG_ICON_BASE_URL}/${code}.svg`;
+        img.src = window.WB.flags.url(code);
         img.addEventListener('error', () => img.remove(), { once: true });
         return img;
     }
@@ -191,7 +190,7 @@
     }
 
     function formatSpeedtestMeasuredLabel(timestamp) {
-        const date = new Date(timestamp);
+        const date = window.WBFormat.toDate(timestamp);
         const diffMs = Date.now() - date.getTime();
         const diffMins = Math.floor(diffMs / 60000);
 
@@ -199,12 +198,7 @@
             return 'Just now';
         }
         if (diffMins < 0) {
-            return date.toLocaleString(undefined, {
-                month: 'short',
-                day: 'numeric',
-                hour: '2-digit',
-                minute: '2-digit',
-            });
+            return window.WBFormat.format(date, 'datetime-short');
         }
         if (diffMins < 60) {
             return `${diffMins} min ago`;
@@ -213,12 +207,7 @@
             return `${Math.floor(diffMins / 60)}h ago`;
         }
 
-        return date.toLocaleString(undefined, {
-            month: 'short',
-            day: 'numeric',
-            hour: '2-digit',
-            minute: '2-digit',
-        });
+        return window.WBFormat.format(date, 'datetime-short');
     }
 
     function showSpeedtestResult(data) {
@@ -245,7 +234,7 @@
         resultEl.classList.remove('d-none');
         if (dlEl) dlEl.textContent = formatBandwidthMetric(data.download_mbit, 2);
         if (ulEl) ulEl.textContent = formatBandwidthMetric(data.upload_mbit, 2);
-        if (rttEl) rttEl.textContent = data.rtt_ms != null ? `${data.rtt_ms.toFixed(2)} ms (±${(data.jitter_ms || 0).toFixed(2)})` : '–';
+        if (rttEl) rttEl.textContent = data.rtt_ms != null ? `${window.WBFormat.fixed(data.rtt_ms, 2)} ms (±${window.WBFormat.fixed(data.jitter_ms || 0, 2)})` : '–';
 
         if (serverEl) {
             serverEl.title = data.server || '';
@@ -279,7 +268,7 @@
             return;
         }
 
-        const date = new Date(data.ts);
+        const date = window.WBFormat.toDate(data.ts);
         if (Number.isNaN(date.getTime())) {
             dateEl.textContent = '–';
             if (inlineDateEl) {
@@ -296,7 +285,7 @@
             inlineDateEl.textContent = label;
             inlineDateEl.setAttribute('aria-label', label);
         }
-        dateEl.title = date.toLocaleString();
+        dateEl.title = window.WBFormat.format(date, 'datetime-seconds');
     }
 
     function initSpeedtestUI() {
@@ -529,7 +518,7 @@
             if (sizeEl) sizeEl.textContent = formatBytes(stats.size_bytes || 0);
 
             const recordsEl = document.getElementById('speedtest-metrics-records');
-            if (recordsEl) recordsEl.textContent = stats.record_count || 0;
+            if (recordsEl) recordsEl.textContent = window.WBFormat.number(stats.record_count || 0);
 
             if (elements.retentionSlider && stats.retention_days != null) {
                 elements.retentionSlider.value = String(speedtestRetentionIndexForDays(stats.retention_days));
@@ -559,7 +548,7 @@
 
         if (days === 0) {
             const ok = await wbConfirm(
-                '"No Logs" disables speedtest logging and deletes existing data. Bandwidth history chart will be empty. Continue?',
+                '"No Logs" keeps speedtest results for about one day only and deletes older data. The bandwidth history chart will show at most the last day. Continue?',
                 'warning'
             );
             if (!ok) {

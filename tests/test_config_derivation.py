@@ -125,3 +125,51 @@ def test_allowed_hosts_empty_when_neither_configured():
 def test_bind_is_loopback_only_for_known_loopback_hosts(raw, expected):
 	"""An unknown or wildcard bind must keep the missing-Host-validation warning."""
 	assert _bind_is_loopback(raw) is expected
+
+
+def test_symlinked_data_dir_is_rejected_and_target_permissions_untouched(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+	_base_env(monkeypatch, tmp_path)
+	target = tmp_path / "foreign"
+	target.mkdir()
+	target.chmod(0o755)
+	(tmp_path / "data").symlink_to(target)
+	with pytest.raises(SystemExit):
+		load_config()
+	assert target.stat().st_mode & 0o777 == 0o755
+
+
+def test_symlinked_tsdb_dir_is_rejected_and_target_permissions_untouched(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+	_base_env(monkeypatch, tmp_path)
+	target = tmp_path / "foreign"
+	target.mkdir()
+	target.chmod(0o755)
+	(tmp_path / "data").mkdir()
+	(tmp_path / "data" / "tsdb").symlink_to(target)
+	with pytest.raises(SystemExit):
+		load_config()
+	assert target.stat().st_mode & 0o777 == 0o755
+
+
+def test_data_dir_is_tightened_to_0700(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+	_base_env(monkeypatch, tmp_path)
+	(tmp_path / "data").mkdir()
+	(tmp_path / "data").chmod(0o777)
+	cfg = load_config()
+	assert cfg.data_dir.stat().st_mode & 0o777 == 0o700
+
+
+def test_data_dir_group_writable_after_failed_chmod_refuses_start(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+	_base_env(monkeypatch, tmp_path)
+	(tmp_path / "data").mkdir()
+	(tmp_path / "data").chmod(0o770)
+	monkeypatch.setattr("app.utils.config.os.fchmod", lambda *_a: (_ for _ in ()).throw(PermissionError("denied")))
+	with pytest.raises(SystemExit):
+		load_config()
+
+
+def test_data_dir_read_only_group_access_survives_failed_chmod(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+	_base_env(monkeypatch, tmp_path)
+	(tmp_path / "data").mkdir()
+	(tmp_path / "data").chmod(0o750)
+	monkeypatch.setattr("app.utils.config.os.fchmod", lambda *_a: (_ for _ in ()).throw(PermissionError("denied")))
+	assert load_config().data_dir == (tmp_path / "data").resolve()

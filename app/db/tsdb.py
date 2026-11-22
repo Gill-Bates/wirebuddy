@@ -36,6 +36,7 @@ import re
 import shutil
 import threading
 import time
+import zlib
 from collections import OrderedDict
 from collections.abc import Callable, Generator
 from dataclasses import dataclass
@@ -68,7 +69,6 @@ __all__ = [
 	"flush_to_disk",
 	"get_all_peer_hashes",
 	"get_db_stats",
-	"get_peer_stats",
 	"get_synthetic_storage_stats",
 	"init_tsdb",
 	"purge_synthetic_data",
@@ -457,14 +457,21 @@ def _should_prune(series_path: Path) -> bool:
 	try:
 		# Touch the marker file atomically to claim this prune slot
 		marker.parent.mkdir(parents=True, exist_ok=True)
-		fd = os.open(str(marker), os.O_CREAT | os.O_WRONLY)
+		# A marker created right now has no prune history: its fresh mtime must
+		# not count as a completed prune (first run would be skipped).
+		created = False
+		try:
+			fd = os.open(str(marker), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+			created = True
+		except FileExistsError:
+			fd = os.open(str(marker), os.O_CREAT | os.O_WRONLY)
 		try:
 			# Try to get exclusive lock without blocking
 			fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
 			# Once locked, rely only on fstat for consistency
 			try:
 				last_prune = os.fstat(fd).st_mtime
-				if now - last_prune < PRUNE_INTERVAL_SECONDS:
+				if not created and now - last_prune < PRUNE_INTERVAL_SECONDS:
 					return False
 			except OSError:
 				# First time or stat failed - proceed with prune
@@ -643,17 +650,19 @@ def _prune_archives_locked(series_path: Path, cutoff: datetime) -> bool:
 def _iter_json_lines(path: Path) -> Generator[str]:
 	"""Yield JSONL lines from plain or gzip files.
 
-	Handles corrupted gzip archives gracefully by logging and skipping.
+	Handles corrupted files gracefully by logging and skipping the unreadable
+	rest. Invalid UTF-8 is replaced (not raised), so the damaged line fails JSON
+	parsing in the caller and only that line is dropped.
 	"""
 	if path.suffix == ".gz":
 		try:
-			with gzip.open(path, "rt", encoding="utf-8") as f:
+			with gzip.open(path, "rt", encoding="utf-8", errors="replace") as f:
 				yield from f
-		except (gzip.BadGzipFile, OSError, EOFError) as e:
+		except (gzip.BadGzipFile, OSError, EOFError, zlib.error) as e:
 			_log.warning("Corrupted or truncated gzip archive %s: %s (skipping)", path.name, e)
 		return
 	try:
-		with path.open("r", encoding="utf-8") as f:
+		with path.open("r", encoding="utf-8", errors="replace") as f:
 			yield from f
 	except OSError as e:
 		_log.warning("Cannot read series file %s: %s (skipping)", path.name, e)
@@ -763,9 +772,9 @@ def delete_peer_data(tsdb_dir: Path, peer_key: str, *, force: bool = False) -> N
 			tdir.rmdir()
 
 
-# Batched fsync state (per series path) — sharded to reduce lock contention
-_FSYNC_LOCK_SHARDS = 16
-_fsync_batch_locks: tuple[threading.Lock, ...] = tuple(threading.Lock() for _ in range(_FSYNC_LOCK_SHARDS))
+# Batched fsync state (per series path). One lock guards the whole shared LRU:
+# per-key shard locks would let threads mutate/evict the same OrderedDict at once.
+_fsync_batch_lock = threading.Lock()
 _fsync_batch_state: _BoundedLRU = _BoundedLRU(2000)
 
 # Recovery tracking to avoid redundant uncompressed rotation recovery per series
@@ -785,8 +794,7 @@ def _should_fsync_batch(series_path: Path) -> bool:
 	- Time interval exceeded since last fsync
 	"""
 	key = str(series_path)
-	shard_lock = _fsync_batch_locks[hash(key) % _FSYNC_LOCK_SHARDS]
-	with shard_lock:
+	with _fsync_batch_lock:
 		if key not in _fsync_batch_state:
 			_fsync_batch_state[key] = {"count": 0, "last_fsync": time.time()}
 
@@ -894,9 +902,15 @@ def _prune_series_locked(series_path: Path, retention_days: int) -> bool:
 
 	kept: list[str] = []
 
-	with series_path.open("r", encoding="utf-8") as f:
-		for raw_line in f:
-			line = raw_line.strip()
+	# Binary read: a line with invalid UTF-8 is dropped like any corrupted line
+	# instead of aborting the prune (and with it every append that triggers it).
+	with series_path.open("rb") as f:
+		for raw_bytes in f:
+			try:
+				line = raw_bytes.decode("utf-8").strip()
+			except UnicodeDecodeError as e:
+				_log.debug("Skipping undecodable line in %s: %s", series_path.name, e)
+				continue
 			if not line:
 				continue
 			try:
@@ -1120,23 +1134,6 @@ def query_bucketed(
 				buckets[key] = val
 
 	return [MetricPoint(ts=k, value=buckets[k]) for k in sorted(buckets)]
-
-
-def get_peer_stats(tsdb_dir: Path, peer_key: str) -> dict[str, Any]:
-	"""Get the latest stats for a peer.
-
-	Returns:
-		Dict with rx_bytes, tx_bytes, latest_handshake, etc.
-	"""
-	stats = {}
-
-	for metric in ["rx_bytes", "tx_bytes", "latest_handshake"]:
-		points = query_latest(tsdb_dir, peer_key=peer_key, metric=metric, count=1)
-		if points:
-			stats[metric] = points[-1].value
-			stats[f"{metric}_ts"] = points[-1].ts
-
-	return stats
 
 
 def get_all_peer_hashes(tsdb_dir: Path) -> list[str]:

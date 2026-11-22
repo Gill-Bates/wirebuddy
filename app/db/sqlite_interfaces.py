@@ -174,7 +174,7 @@ def get_first_listen_port(conn: sqlite3.Connection, default: int = 51820) -> int
 		return default
 	try:
 		return int(row["listen_port"])
-	except (TypeError, ValueError, KeyError, IndexError):
+	except TypeError, ValueError, KeyError, IndexError:
 		return default
 
 

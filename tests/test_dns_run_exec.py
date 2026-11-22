@@ -4,9 +4,6 @@
 # Copyright (C) 2026 Gill-Bates http://github.com/Gill-Bates
 #
 
-# SPDX-License-Identifier: MIT
-#
-
 """``run_exec`` never raises: every failure comes back as ``(-1, "", reason)``.
 
 The Unbound supervisor relies on that contract, so it is locked here

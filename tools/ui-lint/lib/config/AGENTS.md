@@ -1,5 +1,5 @@
 <!-- Parent: ../AGENTS.md -->
-<!-- Generated: 2026-09-21 | Updated: 2026-09-21 -->
+<!-- Generated: 2026-09-21 | Updated: 2026-11-22 -->
 # config
 
 ## Purpose
@@ -33,7 +33,7 @@ Token-driven configuration platform: every threshold and contract used by rules 
 
 ### Testing Requirements
 
-- Covered by `tests/config/config-platform.spec.js`. Run `cd tools/ui-lint && npx playwright test <spec>` (no playwright.config file; defaults apply).
+- Covered by `tests/config/config-platform.spec.js`. Run `cd tools/ui-lint && npx playwright test <spec>`.
 
 ### Common Patterns
 
@@ -44,9 +44,5 @@ Token-driven configuration platform: every threshold and contract used by rules 
 ### Internal
 
 - `../design-tokens.mjs`
-
-### External
-
-- None
 
 <!-- MANUAL: Any manually added notes below this line are preserved on regeneration -->

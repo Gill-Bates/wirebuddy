@@ -17,6 +17,7 @@
     <link href="/static/css/style.css" rel="stylesheet">
     <link href="/static/css/wb-ui-system.css" rel="stylesheet">
     <link href="/static/css/status.css" rel="stylesheet">
+    <script src="/static/js/core/format.js" defer></script>
 </head>
 <body>
     <noscript>
@@ -137,7 +138,7 @@
                         {% if check.detail_parts %}
                         <p class="mb-0 text-muted small">
                             {% for part in check.detail_parts %}
-                            <span class="font-monospace">{{ part|e }}</span>{% if not loop.last %} &middot; {% endif %}
+                            <span class="font-monospace">{% if part.kind %}<span data-wb-number="{{ part.kind }}" data-wb-value="{{ part.value }}" data-wb-digits="{{ part.digits }}">{{ part.text|e }}</span>{{ part.suffix|e }}{% else %}{{ part.text|e }}{% endif %}</span>{% if not loop.last %} &middot; {% endif %}
                             {% endfor %}
                             {% if check.age_label %} &middot; {{ check.age_label|e }}{% endif %}
                         </p>

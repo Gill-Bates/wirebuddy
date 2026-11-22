@@ -85,6 +85,7 @@ import {
 import { summarizeFindings, isExpectedStatusUnavailable } from './lib/findings.mjs';
 import {
     buildRunPaths,
+    resetScreenshotDir,
     getAuthenticatedContextOptions,
     getLoginFailureContextOptions,
 } from './lib/runtime-config.mjs';
@@ -4463,7 +4464,7 @@ async function exerciseSettingsWireguardModal(page) {
     await page.waitForFunction(() => {
         const modalEl = document.getElementById('ifaceModal');
         return !modalEl || !modalEl.classList.contains('show');
-    }, { timeout: 5000 }).catch(() => { });
+    }, null, { timeout: 5000 }).catch(() => { });
 
     await page.waitForTimeout(TAB_SWITCH_SETTLE_MS);
 }
@@ -4475,7 +4476,18 @@ function normalizeRegistryDevice(device) {
     return device === 'large-desktop' ? 'desktop' : device;
 }
 
-const REGISTRY_RULE_IDS = ['click-targets', 'focus-indicators', 'form-switch-spacing', 'horizontal-overflow', 'scroll-traps'];
+// Every registered rule except settings-logs-layout (added per view below);
+// rules with meta.scopes are filtered to their view scope by the planner.
+const REGISTRY_RULE_IDS = [
+    'click-targets',
+    'control-contracts',
+    'focus-indicators',
+    'form-switch-spacing',
+    'horizontal-overflow',
+    'scroll-traps',
+    'changelog-details',
+    'dashboard-light-surfaces',
+];
 
 async function collectRegistryFindings(page, view, browserName) {
     try {
@@ -4623,7 +4635,7 @@ async function auditView(page, view, browserName) {
                 const asnLoading = document.getElementById('asn-traffic-loading');
                 const hidden = (el) => !el || el.classList.contains('d-none');
                 return hidden(chartLoading) && hidden(countryLoading) && hidden(asnLoading);
-            }, { timeout: 10000 }).catch(() => { });
+            }, null, { timeout: 10000 }).catch(() => { });
         }
         await resetLayoutShiftMetric(page);
         await page.waitForTimeout(SCREENSHOT_SETTLE_MS);
@@ -4849,8 +4861,7 @@ async function main() {
     ) {
         throw new Error(`Refusing to delete SCREENSHOT_DIR outside of OUTPUT_DIR: ${SCREENSHOT_DIR}`);
     }
-    fs.rmSync(SCREENSHOT_DIR, { recursive: true, force: true });
-    ensureDir(SCREENSHOT_DIR);
+    resetScreenshotDir(SCREENSHOT_DIR);
 
     const results = [];
     let browserRunFailed = false;

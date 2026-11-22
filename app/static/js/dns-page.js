@@ -136,7 +136,7 @@
     }
 
     function formatYAxisTick(value) {
-        return fmtNum(Number(value)).replace('k', 'K');
+        return fmtNum(Number(value));
     }
 
     function closeLogActionMenu() {
@@ -282,22 +282,19 @@
     }
 
     function _fmtTrendLabel(isoStr) {
-        const d = new Date(isoStr);
-        // Format as day/month for 30-day view
-        return d.toLocaleDateString([], { day: '2-digit', month: 'short' });
+        // Day/month in the browser locale for the 30-day view
+        return WBFormat.format(isoStr, 'date-short', { day: '2-digit' });
     }
 
     function fmtNum(n) {
-        if (!Number.isFinite(n) || n <= 0) return '0';
-        if (n >= 1_000_000) return (n / 1_000_000).toFixed(1) + 'M';
-        if (n >= 10_000) return (n / 1_000).toFixed(0) + 'k';
-        if (n >= 1_000) return (n / 1_000).toFixed(1) + 'k';
-        return Math.floor(n).toString();
+        if (!Number.isFinite(n) || n <= 0) return WBFormat.number(0);
+        return WBFormat.compact(n < 1_000 ? Math.floor(n) : n);
     }
 
     /**
      * Calculate optimal bucket size for DNS trend chart based on viewport width.
-     * Returns bucket_minutes capped to backend API limit (<= 1440).
+     * Returns the base bucket_minutes for a 30-day range (<= 1440); loadTrend scales it
+     * with the range and caps it at TREND_BUCKET_MAX_MINUTES.
      */
     function getTrendBucketMinutes() {
         const width = window.innerWidth;
@@ -308,6 +305,9 @@
         // Desktop: 24h buckets = ~30 points.
         return 1440;
     }
+
+    // Upper bound of bucket_minutes accepted by GET /api/dns/trend (app/api/dns.py, le=10080)
+    const TREND_BUCKET_MAX_MINUTES = 10080;
 
     // Client-side cache for DNS trend data (5-minute TTL)
     const TREND_CACHE_TTL_MS = 5 * 60 * 1000;
@@ -360,7 +360,7 @@
             const baseBucket = getTrendBucketMinutes();
             // Scale bucket size with range (larger ranges need bigger buckets)
             const rangeMultiplier = Math.max(1, Math.ceil(rangeHours / 720));
-            const bucketMinutes = Math.min(1440 * rangeMultiplier, Math.max(5, baseBucket * rangeMultiplier));
+            const bucketMinutes = Math.min(TREND_BUCKET_MAX_MINUTES, 1440 * rangeMultiplier, Math.max(5, baseBucket * rangeMultiplier));
             const clientIps = getSelectedPeerClientIps();
             const clientIpsParam = getClientIpsQueryParam();
 
@@ -521,9 +521,9 @@
 
             document.getElementById('trend-meta').textContent = labels.length
                 ? `Blockrate trend, ${labels.length} interval(s). ` +
-                    `Latest ${Number(rate[rate.length - 1] || 0).toFixed(1)} percent blocked, ` +
-                    `minimum ${Math.min(...rate.map(Number)).toFixed(1)} percent, ` +
-                    `maximum ${Math.max(...rate.map(Number)).toFixed(1)} percent.`
+                    `Latest ${WBFormat.percent(Number(rate[rate.length - 1] || 0), 1)} blocked, ` +
+                    `minimum ${WBFormat.percent(Math.min(...rate.map(Number)), 1)}, ` +
+                    `maximum ${WBFormat.percent(Math.max(...rate.map(Number)), 1)}.`
                 : 'No blockrate data available.';
         } catch (e) {
             document.getElementById('trend-meta').textContent = 'Trend unavailable';
@@ -545,10 +545,10 @@
 
             document.getElementById('stat-queries').textContent = fmtNum(s.total_queries);
             document.getElementById('stat-blocked').textContent = fmtNum(s.blocked_queries);
-            document.getElementById('stat-percent').textContent = s.block_percentage + '%';
+            document.getElementById('stat-percent').textContent = WBFormat.percent(s.block_percentage, 1);
             document.getElementById('stat-domains').textContent = fmtNum(s.unique_domains);
             document.getElementById('stat-blocklist').textContent =
-                Number.isFinite(s.blocklist_size) ? s.blocklist_size.toLocaleString() : '0';
+                Number.isFinite(s.blocklist_size) ? WBFormat.number(s.blocklist_size) : WBFormat.number(0);
 
             // Update adblocker button state (status is loaded separately for timer info)
             // Only update the enabled state from config; status endpoint handles timer
@@ -563,7 +563,7 @@
                     btn.classList.remove('btn-adblocker-enabled');
                     btn.classList.add('btn-adblocker-disabled');
                     // Update button text to reflect unavailable state
-                    if (btnText) btnText.textContent = 'Ad-Blocker: Unavailable';
+                    if (btnText) btnText.textContent = 'DNS ad-blocking: Unavailable';
                     // Show unavailable state for all DNS sections
                     updateDnsUnavailable(true);
                 } else {
@@ -728,7 +728,7 @@
         for (const [i, label] of labels.entries()) {
             const val = values[i];
             const pct = (val / maxVal) * 100;
-            const totalPct = total > 0 ? (val / total * 100).toFixed(1) : 0;
+            const totalPct = total > 0 ? WBFormat.percent(val / total * 100, 1) : WBFormat.percent(0, 1);
             const color = chartColors[i] || defaultColor;
 
             const itemWrap = document.createElement('div');
@@ -754,7 +754,7 @@
 
             const pctEl = document.createElement('span');
             pctEl.className = 'badge bg-secondary top-domain-percent';
-            pctEl.textContent = totalPct + '%';
+            pctEl.textContent = totalPct;
 
             statsWrap.appendChild(valEl);
             statsWrap.appendChild(pctEl);
@@ -948,13 +948,12 @@
             const tdTime = tr.querySelector('.log-col-time');
             const timeDate = tr.querySelector('.log-time-date');
             const timeClock = tr.querySelector('.log-time-clock');
+            // The API sends an ISO 8601 UTC instant; show it in the browser locale and zone.
             const timestamp = String(q.timestamp || '');
-            const timeParts = timestamp.includes('T')
-                ? timestamp.split('T')
-                : timestamp.split(' ');
-            if (timeParts.length >= 2) {
-                timeDate.textContent = timeParts[0];
-                timeClock.textContent = timeParts[1];
+            const dateText = WBFormat.format(timestamp, 'date', { month: '2-digit', day: '2-digit' });
+            if (dateText) {
+                timeDate.textContent = dateText;
+                timeClock.textContent = WBFormat.format(timestamp, 'time-seconds');
             } else {
                 timeDate.textContent = timestamp;
                 timeClock.remove();
@@ -1162,7 +1161,7 @@
         btn.classList.add(enabled ? 'btn-adblocker-enabled' : 'btn-adblocker-disabled');
 
         // Update button text
-        btnText.textContent = enabled ? 'Ad-Blocker: Enabled' : 'Ad-Blocker: Disabled';
+        btnText.textContent = enabled ? 'DNS ad-blocking: Enabled' : 'DNS ad-blocking: Disabled';
 
         // Update Top Blocked Domains and Blockrate Trend visibility
         updateBlockedSectionsVisibility(enabled);
@@ -1203,19 +1202,8 @@
             return;
         }
 
-        const hours = Math.floor(remaining / 3600);
-        const minutes = Math.floor((remaining % 3600) / 60);
-        const seconds = remaining % 60;
-
-        if (hours > 0) {
-            countdown.textContent = `(${hours}h ${minutes}m ${seconds}s)`;
-        } else if (minutes > 0) {
-            countdown.textContent = `(${minutes}m ${seconds}s)`;
-        } else {
-            countdown.textContent = `(${seconds}s)`;
-        }
+        countdown.textContent = `(${WBFormat.duration(remaining, 3)})`;
     }
-
     async function loadAdblockerStatus() {
         try {
             const data = await api('GET', '/api/dns/adblocker/status');
@@ -1227,7 +1215,7 @@
 
     async function setAdblockerMode(mode) {
         if (!isAdmin) {
-            wbToast('Only admins can change Ad-Blocker settings', 'danger');
+            wbToast('Only admins can change DNS ad-blocking settings', 'danger');
             return;
         }
 
@@ -1237,7 +1225,7 @@
         try {
             const data = await api('POST', '/api/dns/adblocker/mode', { mode: mode });
             updateAdblockerButton(data.enabled, data.disabled_until || 0);
-            wbToast(data.enabled ? 'Ad-Blocker enabled' : 'Ad-Blocker disabled', 'success');
+            wbToast(data.enabled ? 'DNS ad-blocking enabled' : 'DNS ad-blocking disabled', 'success');
             await loadStats();
 
             // If enabling, reload blocked sections (they were showing disabled state)
@@ -1250,7 +1238,7 @@
             const dropdown = bootstrap.Dropdown.getInstance(btn);
             if (dropdown) dropdown.hide();
         } catch (e) {
-            wbToast('Failed to update Ad-Blocker: ' + e.message, 'danger');
+            wbToast('Failed to update DNS ad-blocking: ' + e.message, 'danger');
         } finally {
             if (btn && isAdmin) btn.disabled = false;
         }

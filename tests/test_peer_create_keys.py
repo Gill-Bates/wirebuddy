@@ -4,9 +4,6 @@
 # Copyright (C) 2026 Gill-Bates http://github.com/Gill-Bates
 #
 
-# SPDX-License-Identifier: MIT
-#
-
 """PeerCreate key-consistency must match the create endpoint contract (P3.2).
 
 The endpoint imports an existing keypair when both keys are given, rejects a

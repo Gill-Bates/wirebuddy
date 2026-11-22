@@ -18,6 +18,8 @@ from .sqlite_runtime import transaction
 
 _log = logging.getLogger(__name__)
 
+_CEREMONY_TYPES = frozenset({"registration", "authentication"})
+
 
 def get_passkeys_for_user(conn: sqlite3.Connection, user_id: int) -> list[sqlite3.Row]:
 	"""Get all passkeys for a user."""
@@ -73,7 +75,8 @@ def create_passkey(
 
 	Raises:
 		ValueError: If credential_id is already registered, or sign_count is negative
-		RuntimeError: If INSERT did not return a row ID
+		sqlite3.IntegrityError: For any other constraint violation (for example an
+			unknown user_id), unchanged
 	"""
 	if type(sign_count) is not int or sign_count < 0:
 		raise ValueError("sign_count must be a non-negative integer")
@@ -89,6 +92,8 @@ def create_passkey(
 				(user_id, credential_id, public_key, sign_count, device_name, transports, now),
 			)
 		except sqlite3.IntegrityError as e:
+			if e.sqlite_errorname != "SQLITE_CONSTRAINT_UNIQUE" or "passkeys.credential_id" not in str(e):
+				raise
 			_log.warning("Passkey creation failed for user_id=%d: %s", user_id, e)
 			raise ValueError("Credential ID already registered") from e
 
@@ -110,10 +115,9 @@ def update_passkey_sign_count(
 ) -> None:
 	"""Update the sign count for replay protection.
 
-	Enforces monotonicity: new_sign_count must be greater than current value.
-
-	Note: Consider adding last_used_at column to passkeys table for better
-	credential hygiene tracking.
+	Enforces monotonicity: a non-zero new_sign_count must be greater than the
+	current value. A new value of 0 is accepted only while the stored count is
+	also 0 (authenticators that never increment).
 
 	Raises:
 		ValueError: If new_sign_count is not a non-negative integer, or if a sign
@@ -250,7 +254,7 @@ def store_challenge(
 	"""
 	challenge = _validate_challenge(challenge)
 
-	if ceremony_type not in ("registration", "authentication"):
+	if ceremony_type not in _CEREMONY_TYPES:
 		raise ValueError(f"Invalid ceremony_type: {ceremony_type}")
 	if ceremony_type == "registration":
 		if not isinstance(user_id, int) or user_id <= 0:
@@ -262,7 +266,6 @@ def store_challenge(
 	expires_at = now + _CHALLENGE_TTL_SECONDS
 
 	with transaction(conn):
-		# Insert new challenge
 		conn.execute(
 			"""
 			INSERT INTO passkey_challenges (challenge, ceremony_type, user_id, username, expires_at, created_at)
@@ -299,7 +302,7 @@ def consume_challenge(
 		ValueError: If ceremony_type doesn't match
 	"""
 	challenge = _validate_challenge(challenge)
-	if expected_ceremony_type not in ("registration", "authentication"):
+	if expected_ceremony_type not in _CEREMONY_TYPES:
 		raise ValueError(f"Invalid ceremony_type: {expected_ceremony_type}")
 	now = time.time()
 

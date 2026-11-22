@@ -1,8 +1,8 @@
 # Environment Variables
 
-WireBuddy reads configuration from process environment variables. Local starts
-through `python run.py` also load `.env`; the configuration loader retains
-`settings.env` as a lower-precedence compatibility source. Docker Compose uses
+WireBuddy reads configuration from process environment variables. A local
+`python -m app.server` does not load `.env`; export the variables first. The
+configuration loader retains `settings.env` as a lower-precedence compatibility source. Docker Compose uses
 the root `.env` file explicitly in the documented commands.
 
 Most reverse-proxy and origin-dependent behavior (CSRF, passkeys, Host-header
@@ -22,7 +22,6 @@ Store the generated value in `.env`:
 ```bash
 WIREBUDDY_SECRET_KEY=<generated-value>
 LOG_LEVEL=INFO
-TZ=Etc/UTC
 ```
 
 Start the supplied Docker deployment with:
@@ -72,16 +71,6 @@ Accepted values: `CRITICAL`, `ERROR`, `WARNING`, `INFO`, and `DEBUG`.
 
 Default: `INFO`. Invalid values fall back to `INFO`.
 
-### `TZ`
-
-IANA time-zone name used by scheduled tasks and UI formatting.
-
-```bash
-TZ=Europe/Berlin
-```
-
-Docker default: `Etc/UTC`.
-
 ### `WIREBUDDY_DATA_DIR`
 
 Base directory for persistent data. The database, TSDB, DNS files,
@@ -90,10 +79,14 @@ certificates, and GeoIP databases live below it.
 - Local default: `<project>/data`
 - Supplied Docker Compose value: `/app/data`
 
+WireBuddy creates the data directory and its `tsdb/` subdirectory with mode
+`0700`. It refuses to start when either is a symlink or not a directory, or
+stays group- or world-writable after being restricted to `0700`.
+
 ### `WIREBUDDY_DEV_RELOAD`
 
 Set to `true`, `1`, or `yes` to enable Uvicorn reload when starting through
-`python run.py`. Development only.
+`python -m app.server`. Development only.
 
 ## Web Server
 
@@ -103,6 +96,8 @@ Docker-entrypoint override for the web bind address.
 
 Without this override, the entrypoint reads **Only listen on Localhost** from
 the database and otherwise listens on `0.0.0.0` for a fresh installation.
+The supplied Compose file passes the value from `.env`; empty means no
+override.
 
 ```bash
 WIREBUDDY_HOST=127.0.0.1
@@ -138,13 +133,14 @@ Default: `8`.
 ### `WIREBUDDY_PUBLIC_ORIGIN`
 
 Canonical public URL of this instance, e.g. `https://vpn.example.com`.
+The supplied Compose file passes it from `.env` (empty by default).
 Configuring this alone derives:
 
 - CSRF allowed origins
 - The passkey/WebAuthn relying-party ID and expected origin
 - The Host-header allowlist (`TrustedHostMiddleware`), unless
   `WIREBUDDY_ALLOWED_HOSTS` is set explicitly
-- Secure cookie flags and HSTS — enabled automatically for `https://` origins
+- Secure cookie flags, enabled automatically for `https://` origins
 
 ```bash
 WIREBUDDY_PUBLIC_ORIGIN=https://vpn.example.com
@@ -156,19 +152,38 @@ Comma-separated reverse-proxy IPs/CIDRs. This single variable is used for:
 
 - Uvicorn's `--forwarded-allow-ips` (which peers may set `X-Forwarded-*`)
 - Application-level client-IP extraction and HTTPS-cookie detection
-- The node mTLS client-certificate fingerprint header (master side)
 
-Default: `127.0.0.0/8,::1/128` for cookie/HTTPS detection and Uvicorn's
-forwarded-header trust (a local reverse proxy on the same host just works).
-The public `/status` page and node mTLS fingerprint trust are more sensitive
-and default to trusting **nothing** beyond loopback until this is set
-explicitly — see [Status Page](status-page.md).
+Default when unset: `127.0.0.0/8,::1/128` for cookie/HTTPS detection and
+Uvicorn's forwarded-header trust (a local reverse proxy on the same host just
+works). The Docker image and the supplied Compose file set `127.0.0.1,::1`.
+The public `/status` page is more sensitive: it trusts only loopback hops and
+the proxies listed here, see [Status Page](status-page.md). The node mTLS
+fingerprint header is governed separately by `WIREBUDDY_MTLS_PROXIES`.
 
 ```bash
 WIREBUDDY_TRUSTED_PROXIES=192.168.1.10/32
 ```
 
 `*` is rejected by the Docker entrypoint.
+
+### `WIREBUDDY_MTLS_PROXIES`
+
+Comma-separated IPs/CIDRs of the proxies that may supply the node
+client-certificate fingerprint header `X-Client-Cert-Fingerprint` (master side).
+Default: empty, so no proxy is trusted and the header is ignored; node
+authentication then uses the Bearer secret only. The list is independent of
+`WIREBUDDY_TRUSTED_PROXIES`.
+
+- List only the specific proxy IPs. A broad range lets any host in it forge a
+  fingerprint.
+- Every proxy in front must strip a client-supplied `X-Client-Cert-Fingerprint`;
+  only the mTLS-terminating proxy may set it.
+- Invalid entries are ignored. The value is read once, so a change needs a
+  restart.
+
+```bash
+WIREBUDDY_MTLS_PROXIES=192.168.1.10/32
+```
 
 ### `WIREBUDDY_CSRF_ALLOWED_ORIGINS`
 
@@ -194,7 +209,7 @@ WIREBUDDY_ALLOWED_HOSTS=vpn.example.com,localhost
 ### `FORCE_HTTPS_COOKIES`
 
 Forces the `Secure` attribute on authentication and CSRF cookies even when
-HTTPS is not otherwise detected. Secure cookies and HSTS are already enabled
+HTTPS is not otherwise detected. Secure cookies are already enabled
 automatically when `WIREBUDDY_PUBLIC_ORIGIN` uses `https://`; this override is
 only needed for edge cases such as a TLS-terminating load balancer without a
 configured public origin.
@@ -212,9 +227,9 @@ Default: disabled (except when derived from `WIREBUDDY_PUBLIC_ORIGIN`).
 Always emits HSTS even when TLS terminates at a proxy and the upstream request
 appears as HTTP.
 
-Default: disabled. HSTS is otherwise emitted automatically when
-`WIREBUDDY_PUBLIC_ORIGIN` uses `https://`, or when the request is detected as
-HTTPS.
+Default: disabled. HSTS is otherwise emitted only when the request is detected
+as HTTPS: with the built-in HTTPS listener, or when a trusted proxy forwards
+`X-Forwarded-Proto: https`.
 
 ## Passkeys
 
@@ -243,8 +258,29 @@ The token contains the master URL, node ID, and bootstrap API secret.
 
 ### `WIREBUDDY_ENROLLMENT_VERIFY_KEY`
 
-HMAC key used to verify the enrollment token locally. Required for normal
-first enrollment and generated alongside the enrollment token.
+Key used to verify the enrollment token locally. Required for the first
+enrollment only; an enrolled node does not need it. Set it to the master's
+public key `wbpk2:...`, shown in the create or regenerate response and by
+`GET /api/nodes/enrollment-key`. A value without that prefix is the deprecated
+legacy master secret (`WIREBUDDY_SECRET_KEY`) for v1 tokens. With the supplied
+`docker/docker-compose.node.yml`, a first bootstrap without a key fails in the
+node daemon instead of at `docker compose up`. See
+[Multi-Node](../features/multi-node.md#migration-from-hmac-enrollment-tokens).
+
+### `WIREBUDDY_ENROLLMENT_ALLOW_V1`
+
+Node side. Allows v1 tokens, verified with the legacy secret. Default: `1`. A
+node that pins a `wbpk2:` key never accepts v1 tokens.
+
+### `WIREBUDDY_ENROLLMENT_ACCEPT_V1`
+
+Master side. Whether `/enroll` accepts v1 tokens. Default: `1`. An invalid
+value stops startup.
+
+### `WIREBUDDY_ENROLLMENT_TOKEN_VERSION`
+
+Master side. Version of newly issued tokens, `1` or `2`. Default: `2`. An
+invalid value stops startup.
 
 ### `WIREBUDDY_MASTER_CA_FILE`
 
@@ -267,20 +303,13 @@ Fallback interval while SSE is disconnected. Minimum: `1`; default: `5`.
 
 Enrollment retries after transient failures. Minimum: `1`; default: `3`.
 
-### `WIREBUDDY_NO_FIREWALL_FIX`
-
-Disables the node's automatic DNS-related firewall correction when set to
-`1`, `true`, or `yes`.
-
-Default: disabled, so the correction is active.
-
 ### Node Development Overrides
 
 The following switches weaken enrollment or transport validation and are for
 isolated development/migration scenarios only:
 
 - `WIREBUDDY_ALLOW_INSECURE_MASTER_HTTP=1`
-- `WIREBUDDY_ALLOW_UNVERIFIED_ENROLLMENT_TOKEN=1`
+- `WIREBUDDY_ALLOW_UNVERIFIED_ENROLLMENT_TOKEN=1` (decodes v1 and v2 tokens without verifying the signature)
 - `WIREBUDDY_ALLOW_LEGACY_NODE_SECRET=1`
 
 Do not enable them in production.
@@ -345,8 +374,8 @@ are refused unless the request arrives over HTTPS. A single implicit exception
 applies to loopback peers, so local HTTP development keeps working.
 
 Default: disabled. With the flag off and the built-in HTTPS listener off,
-plaintext authentication is allowed but logs a warning, preserving the
-historical behaviour for documented plain-HTTP LAN installs.
+plaintext authentication is allowed but logs a warning, so plain-HTTP LAN
+installs keep working.
 
 This flag is independent of **Settings → General → Serve GUI over HTTPS**:
 enabling the built-in HTTPS listener already forces the same rejection, and
@@ -414,10 +443,6 @@ Compose does not set it.
 Relax GeoIP fixture size checks for tests. They are not production settings
 and should only be set by the test suite itself, never in `.env`.
 
-### `TESTING`
-
-Used by test helpers and passkey test paths. Do not enable in production.
-
 ## Settings Managed in the UI
 
 The following are database settings, not environment variables:
@@ -429,17 +454,18 @@ The following are database settings, not environment variables:
 - WireGuard, DNS, speed-test, backup, and retention settings
 
 Variables such as `SWAGGER_ENABLED`, `SESSION_COOKIE_*`, `RATELIMIT_*`,
-`CORS_ORIGINS`, `HOST`, `PORT`, and `WORKERS` are not read by the current
-application.
+`CORS_ORIGINS`, `HOST`, `PORT`, `WORKERS`, and `TESTING` are not read by the
+current application. `WIREBUDDY_BIND_HOST` and `WIREBUDDY_LISTENER_STATE` are
+set internally by the start-up code and the Docker entrypoint; do not set them
+yourself.
 
 ## Precedence
 
-### Local `python run.py`
+### Local `python -m app.server`
 
-1. Existing process environment
-2. Root `.env`
-3. Compatibility `settings.env`
-4. Application defaults and database settings
+1. Existing process environment (export `.env` yourself)
+2. Compatibility `settings.env`
+3. Application defaults and database settings
 
 ### Docker Compose
 

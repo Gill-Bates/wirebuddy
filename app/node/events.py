@@ -206,7 +206,7 @@ class NodeEventBus:
 			except WouldBlock:
 				_log.debug("Dropping node event for slow consumer: node_id=%s type=%s", node_id, event.type)
 				continue
-			except (BrokenResourceError, ClosedResourceError):
+			except BrokenResourceError, ClosedResourceError:
 				stale_streams.append(stream)
 
 		if stale_streams:

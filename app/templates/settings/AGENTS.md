@@ -1,5 +1,5 @@
 <!-- Parent: ../AGENTS.md -->
-<!-- Generated: 2026-09-21 | Updated: 2026-09-21 -->
+<!-- Generated: 2026-09-21 | Updated: 2026-11-22 -->
 # settings
 
 ## Purpose
@@ -17,7 +17,7 @@ Markup partials `include`d by `../settings.html`: one per settings tab plus the 
 - Do not add `<script>` or `<style>` partials here; page logic and styles belong in `static/`.
 
 ### Testing Requirements
-`node tools/ui-lint/run-ui-lint.mjs`; click through every tab, including backup/restore.
+See `../../static/AGENTS.md`; `_tab_wireguard.html`, `_tab_logs.html` and `_modals.html` are read by pytest/ui-lint specs listed in `../AGENTS.md`. Click through every tab, including backup/restore.
 
 ### Common Patterns
 - Underscore-prefixed partials; IDs prefixed by feature (e.g. `wg-`).

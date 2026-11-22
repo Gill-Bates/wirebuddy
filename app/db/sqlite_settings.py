@@ -426,7 +426,7 @@ def get_peer_stale_months(conn: sqlite3.Connection) -> int:
 	raw = get_setting(conn, "peer_stale_months")
 	try:
 		months = int(str(raw).strip())
-	except (TypeError, ValueError):
+	except TypeError, ValueError:
 		return DEFAULT_PEER_STALE_MONTHS
 	if PEER_STALE_MONTHS_MIN <= months <= PEER_STALE_MONTHS_MAX:
 		return months
@@ -468,7 +468,7 @@ def _parse_retention_days(
 	"""
 	try:
 		parsed = int(str(raw).strip())
-	except (TypeError, ValueError):
+	except TypeError, ValueError:
 		return default
 	return parsed if parsed in options else default
 
@@ -613,7 +613,6 @@ def get_dns_upstream_servers(conn: sqlite3.Connection) -> list[str]:
 	value = _get_json_list(conn, "dns_upstream_servers", allow_empty=False)
 	if value:
 		return value
-	# Return default upstream servers if not set
 	return list(DEFAULT_DNS_UPSTREAM_SERVERS)
 
 
@@ -745,7 +744,7 @@ def get_blocklist_disabled_until(conn: sqlite3.Connection) -> int:
 	raw = get_setting(conn, "blocklist_disabled_until", "0")
 	try:
 		return max(0, int(str(raw).strip()))
-	except (TypeError, ValueError):
+	except TypeError, ValueError:
 		return 0
 
 
@@ -801,7 +800,6 @@ DEFAULT_DNS_CUSTOM_RULES = """\
 def get_dns_custom_rules(conn: sqlite3.Connection) -> str:
 	"""Get the raw custom DNS rules text (AdGuard syntax)."""
 	stored = get_setting(conn, "dns_custom_rules", None)
-	# Return default examples if nothing stored yet
 	if stored is None:
 		return DEFAULT_DNS_CUSTOM_RULES
 	return stored or ""
@@ -823,9 +821,9 @@ def set_dns_custom_rules(conn: sqlite3.Connection, rules_text: str) -> None:
 def get_gui_https_enabled(conn: sqlite3.Connection) -> bool:
 	"""Return True if WireBuddy serves the GUI over HTTPS.
 
-	This is the single HTTPS switch: it makes run.py terminate TLS on the GUI
+	This is the single HTTPS switch: it makes app.server terminate TLS on the GUI
 	port (see app/utils/tls.py for certificate selection) and makes login and
-	node enrollment reject plaintext transports. Read at startup by run.py, so
+	node enrollment reject plaintext transports. Read at startup by app.server, so
 	changing it requires a restart.
 	"""
 	return get_bool_setting(conn, "gui_https_enabled", default=False)

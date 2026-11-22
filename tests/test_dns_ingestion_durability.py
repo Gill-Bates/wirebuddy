@@ -4,9 +4,6 @@
 # Copyright (C) 2026 Gill-Bates http://github.com/Gill-Bates
 #
 
-# SPDX-License-Identifier: MIT
-#
-
 """DNS ingestion stays consistent across partial write failures.
 
 Covers two durability fixes:
@@ -122,3 +119,52 @@ def test_save_if_needed_noop_returns_true(tmp_path):
 	tracker = OffsetTracker(tmp_path / "offset.json")
 	# Nothing committed → not dirty → no-op success.
 	assert tracker.save_if_needed(force=True) is True
+
+
+def test_tailer_drains_rotated_file_beyond_chunk_limit_before_switching(tmp_path, monkeypatch):
+	import queue
+
+	from app.dns import ingestion_tailer
+	from app.dns.ingestion_tailer import UnboundLogTailer
+
+	monkeypatch.setattr(ingestion_tailer, "CHUNK_LINE_LIMIT", 5)
+	log = tmp_path / "queries.log"
+	log.write_text("".join(f"old-{i}\n" for i in range(12)))
+	tailer = UnboundLogTailer(log, OffsetTracker(tmp_path / "offset.json"), asyncio.Event())
+	q: queue.Queue = queue.Queue()
+
+	tailer._tail_once(q)  # first cycle reads 5 of 12 old lines
+	log.rename(tmp_path / "queries.log.1")  # rotation while 7 old lines are still unread
+	log.write_text("".join(f"new-{i}\n" for i in range(3)))
+	for _ in range(6):
+		tailer._tail_once(q)
+
+	seen = []
+	while not q.empty():
+		seen.append(q.get_nowait().line.strip())
+	assert seen == [f"old-{i}" for i in range(12)] + [f"new-{i}" for i in range(3)]
+
+
+def _write_day(tmp_path, entries: list[dict]) -> None:
+	import json
+
+	queries_dir = tmp_path / "dns" / "queries"
+	queries_dir.mkdir(parents=True)
+	(queries_dir / "2099-01-01.jsonl").write_text("".join(json.dumps(e) + "\n" for e in entries))
+
+
+def test_read_recent_queries_empty_or_invalid_client_filter_returns_nothing(tmp_path):
+	_write_day(tmp_path, [{"ts": "2099-01-01T00:00:00+00:00", "client": "10.0.0.2", "domain": "a.example"}])
+	dns_dir = tmp_path / "dns"
+	assert len(ingestion_writer.read_recent_queries(dns_dir, 10)) == 1  # None = no filter
+	assert ingestion_writer.read_recent_queries(dns_dir, 10, set()) == []
+	assert ingestion_writer.read_recent_queries(dns_dir, 10, {"not-an-ip"}) == []
+	assert len(ingestion_writer.read_recent_queries(dns_dir, 10, {"10.0.0.2"})) == 1
+
+
+def test_read_recent_queries_fills_limit_despite_duplicate_event_ids(tmp_path):
+	# Partly failed flushes may rewrite entries with the same _event_id.
+	entries = [{"ts": "2099-01-01T00:00:00+00:00", "client": "10.0.0.2", "domain": f"d{i}.example", "_event_id": f"e{i}"} for i in range(6)]
+	_write_day(tmp_path, entries + entries[3:])  # last 3 duplicated at the end
+	result = ingestion_writer.read_recent_queries(tmp_path / "dns", 5)
+	assert [q["_event_id"] for q in result] == ["e5", "e4", "e3", "e2", "e1"]

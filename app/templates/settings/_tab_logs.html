@@ -36,23 +36,19 @@
                         <div class="metrics-footer">
                             {% if user['is_admin'] %}
                             <hr class="my-3">
-                            <div class="mb-3 retention-scale">
+                            <div class="mb-3 retention-scale retention-scale-5">
                                 <div class="d-flex justify-content-between align-items-center mb-2">
                                     <label for="tsdb-retention-slider" class="form-label mb-0">Retention Period</label>
-                                    <span class="badge text-bg-secondary" id="tsdb-retention-value">365 Days</span>
+                                    <span class="badge text-bg-secondary" id="tsdb-retention-value">7 Days</span>
                                 </div>
                                 <input type="range" class="form-range retention-slider" id="tsdb-retention-slider"
-                                    min="0" max="5" step="1" value="5">
-                                <div class="retention-labels" aria-hidden="true">
-                                    <span class="retention-label">
-                                        <span class="retention-label-full">No Logs</span>
-                                        <span class="retention-label-abbr">Off</span>
-                                    </span>
-                                    <span class="retention-label">7d</span>
-                                    <span class="retention-label">30d</span>
-                                    <span class="retention-label">90d</span>
-                                    <span class="retention-label">180d</span>
-                                    <span class="retention-label">1y</span>
+                                    min="0" max="4" step="1" value="0">
+                                <div class="backup-retention-labels" aria-hidden="true">
+                                    <span class="backup-retention-label">7d</span>
+                                    <span class="backup-retention-label">30d</span>
+                                    <span class="backup-retention-label">90d</span>
+                                    <span class="backup-retention-label">180d</span>
+                                    <span class="backup-retention-label">1y</span>
                                 </div>
                             </div>
                             {% endif %}
@@ -104,10 +100,10 @@
                             <div class="mb-3 retention-scale">
                                 <div class="d-flex justify-content-between align-items-center mb-2">
                                     <label for="dns-metrics-retention-slider" class="form-label mb-0">Retention Period</label>
-                                    <span class="badge text-bg-secondary" id="dns-metrics-retention-value">30 Days</span>
+                                    <span class="badge text-bg-secondary" id="dns-metrics-retention-value">7 Days</span>
                                 </div>
                                 <input type="range" class="form-range retention-slider" id="dns-metrics-retention-slider"
-                                    min="0" max="5" step="1" value="2">
+                                    min="0" max="5" step="1" value="1">
                                 <div class="retention-labels" aria-hidden="true">
                                     <span class="retention-label">
                                         <span class="retention-label-full">No Logs</span>

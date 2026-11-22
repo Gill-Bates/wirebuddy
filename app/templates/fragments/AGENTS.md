@@ -1,5 +1,5 @@
 <!-- Parent: ../AGENTS.md -->
-<!-- Generated: 2026-09-21 | Updated: 2026-09-21 -->
+<!-- Generated: 2026-09-21 | Updated: 2026-11-22 -->
 # fragments
 
 ## Purpose
@@ -12,10 +12,10 @@ HTML fragments that are not full pages and are loaded lazily by JavaScript rathe
 
 ## For AI Agents
 ### Working In This Directory
-- Keep IDs in sync with `static/js/onboarding.js`; markup must be self-contained (no `extends`).
+- Keep IDs in sync with `static/js/onboarding.js`; markup must be self-contained (no `extends`). Served through a route in `api/frontend_pages.py`.
 
 ### Testing Requirements
-`node tools/ui-lint/run-ui-lint.mjs`; trigger onboarding in the browser.
+See `../../static/AGENTS.md`; trigger onboarding in the browser.
 
 ### Common Patterns
 - Root element is the Bootstrap modal; styling classes live in the global CSS.

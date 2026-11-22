@@ -166,7 +166,7 @@ def _parse_transports(raw: str | None) -> list[str] | None:
 		return None
 	try:
 		parsed = json.loads(raw)
-	except (json.JSONDecodeError, TypeError):
+	except json.JSONDecodeError, TypeError:
 		return None
 	if not isinstance(parsed, list):
 		return None
@@ -441,11 +441,9 @@ def passkey_login_finish(
 			f"PASSKEY_LOGIN_FINISH user mismatch challenge_user={challenge_user_id} credential_user={user_id} ip={client_ip}",
 		)
 
-	# Check user is active
 	if not passkey_row["is_active"]:
 		_auth_fail(conn, client_ip, 403, "Account disabled", f"PASSKEY_LOGIN_FINISH inactive user={username} ip={client_ip}")
 
-	# Check passkey authentication is enabled for user
 	if not passkey_row["passkey_enabled"]:
 		_auth_fail(
 			conn,
@@ -615,7 +613,6 @@ def enable_user_passkey(
 	"""
 	target_user = _get_user_or_404(conn, user_id)
 
-	# Check if already enabled
 	if target_user["passkey_enabled"]:
 		return ok_response(message="Passkey already enabled for user")
 

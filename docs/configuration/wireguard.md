@@ -23,10 +23,12 @@ Under **Settings → WireGuard → Global Settings**:
 | MTU | `1280`–`9000`, default `1420` | Written to generated configurations |
 | Persistent Keepalive | `0`–`600`, recommended `25` | Helps peers behind NAT; `0` disables it |
 | Peer stale threshold (months) | `1`–`120`, default `6` | Peers whose Last Seen is at least this many calendar months old get an orange `Stale` badge; computed at display time and cleared by new activity |
-| Use PresharedKey | optional | Adds the global PSK to newly generated peer configurations |
+| Use preshared key (PSK) | optional | Adds the global PSK to newly generated peer configurations |
 
 Regenerating the global preshared key requires downloading or scanning affected
-client configurations again.
+client configurations again. While **Use preshared key (PSK)** is on, creating a peer
+fails if the stored global key cannot be decrypted (for example after a change
+of `WIREBUDDY_SECRET_KEY`).
 
 ## Interfaces
 
@@ -43,7 +45,9 @@ or delete interfaces.
 | Show on Dashboard | enabled | Controls dashboard gauges |
 
 Subnets must not overlap another WireBuddy interface. A `/32` IPv4 or `/128`
-IPv6 host address is rejected because it leaves no address pool for peers.
+IPv6 host address is rejected because it leaves no address pool for peers; an
+IPv4 subnet larger than `/16` is rejected because the peer allocator cannot
+serve it.
 
 When no custom `PostUp`/`PostDown` hooks are supplied, WireBuddy detects the
 host's default outbound interface and generates iptables rules for masquerading,
@@ -92,7 +96,9 @@ The **Peers** form offers three client-side routing policies:
 
 WireBuddy automatically allocates peer tunnel addresses. It can also inject its
 interface address as DNS, apply selected blocklists, log DNS per device, and add
-server-side client-isolation firewall rules.
+server-side client-isolation firewall rules. Isolation rules are replaced
+atomically: a failed update keeps the previous rules, and if a peer edited into
+isolation cannot get its rules applied, the interface is brought down.
 
 ## IPv6
 

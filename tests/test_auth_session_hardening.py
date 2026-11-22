@@ -4,9 +4,6 @@
 # Copyright (C) 2026 Gill-Bates http://github.com/Gill-Bates
 #
 
-# SPDX-License-Identifier: MIT
-#
-
 """Regression tests: mandatory password change gate, cookie auth paths, TOTP replay."""
 
 from __future__ import annotations
@@ -34,6 +31,7 @@ from app.db.sqlite_users import (
 	set_user_otp_secret,
 )
 from app.utils.otp import verify_otp_step
+from app.utils.socket_peer import SOCKET_PEER_SCOPE_KEY
 from app.utils.time import utcnow
 
 
@@ -182,7 +180,17 @@ def test_confirm_endpoint_with_stale_user_row_returns_409_and_keeps_state(conn, 
 	# The winning request already enabled OTP after this request loaded its row.
 	assert confirm_user_otp(conn, 1, "codes-first") is True
 
-	request = Request({"type": "http", "method": "POST", "path": "/api/auth/me/otp/confirm", "headers": [], "query_string": b"", "client": ("127.0.0.1", 1)})
+	request = Request(
+		{
+			"type": "http",
+			"method": "POST",
+			"path": "/api/auth/me/otp/confirm",
+			"headers": [],
+			"query_string": b"",
+			"client": ("127.0.0.1", 1),
+			SOCKET_PEER_SCOPE_KEY: "127.0.0.1",
+		}
+	)
 	payload = auth_api.OTPConfirmRequest(code=pyotp.TOTP(secret).now())
 	with pytest.raises(HTTPException) as exc:
 		auth_api.confirm_my_otp_setup(request, Response(), payload, conn, stale_user)

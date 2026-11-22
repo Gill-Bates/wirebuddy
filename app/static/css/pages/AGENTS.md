@@ -1,5 +1,5 @@
 <!-- Parent: ../AGENTS.md -->
-<!-- Generated: 2026-09-21 | Updated: 2026-10-27 -->
+<!-- Generated: 2026-09-21 | Updated: 2026-11-22 -->
 # pages
 
 ## Purpose
@@ -21,7 +21,7 @@ One stylesheet per page, linked from that template's `extra_css` block after the
 - Page CSS must only compose tokens and components; do not restyle shared components.
 
 ### Testing Requirements
-`node tools/ui-lint/run-ui-lint.mjs`
+See `../../AGENTS.md`; `test_settings_stale_slider.py` reads `settings.css`.
 
 ### Common Patterns
 - Root class per page (`.about-page`, `.dns-page`, `.otp-setup-card`) scopes rules.

@@ -8,10 +8,12 @@
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import ipaddress
 import logging
 import sqlite3
+import weakref
 from pathlib import Path
 from typing import Annotated
 
@@ -29,10 +31,12 @@ from ..db.sqlite_nodes import (
 	update_tunnel_peer_allowed_ips,
 )
 from ..db.sqlite_peers import (
-	allocate_peer_ip,
 	get_all_peers,
 	get_peer_by_id,
 	get_peer_by_public_key,
+)
+from ..db.sqlite_peers_mutations import (
+	PeerPoolExhaustedError,
 )
 from ..db.sqlite_peers_mutations import (
 	create_peer as db_create_peer,
@@ -45,7 +49,6 @@ from ..db.sqlite_peers_mutations import (
 )
 from ..db.sqlite_runtime import (
 	UNSET,
-	transaction,
 )
 from ..db.sqlite_settings import (
 	get_dns_blocklist_enabled,
@@ -69,9 +72,13 @@ from ..utils.vault import encrypt as vault_encrypt
 from .auth import get_current_user, require_admin
 from .response import OkResponse
 from .wireguard_config import ConfigWriteError, sync_interface_config
-from .wireguard_isolation import apply_client_isolation_runtime
+from .wireguard_isolation import (
+	apply_client_isolation_runtime,
+	shutdown_interface_fail_closed,
+)
 from .wireguard_stats_geo import invalidate_peers_enriched_cache
 from .wireguard_utils import (
+	effective_use_adblocker,
 	filter_peer_blocklist_ids,
 	generate_keypair,
 	get_enabled_blocklist_ids,
@@ -91,12 +98,6 @@ __all__ = ["regenerate_all_peer_tags", "router"]
 WG_BIN = "wg"
 
 
-def _allocate_peer_ip_locked(conn: sqlite3.Connection, interface: str) -> str | None:
-	"""Allocate a peer IP while holding a short-lived immediate transaction."""
-	with transaction(conn, immediate=True):
-		return allocate_peer_ip(conn, interface)
-
-
 def regenerate_all_peer_tags(conn: sqlite3.Connection) -> None:
 	"""Regenerate Unbound peer-tags.conf for per-peer blocklist filtering.
 
@@ -106,7 +107,7 @@ def regenerate_all_peer_tags(conn: sqlite3.Connection) -> None:
 	tag, so the result does not depend on which of those ran last.
 
 	Raises:
-		Exception: If peer tag generation fails (caller should handle).
+	        Exception: If peer tag generation fails (caller should handle).
 	"""
 	from ..dns import unbound as _unbound
 
@@ -131,7 +132,7 @@ def regenerate_all_peer_tags(conn: sqlite3.Connection) -> None:
 		peer_list.append(
 			{
 				"peer_address": row["peer_address"],
-				"use_adblocker": bool(row["use_adblocker"]),
+				"use_adblocker": effective_use_adblocker(row["use_adblocker"]),
 				"blocklist_ids": effective_ids,
 			}
 		)
@@ -158,7 +159,7 @@ def _row_to_public(row: sqlite3.Row, enabled_blocklist_ids: list[str]) -> PeerPu
 		node_id=safe_row_get(row, "node_id"),
 		allow_all_nodes=bool(safe_row_get(row, "allow_all_nodes", False)),
 		is_enabled=bool(row["is_enabled"]),
-		use_adblocker=bool(row["use_adblocker"]),
+		use_adblocker=effective_use_adblocker(row["use_adblocker"]),
 		dns_logging_enabled=bool(safe_row_get(row, "dns_logging_enabled", True)),
 		blocklist_ids=blocklist_ids,
 		client_isolation=bool(safe_row_get(row, "client_isolation", False)),
@@ -191,8 +192,8 @@ async def _wg_add_peer_runtime(
 	"""Add a peer to WireGuard runtime, handling PSK decryption if needed.
 
 	Raises:
-		HTTPException(503): If PSK decryption fails (key mismatch) or the
-			``wg set`` command returns a non-zero exit code.
+	        HTTPException(503): If PSK decryption fails (key mismatch) or the
+	                ``wg set`` command returns a non-zero exit code.
 	"""
 	if encrypted_psk:
 		try:
@@ -207,7 +208,12 @@ async def _wg_add_peer_runtime(
 	else:
 		code, _, stderr = await run_wg_command(WG_BIN, "set", interface, "peer", public_key, "allowed-ips", peer_address)
 	if code != 0:
-		_log.warning("WG_PEER_ADD_FAILED peer=%s iface=%s: %s", public_key[:8], interface, stderr.strip())
+		_log.warning(
+			"WG_PEER_ADD_FAILED peer=%s iface=%s: %s",
+			public_key[:8],
+			interface,
+			stderr.strip(),
+		)
 		raise HTTPException(
 			status_code=503,
 			detail="Failed to update peer in WireGuard runtime",
@@ -224,7 +230,6 @@ async def _sync_tunnel_peer_allowed_ips(conn: sqlite3.Connection, node_id: str) 
 	if not node or not node["tunnel_peer_id"]:
 		return
 
-	# Update DB
 	await run_in_threadpool(update_tunnel_peer_allowed_ips, conn, node_id)
 
 	# Sync to live WireGuard config
@@ -247,9 +252,17 @@ async def _sync_tunnel_peer_allowed_ips(conn: sqlite3.Connection, node_id: str) 
 		new_allowed_ips,
 	)
 	if code != 0:
-		_log.warning("Failed to update tunnel peer allowed-ips for node=%s: %s", node_id, stderr.strip())
+		_log.warning(
+			"Failed to update tunnel peer allowed-ips for node=%s: %s",
+			node_id,
+			stderr.strip(),
+		)
 	else:
-		_log.info("Updated tunnel peer WireGuard allowed-ips for node=%s: %s", node_id, new_allowed_ips)
+		_log.info(
+			"Updated tunnel peer WireGuard allowed-ips for node=%s: %s",
+			node_id,
+			new_allowed_ips,
+		)
 
 
 async def _sync_master_path_then_notify_node(conn: sqlite3.Connection, node_id: str) -> None:
@@ -281,7 +294,7 @@ async def _safe_regenerate_peer_tags(conn: sqlite3.Connection) -> None:
 	"""Regenerate peer tags and only log on failure."""
 	try:
 		await run_in_threadpool(regenerate_all_peer_tags, conn)
-	except (sqlite3.Error, OSError, ValueError, RuntimeError):
+	except sqlite3.Error, OSError, ValueError, RuntimeError:
 		_log.exception("PEER_TAGS_REGEN_FAILED — DNS filtering may be stale")
 
 
@@ -295,15 +308,54 @@ async def _assert_not_tunnel_peer(conn: sqlite3.Connection, peer_id: int, *, act
 		)
 
 
-async def _rollback_peer_create(interface: str, public_key: str, is_remote: bool) -> None:
-	"""Undo the WireGuard runtime entry after a failed peer create.
+async def _peer_absent_from_runtime(interface: str, public_key: str) -> bool | None:
+	"""Report whether the peer is provably not in the WireGuard runtime.
 
-	Only the runtime side: every caller raises out of an enclosing transaction,
-	which is what rolls the database back. It used to take a ``conn`` it never
-	used, and the docstring claimed a DB rollback it never performed.
+	True: interface not listed (down/missing) or peer not listed. False: peer still listed.
+	None: the runtime state could not be determined.
 	"""
-	if not is_remote:
-		await run_wg_command(WG_BIN, "set", interface, "peer", public_key, "remove")
+	code, stdout, _ = await run_wg_command(WG_BIN, "show", "interfaces")
+	if code != 0:
+		return None
+	if interface not in stdout.split():
+		return True
+	code, stdout, _ = await run_wg_command(WG_BIN, "show", interface, "peers")
+	if code != 0:
+		return None
+	return public_key not in stdout.split()
+
+
+async def _rollback_peer_create(interface: str, public_key: str, peer_id: int) -> bool:
+	"""Remove the WireGuard runtime entry of a local peer after a failed create.
+
+	Returns True when the peer is provably absent from the runtime, so the
+	caller may delete the DB row. Returns False only when the runtime may still
+	hold the peer (remove failed and the state is live or unknown); the caller
+	then keeps the row and its reserved address.
+	"""
+	code, _, stderr = await run_wg_command(WG_BIN, "set", interface, "peer", public_key, "remove")
+	if code == 0:
+		return True
+	absent = await _peer_absent_from_runtime(interface, public_key)
+	if absent:
+		_log.warning(
+			"WG_ROLLBACK_REMOVE_FAILED_PEER_ABSENT interface=%s peer_id=%s peer=%s code=%d",
+			interface,
+			peer_id,
+			public_key[:8],
+			code,
+		)
+		return True
+	_log.error(
+		"WG_ROLLBACK_REMOVE_FAILED interface=%s peer_id=%s peer=%s code=%d runtime=%s stderr=%s; keeping DB row",
+		interface,
+		peer_id,
+		public_key[:8],
+		code,
+		"present" if absent is False else "unknown",
+		stderr.strip(),
+	)
+	return False
 
 
 def _extract_peer_client_scopes(peer_address: str | None) -> set[str]:
@@ -331,7 +383,7 @@ async def _cleanup_peer_custom_dns_rules(conn: sqlite3.Connection, peer_address:
 	"""Remove client-scoped custom DNS rules belonging to a peer.
 
 	Returns:
-		Number of removed rule lines.
+	        Number of removed rule lines.
 	"""
 	client_scopes = _extract_peer_client_scopes(peer_address)
 	if not client_scopes:
@@ -373,7 +425,7 @@ async def _cleanup_peer_custom_dns_rules(conn: sqlite3.Connection, peer_address:
 			reloaded,
 			count,
 		)
-	except (sqlite3.Error, OSError, ValueError, RuntimeError):
+	except sqlite3.Error, OSError, ValueError, RuntimeError:
 		_log.exception("PEER_DELETE removed custom DNS rules but failed to rebuild DNS artifacts")
 
 	return removed
@@ -392,7 +444,54 @@ async def list_peers(
 	return OkResponse[list[PeerPublic]](data=data)
 
 
-@router.post("/peers", status_code=201, response_model=OkResponse[PeerPublic], dependencies=[Depends(rate_limit(RATE_LIMIT_HEAVY))])
+_PEER_CREATE_LOCKS: weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, asyncio.Lock] = weakref.WeakKeyDictionary()
+
+
+def _peer_create_lock() -> asyncio.Lock:
+	"""Return the peer-create lock of the running event loop.
+
+	Creation checks the public key, inserts the row (address reserved in the
+	same immediate transaction) and runs ``wg set`` across several awaits;
+	without serialization a losing request's rollback would remove the peer a
+	concurrent request just stored. Process-local: the control plane is a single
+	worker holding the ``.application.lock`` flock (``main.py``).
+	"""
+	loop = asyncio.get_running_loop()
+	lock = _PEER_CREATE_LOCKS.get(loop)
+	if lock is None:
+		lock = _PEER_CREATE_LOCKS[loop] = asyncio.Lock()
+	return lock
+
+
+async def _resolve_global_psk(conn: sqlite3.Connection, secret_key: str) -> str | None:
+	"""Return the decrypted global PSK, or None when PSK use is off or unset.
+
+	A stored PSK that cannot be decrypted aborts creation: silently creating the
+	peer without the PSK would weaken the configured policy.
+	"""
+	use_psk_setting = await run_in_threadpool(get_setting, conn, "wg_use_psk", "1")  # Default: enabled
+	if not (use_psk_setting and use_psk_setting.lower() in ("true", "1", "yes")):
+		return None
+	global_psk_encrypted = await run_in_threadpool(get_setting, conn, "wg_global_psk")
+	if not global_psk_encrypted:
+		_log.debug("PEER_CREATE wg_use_psk enabled but no global PSK configured")
+		return None
+	try:
+		return vault_decrypt(global_psk_encrypted, secret_key)
+	except Exception as e:
+		_log.error("PEER_CREATE failed to decrypt global PSK: %s", e)
+		raise HTTPException(
+			status_code=500,
+			detail="Global PSK could not be decrypted; check the PSK setting",
+		) from e
+
+
+@router.post(
+	"/peers",
+	status_code=201,
+	response_model=OkResponse[PeerPublic],
+	dependencies=[Depends(rate_limit(RATE_LIMIT_HEAVY))],
+)
 async def create_peer(
 	request: Request,
 	payload: PeerCreate,
@@ -400,10 +499,18 @@ async def create_peer(
 	tsdb_dir: Path = Depends(get_tsdb_dir),
 	_: sqlite3.Row = Depends(require_admin),
 ):
+	"""Create a peer (runs one at a time, see ``_peer_create_lock``)."""
+	async with _peer_create_lock():
+		return await _create_peer_locked(request, payload, conn, tsdb_dir)
+
+
+async def _create_peer_locked(request: Request, payload: PeerCreate, conn: sqlite3.Connection, tsdb_dir: Path):
 	"""Create a new peer.
 
-	WG-first approach: Add peer to WireGuard interface first, then store in DB.
-	This ensures consistency - if WG fails, we don't have orphaned DB entries.
+	DB-first: the address is allocated and the row inserted in one immediate
+	transaction (the reservation), then the peer is added to WireGuard. A failed
+	``wg set`` deletes the row again once the peer is provably absent from the
+	runtime; if that cannot be shown, the row and its address stay reserved.
 	"""
 	cfg = get_config(request)
 	enabled_blocklist_ids = await run_in_threadpool(get_enabled_blocklist_ids, conn)
@@ -441,25 +548,8 @@ async def create_peer(
 		# Generate keypair
 		private_key, public_key = await generate_keypair()
 
-	# 3. Determine preshared key:
-	#    - Use payload.preshared_key if provided
-	#    - Else use global PSK if wg_use_psk is enabled (default: enabled)
-	#    - Else no PSK (None)
-	preshared_key = payload.preshared_key
-	if not preshared_key:
-		use_psk_setting = await run_in_threadpool(get_setting, conn, "wg_use_psk", "1")  # Default: enabled
-		if use_psk_setting and use_psk_setting.lower() in ("true", "1", "yes"):
-			global_psk_encrypted = await run_in_threadpool(get_setting, conn, "wg_global_psk")
-			if global_psk_encrypted:
-				try:
-					preshared_key = vault_decrypt(global_psk_encrypted, cfg.secret_key)
-					_log.debug("PEER_CREATE using global PSK from settings")
-				except Exception as e:
-					_log.warning("PEER_CREATE failed to decrypt global PSK: %s", e)
-					preshared_key = None
-			else:
-				_log.debug("PEER_CREATE wg_use_psk enabled but no global PSK configured")
-				preshared_key = None
+	# 3. Preshared key: the payload's, else the global PSK (see _resolve_global_psk)
+	preshared_key = payload.preshared_key or await _resolve_global_psk(conn, cfg.secret_key)
 
 	# 4. Check if peer already exists in DB
 	existing = await run_in_threadpool(get_peer_by_public_key, conn, public_key)
@@ -473,93 +563,78 @@ async def create_peer(
 		if not node:
 			raise HTTPException(status_code=404, detail=f"Node '{payload.node_id}' not found")
 
-	# 5. Store peer in WireGuard + DB (with retry on concurrent IP allocation conflict)
 	# Encrypt private_key and preshared_key before storage
 	private_key_encrypted = vault_encrypt(private_key, cfg.secret_key)
 	preshared_key_encrypted = vault_encrypt(preshared_key, cfg.secret_key) if preshared_key else None
 
-	# allowed_ips = client-side routing (what client routes through VPN)
-	# peer_address = peer's VPN IP (used in server config and QR code)
-	peer_address: str | None = None
-	peer_id: int | None = None
-
-	for attempt in range(3):
-		peer_address = await run_in_threadpool(_allocate_peer_ip_locked, conn, payload.interface)
-		if not peer_address:
+	# 5. Reserve the address and store the peer in one immediate transaction, then
+	#    add it to the WireGuard runtime. The committed row is the reservation, so
+	#    the SQLite write lock is not held while `wg` runs.
+	try:
+		peer_id = await run_in_threadpool(
+			db_create_peer,
+			conn,
+			public_key=public_key,
+			private_key=private_key_encrypted,
+			preshared_key=preshared_key_encrypted,
+			allowed_ips=payload.allowed_ips,
+			allowed_ips_mode=payload.allowed_ips_mode,
+			allocate_address=True,
+			name=payload.name,
+			endpoint=payload.endpoint,
+			interface=payload.interface,
+			use_adblocker=payload.use_adblocker,
+			dns_logging_enabled=payload.dns_logging_enabled,
+			blocklist_ids=filter_peer_blocklist_ids(payload.blocklist_ids, enabled_blocklist_ids),
+			client_isolation=payload.client_isolation,
+			node_id=payload.node_id,
+			allow_all_nodes=payload.allow_all_nodes,
+		)
+	except PeerPoolExhaustedError as e:
+		_log.warning("PEER_POOL_EXHAUSTED interface=%s: %s", payload.interface, e)
+		raise HTTPException(status_code=409, detail="No free peer address available on this interface")
+	except ValueError as e:
+		detail = str(e)
+		raise HTTPException(status_code=409 if "already exists" in detail else 422, detail=detail)
+	except sqlite3.IntegrityError as e:
+		_log.error("DB_INTEGRITY_ERROR: %s", e)
+		raise HTTPException(
+			status_code=409,
+			detail="Peer already exists or conflicts with existing data",
+		)
+	except Exception as e:
+		_log.error("DB_INSERT_FAILED: %s", e)
+		raise HTTPException(status_code=500, detail="Failed to store peer in database")
+	created = await run_in_threadpool(get_peer_by_id, conn, peer_id)
+	peer_address = str(created["peer_address"])
+	# Add peer to local WireGuard (skip for remote nodes)
+	if not is_remote:
+		if preshared_key:
+			code, _, stderr = await wg_set_peer_with_psk(payload.interface, public_key, peer_address, preshared_key)
+		else:
+			code, _, stderr = await run_wg_command(
+				WG_BIN,
+				"set",
+				payload.interface,
+				"peer",
+				public_key,
+				"allowed-ips",
+				peer_address,
+			)
+		if code != 0:
+			err = stderr.strip()
+			_log.error(
+				"WG_SET_FAILED interface=%s code=%d stderr=%s",
+				payload.interface,
+				code,
+				err,
+			)
+			if await _rollback_peer_create(payload.interface, public_key, peer_id):
+				await run_in_threadpool(db_delete_peer, conn, peer_id)
 			raise HTTPException(
 				status_code=500,
-				detail=f"No available IP addresses in interface '{payload.interface}' subnet",
+				detail="Failed to add peer to WireGuard; see server log",
 			)
-
-		# Add peer to local WireGuard (skip for remote nodes)
-		if not is_remote:
-			if preshared_key:
-				code, _, stderr = await wg_set_peer_with_psk(
-					payload.interface,
-					public_key,
-					peer_address,
-					preshared_key,
-				)
-			else:
-				code, _, stderr = await run_wg_command(
-					WG_BIN,
-					"set",
-					payload.interface,
-					"peer",
-					public_key,
-					"allowed-ips",
-					peer_address,
-				)
-			if code != 0:
-				err = stderr.strip()
-				_log.error("WG_SET_FAILED interface=%s code=%d stderr=%s", payload.interface, code, err)
-				raise HTTPException(
-					status_code=500,
-					detail=f"Failed to add peer to WireGuard: {err}",
-				)
-
-		try:
-			peer_id = await run_in_threadpool(
-				db_create_peer,
-				conn,
-				public_key=public_key,
-				private_key=private_key_encrypted,
-				preshared_key=preshared_key_encrypted,
-				allowed_ips=payload.allowed_ips,
-				allowed_ips_mode=payload.allowed_ips_mode,
-				peer_address=peer_address,
-				name=payload.name,
-				endpoint=payload.endpoint,
-				interface=payload.interface,
-				use_adblocker=payload.use_adblocker,
-				dns_logging_enabled=payload.dns_logging_enabled,
-				blocklist_ids=filter_peer_blocklist_ids(payload.blocklist_ids, enabled_blocklist_ids),
-				client_isolation=payload.client_isolation,
-				node_id=payload.node_id,
-				allow_all_nodes=payload.allow_all_nodes,
-			)
-			break
-		except ValueError as e:
-			await _rollback_peer_create(payload.interface, public_key, is_remote)
-			detail = str(e)
-			status = 409 if "already exists" in detail else 422
-			raise HTTPException(status_code=status, detail=detail)
-		except sqlite3.IntegrityError as e:
-			await _rollback_peer_create(payload.interface, public_key, is_remote)
-			_log.error("DB_INTEGRITY_ERROR rolling back: %s", e)
-			ip_conflict = "idx_peers_address_interface_unique" in str(e) or "peer_address" in str(e).lower()
-			if ip_conflict and attempt < 2:
-				continue
-			if ip_conflict:
-				raise HTTPException(status_code=409, detail="Peer IP address conflict. Please retry.")
-			raise HTTPException(status_code=409, detail="Peer already exists or conflicts with existing data")
-		except Exception as e:
-			await _rollback_peer_create(payload.interface, public_key, is_remote)
-			_log.error("DB_INSERT_FAILED rolling back: %s", e)
-			raise HTTPException(status_code=500, detail="Failed to store peer in database")
-	else:
-		# Loop exhausted without break — all retries failed
-		raise HTTPException(status_code=500, detail="Failed to create peer after retries")
 
 	# 6. Post-create synchronization
 	if payload.allow_all_nodes:
@@ -592,27 +667,54 @@ async def create_peer(
 
 			# Seed TSDB series so peer directories exist immediately after creation.
 			try:
-				await run_in_threadpool(tsdb.append_point, tsdb_dir, peer_key=public_key, metric="rx_bytes", value=0)
-				await run_in_threadpool(tsdb.append_point, tsdb_dir, peer_key=public_key, metric="tx_bytes", value=0)
+				await run_in_threadpool(
+					tsdb.append_point,
+					tsdb_dir,
+					peer_key=public_key,
+					metric="rx_bytes",
+					value=0,
+				)
+				await run_in_threadpool(
+					tsdb.append_point,
+					tsdb_dir,
+					peer_key=public_key,
+					metric="tx_bytes",
+					value=0,
+				)
 			except Exception as exc:
 				_log.warning("TSDB_SEED_FAILED peer=%s: %s", public_key[:8], exc)
 
 			# Keep non-fatal: peer creation succeeds even if tag regeneration fails.
 			await _safe_regenerate_peer_tags(conn)
 
-		except (sqlite3.Error, OSError, ValueError, RuntimeError, ConfigWriteError) as exc:
+		except (
+			sqlite3.Error,
+			OSError,
+			ValueError,
+			RuntimeError,
+			ConfigWriteError,
+		) as exc:
 			# Rollback: remove from WG and DB
 			_log.error("Post-create sync failed; rolling back peer %s: %s", public_key[:8], exc)
-			await run_wg_command(WG_BIN, "set", payload.interface, "peer", public_key, "remove")
-			if peer_id:
+			if await _rollback_peer_create(payload.interface, public_key, peer_id):
 				await run_in_threadpool(db_delete_peer, conn, peer_id)
-			raise HTTPException(
-				status_code=500,
-				detail="Peer created but config sync failed; rolled back",
-			)
+				# The config file may already list the peer; rewrite it so wg-quick cannot revive it.
+				try:
+					await run_in_threadpool(sync_interface_config, WG_CONFIG_PATH, payload.interface, conn, pepper=cfg.secret_key)
+				except (sqlite3.Error, OSError, ValueError, RuntimeError, ConfigWriteError) as resync_exc:
+					_log.error("Config resync after peer rollback failed for %s: %s", payload.interface, resync_exc)
+				detail = "Peer created but config sync failed; rolled back"
+			else:
+				detail = "Peer creation failed; cleanup incomplete, see server log"
+			raise HTTPException(status_code=500, detail=detail)
 
 	peer = await run_in_threadpool(get_peer_by_public_key, conn, public_key)
-	_log.info("PEER_CREATED public_key=%s... interface=%s peer_address=%s", public_key[:8], payload.interface, peer_address)
+	_log.info(
+		"PEER_CREATED public_key=%s... interface=%s peer_address=%s",
+		public_key[:8],
+		payload.interface,
+		peer_address,
+	)
 	invalidate_peers_enriched_cache()
 
 	peer_data = _row_to_public(peer, enabled_blocklist_ids)
@@ -633,7 +735,11 @@ async def get_peer(
 	return OkResponse[PeerPublic](data=_row_to_public(peer, enabled_blocklist_ids))
 
 
-@router.patch("/peers/{peer_id}", response_model=OkResponse[PeerPublic], dependencies=[Depends(rate_limit(RATE_LIMIT_HEAVY))])
+@router.patch(
+	"/peers/{peer_id}",
+	response_model=OkResponse[PeerPublic],
+	dependencies=[Depends(rate_limit(RATE_LIMIT_HEAVY))],
+)
 async def update_peer(
 	request: Request,
 	peer_id: Annotated[int, FastAPIPath(gt=0)],
@@ -747,7 +853,11 @@ async def update_peer(
 			"remove",
 		)
 		if code != 0:
-			_log.warning("WG_PEER_REMOVE_FAILED (migration to remote) peer=%s: %s", public_key[:8], stderr.strip())
+			_log.warning(
+				"WG_PEER_REMOVE_FAILED (migration to remote) peer=%s: %s",
+				public_key[:8],
+				stderr.strip(),
+			)
 			await _restore_runtime_fields()
 			raise HTTPException(
 				status_code=503,
@@ -766,7 +876,11 @@ async def update_peer(
 					"remove",
 				)
 				if code != 0:
-					_log.warning("WG_PEER_REMOVE_FAILED (disabled) peer=%s: %s", public_key[:8], stderr.strip())
+					_log.warning(
+						"WG_PEER_REMOVE_FAILED (disabled) peer=%s: %s",
+						public_key[:8],
+						stderr.strip(),
+					)
 					await _restore_runtime_fields()
 					raise HTTPException(
 						status_code=503,
@@ -788,7 +902,10 @@ async def update_peer(
 			# Keep server-side cryptokey routing strict: always peer_address on server.
 			# payload.allowed_ips is client-side policy and must not be pushed to server.
 			if not peer_address:
-				_log.warning("Peer %s has no peer_address; skipped runtime allowed-ips repair", public_key[:8])
+				_log.warning(
+					"Peer %s has no peer_address; skipped runtime allowed-ips repair",
+					public_key[:8],
+				)
 			else:
 				code, _, stderr = await run_wg_command(
 					WG_BIN,
@@ -803,7 +920,16 @@ async def update_peer(
 					_log.warning("Failed to update peer allowed-ips in WireGuard: %s", stderr)
 
 	local_sync_needed = (old_is_remote != new_is_remote) or (
-		not new_is_remote and any(k in fields_set for k in ("allowed_ips", "allowed_ips_mode", "is_enabled", "client_isolation"))
+		not new_is_remote
+		and any(
+			k in fields_set
+			for k in (
+				"allowed_ips",
+				"allowed_ips_mode",
+				"is_enabled",
+				"client_isolation",
+			)
+		)
 	)
 	if local_sync_needed:
 		await run_in_threadpool(
@@ -815,13 +941,29 @@ async def update_peer(
 		)
 		isolation = await apply_client_isolation_runtime(interface_name, conn)
 		if not isolation.applied or isolation.rules_failed or isolation.errors:
-			# Fail closed: a client-isolation policy recorded in the DB must be
-			# enforced in the firewall before the update is reported as success.
+			# The atomic swap keeps the previous rules on failure, but they lack
+			# this peer. Fail closed: take the interface down for an isolated peer.
+			if not new_is_remote and peer_enabled and bool(updated["client_isolation"]):
+				if await shutdown_interface_fail_closed(interface_name):
+					raise HTTPException(
+						status_code=503,
+						detail="Client isolation could not be applied; interface was brought down",
+					)
+				raise HTTPException(
+					status_code=503,
+					detail="Client isolation could not be applied and the interface could not be brought down",
+				)
 			raise HTTPException(status_code=503, detail="Client isolation could not be applied")
 
 	if "node_id" in fields_set or ("is_enabled" in fields_set and (old_is_remote or new_is_remote)):
 		nodes_to_notify = {old_node_id, new_node_id} - {None}
-		_log.info("PEER_NODE_CHANGE peer_id=%d old_node=%s new_node=%s notifying=%s", peer_id, old_node_id, new_node_id, list(nodes_to_notify))
+		_log.info(
+			"PEER_NODE_CHANGE peer_id=%d old_node=%s new_node=%s notifying=%s",
+			peer_id,
+			old_node_id,
+			new_node_id,
+			list(nodes_to_notify),
+		)
 		for nid in nodes_to_notify:
 			try:
 				await _sync_master_path_then_notify_node(conn, nid)
@@ -840,7 +982,11 @@ async def update_peer(
 		await _notify_all_nodes(conn)
 	elif new_allow_all_nodes and "is_enabled" in fields_set:
 		# Roaming peer enabled/disabled — all nodes need update
-		_log.info("PEER_ROAMING_TOGGLE peer_id=%d is_enabled=%s notifying all nodes", peer_id, peer_enabled)
+		_log.info(
+			"PEER_ROAMING_TOGGLE peer_id=%d is_enabled=%s notifying all nodes",
+			peer_id,
+			peer_enabled,
+		)
 		await _notify_all_nodes(conn)
 
 	# Regenerate Unbound peer tags if blocklist settings changed
@@ -853,7 +999,11 @@ async def update_peer(
 	return OkResponse[PeerPublic](data=updated_data)
 
 
-@router.delete("/peers/{peer_id}", status_code=204, dependencies=[Depends(rate_limit(RATE_LIMIT_HEAVY))])
+@router.delete(
+	"/peers/{peer_id}",
+	status_code=204,
+	dependencies=[Depends(rate_limit(RATE_LIMIT_HEAVY))],
+)
 async def delete_peer(
 	request: Request,
 	peer_id: Annotated[int, FastAPIPath(gt=0)],
@@ -888,12 +1038,21 @@ async def delete_peer(
 		try:
 			await _sync_master_path_then_notify_node(conn, old_node_id)
 		except (sqlite3.Error, OSError, ValueError, RuntimeError) as exc:
-			_log.warning("Failed to bump/notify config for node %s after peer delete: %s", old_node_id, exc)
+			_log.warning(
+				"Failed to bump/notify config for node %s after peer delete: %s",
+				old_node_id,
+				exc,
+			)
 
 		# Regenerate Unbound peer tags (remote peer removed from DNS filtering)
 		await _safe_regenerate_peer_tags(conn)
 
-		_log.info("PEER_DELETED (remote) id=%d public_key=%s... node=%s", peer_id, public_key[:8], old_node_id)
+		_log.info(
+			"PEER_DELETED (remote) id=%d public_key=%s... node=%s",
+			peer_id,
+			public_key[:8],
+			old_node_id,
+		)
 		invalidate_peers_enriched_cache()
 		return
 
@@ -950,7 +1109,7 @@ async def delete_peer(
 	# Remove peer-scoped custom DNS rules to prevent stale "dead" entries.
 	try:
 		await _cleanup_peer_custom_dns_rules(conn, peer["peer_address"])
-	except (sqlite3.Error, OSError, ValueError, RuntimeError):
+	except sqlite3.Error, OSError, ValueError, RuntimeError:
 		_log.exception("Failed to cleanup peer-scoped custom DNS rules")
 
 	# Sync config file
@@ -975,4 +1134,7 @@ async def delete_peer(
 	# isolation for the remaining peers failed, surface it rather than claiming a
 	# clean 204 — the firewall may no longer match the DB policy.
 	if not isolation.applied or isolation.rules_failed or isolation.errors:
-		raise HTTPException(status_code=503, detail="Client isolation could not be re-applied after peer deletion")
+		raise HTTPException(
+			status_code=503,
+			detail="Client isolation could not be re-applied after peer deletion",
+		)

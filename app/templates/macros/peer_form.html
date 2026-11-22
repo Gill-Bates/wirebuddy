@@ -22,7 +22,7 @@
                                     {% if local_country_code %}
                                     <img class="peer-country-flag" alt="{{ local_country_code|upper }} flag"
                                          decoding="async"
-                                         src="https://cdn.jsdelivr.net/npm/flag-icons@7.3.2/flags/4x3/{{ local_country_code }}.svg">
+                                         src="{{ flag_base_url }}/{{ local_country_code }}.svg">
                                     {% endif %}
                                     <span class="peer-node-picker-text">Local{% if local_fqdn %} ({{ local_fqdn }}){% endif %}</span>
                                 </span>
@@ -33,7 +33,7 @@
                                         {% if local_country_code %}
                                         <img class="peer-country-flag" alt="{{ local_country_code|upper }} flag"
                                              decoding="async"
-                                             src="https://cdn.jsdelivr.net/npm/flag-icons@7.3.2/flags/4x3/{{ local_country_code }}.svg">
+                                             src="{{ flag_base_url }}/{{ local_country_code }}.svg">
                                         {% endif %}
                                         <span class="peer-node-picker-text">Local{% if local_fqdn %} ({{ local_fqdn }}){% endif %}</span>
                                     </span>
@@ -44,7 +44,7 @@
                                         {% if n.geo_country_code %}
                                         <img class="peer-country-flag" alt="{{ n.geo_country_code|upper }} flag"
                                              decoding="async"
-                                             src="https://cdn.jsdelivr.net/npm/flag-icons@7.3.2/flags/4x3/{{ n.geo_country_code }}.svg">
+                                             src="{{ flag_base_url }}/{{ n.geo_country_code }}.svg">
                                         {% endif %}
                                         <span class="peer-node-picker-text">{{ n.name }} ({{ n.fqdn }})</span>
                                     </span>
@@ -121,7 +121,7 @@
                             <div class="form-check form-switch">
                                 <input class="form-check-input" type="checkbox" id="{{ p }}peer-use-adblocker" checked>
                                 <label class="form-check-label" for="{{ p }}peer-use-adblocker">
-                                    Use Ad-blocking DNS (WireBuddy)
+                                    Use DNS ad-blocking (WireBuddy)
                                 </label>
                             </div>
                             <small class="text-muted d-none" id="{{ p }}peer-fallback-dns-hint">Uses Cloudflare (1.1.1.1) and Quad9 (9.9.9.9)</small>

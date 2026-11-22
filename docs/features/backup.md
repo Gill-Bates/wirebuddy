@@ -11,7 +11,7 @@ WireBuddy creates HMAC-signed backups of its configuration (optionally with metr
 The Backup module provides:
 
 - 💾 **Manual Backups** - Create and download configuration snapshots on demand
-- ⏰ **Scheduled Backups** - Automatic daily backups at 03:00 local time
+- ⏰ **Scheduled Backups** - Automatic daily backups at 03:00 UTC
 - 🔄 **One-Click Restore** - Restore from any backup with HMAC verification
 - 📅 **Configurable Retention** - Choose retention period: 1, 7, 14, 21, or 30 days
 - 🔐 **Integrity Protection** - HMAC signing prevents tampering and stays compatible with the configured `WIREBUDDY_SECRET_KEY`
@@ -30,11 +30,11 @@ Each backup (format v2) contains a signed `.tar.gz` with the following structure
 | `data/tsdb/` | Time-series metrics — **only when a metrics range is selected** |
 
 **Configuration tables** captured in `data/data.sql`:
-`users`, `passkeys`, `settings`, `interfaces`, `peers`, `nodes`, `node_interfaces`, `schema_version`
+`users`, `dashboard_layouts`, `passkeys`, `settings`, `interfaces`, `peers`, `nodes`, `node_interfaces`, `schema_version`
 
 !!! note "Excluded Data"
     Ephemeral tables (`auth_tokens`, `passkey_challenges`, `login_attempts`, `node_commands`) are excluded — they contain runtime-only state that would be stale after a restore.
-    GeoIP databases (GeoLite2) are also not included; they are re-downloaded on startup.
+    GeoIP databases (GeoLite2) are also not included; they are re-downloaded on startup. Let's Encrypt certificate files under `data/certs/` are not included either.
 
 !!! info "Backup Format"
     Backups are stored as `.tar.gz` archives with an HMAC signature embedded in the filename for integrity verification.
@@ -83,14 +83,13 @@ The backup card displays:
 
 **Navigate to:** Settings → Backup → Scheduled Backups
 
-1. Toggle **Daily Backups (03:00 local time)** on
+1. Toggle **Daily Backups (03:00 UTC)** on
 2. Use the **Retention Period** slider to choose how long to keep backups:
    - 1 day, 7 days, 14 days, 21 days, or 30 days
-3. Backups run automatically every night at 03:00 in the server's local timezone
+3. Backups run automatically every night at 03:00 UTC
 
-!!! tip "Timezone Configuration"
-    The backup time uses the server's local timezone, configured via the `TZ` environment variable.
-    See [Environment Variables](../configuration/environment.md#tz) for details.
+!!! tip "Time zone"
+    All schedules use UTC. WireBuddy does not read the `TZ` variable.
 
 ### Retention Policy
 
@@ -112,7 +111,7 @@ WireBuddy monitors available disk space and displays a warning when:
 ## Restoring a Backup
 
 !!! danger "Destructive Operation"
-    Restoring a backup **overwrites all current configuration** including peers, users, interfaces, DNS rules, and certificates. The application will restart automatically after restore.
+    Restoring a backup **overwrites all current configuration** including peers, users, interfaces, settings, and DNS rules. The application will restart automatically after restore.
 
 ### Restore Process
 
@@ -120,21 +119,25 @@ WireBuddy monitors available disk space and displays a warning when:
 
 1. Click **Choose File** and select your backup file (`.tar.gz`)
 2. Click **Restore Backup**
-3. WireBuddy validates the backup's HMAC signature
-4. If valid, enter your **admin password** to confirm
+3. Enter your **admin password** to confirm
+4. WireBuddy validates the backup's HMAC signature and, if it is valid, restores it
 5. Wait for the application to restart
+
+Uploads are limited to 1 GiB; a reverse proxy in front of WireBuddy must accept request bodies of that size.
 
 ### Restore Verification
 
 WireBuddy performs several safety checks during restore:
 
-- **HMAC Verification** - Ensures the backup matches the configured `WIREBUDDY_SECRET_KEY`; legacy backups from older releases are also accepted when the embedded database snapshot matches the current secret key
+- **HMAC Verification** - Ensures the backup was signed with a key derived from the configured `WIREBUDDY_SECRET_KEY`
+- **Format Check** - Only format v2 archives with a `backup.json` manifest are accepted
+- **Consistency Check** - Archives whose data violates foreign keys are rejected
 - **Archive Integrity** - Validates the tar.gz structure
 - **Path Traversal Protection** - Prevents malicious file extraction outside data directory
 
 !!! warning "Secret Key Compatibility"
-    New backups are signed from `WIREBUDDY_SECRET_KEY`, so they can be restored on a replacement WireBuddy installation configured with the same secret key.
-    Legacy backups created by older releases remain restorable on the original instance and are also accepted when the embedded backup database matches the current secret key.
+    Backups are signed from `WIREBUDDY_SECRET_KEY`, so they can be restored on a replacement WireBuddy installation configured with the same secret key.
+    Backups signed with the legacy per-instance backup key, and archives without a `backup.json` manifest, are rejected.
 
 ### Automatic Rollback
 
@@ -218,6 +221,15 @@ password: <admin_password>
 
 Requires admin password for confirmation. The application will restart after successful restore.
 
+### List and Delete Scheduled Backups
+
+```http
+GET /api/backup/list
+DELETE /api/backup/scheduled/{filename}
+```
+
+`GET` lists the scheduled backups stored on the server (filename, size, creation time); `DELETE` removes one of them by its filename.
+
 !!! note "Admin Required"
     All backup endpoints require admin authentication.
 
@@ -251,9 +263,8 @@ means the key differs from the one in use when the backup was created.
    installation work.
 2. Check that the archive was not modified after download — the HMAC covers the
    whole file, and the signature is embedded in the filename.
-3. For a legacy backup from an older release, restore it on the instance that
-   created it, or on an instance whose secret key matches the embedded database
-   snapshot.
+3. A backup signed with the legacy per-instance backup key cannot be restored;
+   create a new backup on the source instance instead.
 
 !!! warning "Do not work around it"
     A restore that fails verification must not be forced. Restoring an unverified

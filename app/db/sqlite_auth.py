@@ -81,6 +81,9 @@ def get_user_by_token(conn: sqlite3.Connection, token: str) -> sqlite3.Row | Non
 def refresh_auth_token(conn: sqlite3.Connection, token: str, hours: int = 1) -> bool:
 	"""Extend token expiry by the given hours, but not beyond max_expires_at.
 
+	A refresh never shortens a session: an expiry that is already later than
+	the requested extension is kept.
+
 	Returns True if a non-expired token was found and refreshed.
 	"""
 	if hours <= 0:
@@ -95,7 +98,7 @@ def refresh_auth_token(conn: sqlite3.Connection, token: str, hours: int = 1) -> 
 		cur = conn.execute(
 			"""
 			UPDATE auth_tokens
-			SET expires_at = MIN(?, max_expires_at)
+			SET expires_at = MAX(expires_at, MIN(?, max_expires_at))
 			WHERE token_hash = ? AND expires_at > ?
 			""",
 			(new_expires, token_hash, now),
@@ -210,7 +213,7 @@ def _calculate_lockout_seconds(failed_count: int, policy: _LockoutPolicy) -> int
 	Formula: BASE * 2^(attempts - MIN_FAILURES)
 	- first lockout starts at the configured base seconds
 	- each subsequent failure doubles the duration
-	- higher failures are capped at 24 hours
+	- the duration is capped at the policy's ``max_seconds`` (24 h, 1 h or 5 min)
 	"""
 	if failed_count < policy.min_failures:
 		return 0

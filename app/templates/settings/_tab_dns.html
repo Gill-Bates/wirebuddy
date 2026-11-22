@@ -68,7 +68,9 @@
                                   autocomplete="off"
                                   autocorrect="off"
                                   autocapitalize="off"
+                                  aria-describedby="custom-rules-hint"
                                   {% if not user['is_admin'] %}readonly{% endif %}></textarea>
+                        <small id="custom-rules-hint" class="form-text text-muted d-block mt-1">Only exact <code>||domain^</code> block rules stop resolution; wildcard and regex block rules are log-only.</small>
 
                         <div id="custom-rules-errors" class="mt-2" hidden></div>
 

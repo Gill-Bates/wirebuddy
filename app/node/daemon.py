@@ -33,17 +33,32 @@ import tempfile
 import time
 from collections import deque
 from dataclasses import dataclass
+from datetime import UTC
 from datetime import datetime as dt
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
 import httpx
+from gillbates_shutdown_handler import install_loop_handlers
 
 from ..utils.async_utils import cancel_tasks as _cancel_tasks
 from ..utils.async_utils import interruptible_sleep as _interruptible_sleep
 from ..utils.banner import print_banner_once
-from ..utils.node_token import get_cert_fingerprint, verify_enrollment_token
+from ..utils.config import parse_strict_bool
+from ..utils.enrollment_signing import (
+	decode_token_v2,
+	is_public_key_string,
+	is_token_v2,
+	parse_public_key,
+)
+from ..utils.fs import fsync_dir
+from ..utils.logging_setup import setup_logging
+from ..utils.node_token import (
+	get_cert_fingerprint,
+	verify_enrollment_token,
+	verify_enrollment_token_v2,
+)
 from ..utils.speedtest_window import (
 	seconds_until_next_day_window as _seconds_until_next_day_window,
 )
@@ -52,7 +67,6 @@ from ..utils.speedtest_window import (
 )
 from ..utils.version import get_version
 from .cert import clear_node_cert, ensure_node_cert
-from .firewall import check_firewall_dns_rules as _check_firewall_dns_rules
 from .metrics_queue import (
 	ack_up_to_seq,
 	close_queue,
@@ -100,18 +114,6 @@ _MAX_SSE_EVENT_SIZE = 64 * 1024
 _MAX_CONFIG_SIZE = 5 * 1024 * 1024
 
 
-def _fsync_dir(path: Path) -> None:
-	"""Fsync a directory so preceding renames are durable across crashes."""
-	flags = os.O_RDONLY
-	if hasattr(os, "O_DIRECTORY"):
-		flags |= os.O_DIRECTORY
-	dir_fd = os.open(path, flags)
-	try:
-		os.fsync(dir_fd)
-	finally:
-		os.close(dir_fd)
-
-
 def _validate_master_url(raw_url: str) -> str:
 	"""Validate the master URL and forbid insecure HTTP by default."""
 	master_url = raw_url.strip().rstrip("/")
@@ -157,17 +159,21 @@ def _extract_error_detail(response: httpx.Response) -> str:
 
 
 def _decode_enrollment_token_payload(token_string: str) -> dict[str, Any]:
-	"""Decode the token payload without verifying its HMAC signature."""
+	"""Decode a v1 or v2 token payload without verifying its signature."""
 	if len(token_string) > 16384:
 		raise ValueError("Enrollment token too large")
 
 	try:
-		decoded = base64.urlsafe_b64decode(token_string.encode("ascii"))
-		if len(decoded) > _MAX_DECODED_ENROLLMENT_TOKEN_SIZE:
-			raise ValueError("Decoded enrollment token too large")
-		raw = decoded.decode("utf-8")
-		payload_json, _signature = raw.rsplit(".", 1)
-		payload = json.loads(payload_json)
+		if is_token_v2(token_string):
+			payload_bytes, _signature = decode_token_v2(token_string)
+			payload = json.loads(payload_bytes.decode("utf-8"))
+		else:
+			decoded = base64.urlsafe_b64decode(token_string.encode("ascii"))
+			if len(decoded) > _MAX_DECODED_ENROLLMENT_TOKEN_SIZE:
+				raise ValueError("Decoded enrollment token too large")
+			raw = decoded.decode("utf-8")
+			payload_json, _signature = raw.rsplit(".", 1)
+			payload = json.loads(payload_json)
 	except Exception as exc:
 		raise ValueError("Failed to decode enrollment token") from exc
 
@@ -182,9 +188,28 @@ def _decode_enrollment_token_payload(token_string: str) -> dict[str, Any]:
 
 
 def _parse_enrollment_token(token_string: str, verify_key: str | None = None) -> dict[str, Any]:
-	"""Parse the enrollment token and require local HMAC verification by default."""
-	if verify_key:
-		return verify_enrollment_token(token_string, verify_key)
+	"""Parse the enrollment token and require local signature verification by default.
+
+	A v2 token needs a pinned ``wbpk2:`` public key. A legacy v1 token needs the
+	legacy HMAC secret and is refused outright when a v2 key is pinned (no
+	downgrade) or ``WIREBUDDY_ENROLLMENT_ALLOW_V1`` is off.
+	"""
+	verify_key = (verify_key or "").strip()
+	pinned_v2 = is_public_key_string(verify_key)
+
+	if is_token_v2(token_string):
+		if pinned_v2:
+			return verify_enrollment_token_v2(token_string, parse_public_key(verify_key))
+		if verify_key:
+			raise ValueError("A v2 enrollment token requires a wbpk2: public verification key")
+	else:
+		if pinned_v2:
+			raise ValueError("Legacy v1 enrollment token refused: a v2 verification key is pinned")
+		if verify_key:
+			if not parse_strict_bool("WIREBUDDY_ENROLLMENT_ALLOW_V1", True):
+				raise ValueError("Legacy v1 enrollment tokens are disabled (WIREBUDDY_ENROLLMENT_ALLOW_V1=0)")
+			_log.warning("Deprecated v1 enrollment token verified with the master secret; use a v2 token and pin the wbpk2: key")
+			return verify_enrollment_token(token_string, verify_key)
 
 	if os.getenv("WIREBUDDY_ALLOW_UNVERIFIED_ENROLLMENT_TOKEN") == "1":
 		_log.warning("Enrollment token verification disabled by explicit dev override")
@@ -256,7 +281,7 @@ def _save_state(state: dict[str, Any]) -> None:
 			handle.flush()
 			os.fsync(handle.fileno())
 		tmp.replace(STATE_FILE)
-		_fsync_dir(DATA_DIR)
+		fsync_dir(DATA_DIR)
 	except Exception:
 		try:
 			tmp.unlink(missing_ok=True)
@@ -337,7 +362,12 @@ def _create_ssl_context(ca_file: str | None = None) -> tuple[ssl.SSLContext, str
 
 
 def _read_last_speedtest_run() -> dt.date | None:
-	"""Read the timestamp of the last speedtest run."""
+	"""Read the UTC calendar day of the last speedtest run.
+
+	Files written by older versions hold the *local* calendar day. Such a day is
+	accepted as "ran today" for the UTC day it overlaps as well, so the switch to
+	UTC does not trigger a second run (see ``_ran_speedtest_today``).
+	"""
 	path = DATA_DIR / _SPEEDTEST_LAST_RUN_FILE
 	if not path.exists():
 		return None
@@ -348,9 +378,24 @@ def _read_last_speedtest_run() -> dt.date | None:
 		try:
 			return dt.fromisoformat(raw).date()
 		except ValueError:
-			return dt.fromtimestamp(float(raw)).date()  # noqa: DTZ006  (local calendar day on purpose: pairs with the local night window in app/utils/speedtest_window.py)
-	except (ValueError, OSError):
+			return dt.fromtimestamp(float(raw), UTC).date()
+	except ValueError, OSError:
 		return None
+
+
+def _ran_speedtest_today(last_run_date: dt.date | None, today: dt.date) -> bool:
+	"""Return True when the last run counts for the UTC day ``today``.
+
+	The state file is written right after a run, so its modification time (UTC
+	day) also covers a file from an older version that stored the local day.
+	"""
+	if last_run_date == today:
+		return True
+	try:
+		mtime = (DATA_DIR / _SPEEDTEST_LAST_RUN_FILE).stat().st_mtime
+	except OSError:
+		return False
+	return dt.fromtimestamp(mtime, UTC).date() == today
 
 
 def _write_last_speedtest_run(ts: float) -> None:
@@ -362,11 +407,11 @@ def _write_last_speedtest_run(ts: float) -> None:
 		os.fchmod(fd, 0o600)
 		with os.fdopen(fd, "w", encoding="utf-8") as handle:
 			fd = -1
-			handle.write(dt.fromtimestamp(ts).date().isoformat())  # noqa: DTZ006  (local calendar day on purpose: pairs with the local night window in app/utils/speedtest_window.py)
+			handle.write(dt.fromtimestamp(ts, UTC).date().isoformat())
 			handle.flush()
 			os.fsync(handle.fileno())
 		tmp_path.replace(path)
-		_fsync_dir(DATA_DIR)
+		fsync_dir(DATA_DIR)
 	except OSError as exc:
 		_log.warning("Failed to write speedtest last run timestamp: %s", exc)
 	finally:
@@ -434,7 +479,7 @@ def _extract_command_id(data: str) -> int | None:
 		return None
 	try:
 		command_id = int(parsed.get("command_id") or 0)
-	except (TypeError, ValueError):
+	except TypeError, ValueError:
 		return None
 	return command_id if command_id > 0 else None
 
@@ -451,8 +496,7 @@ async def _run_node_speedtest(
 
 	Returns True if successful, False otherwise.
 	"""
-	from ..speedtest.guard import SpeedtestBusyError, acquire_speedtest_run_lease_async
-	from ..speedtest.tester import run_speedtest
+	from gillbates_speedtest import SpeedtestBusyError, acquire_speedtest_run_lease_async, run_speedtest
 
 	_log.info("NODE_SPEEDTEST starting bandwidth measurement")
 
@@ -466,7 +510,7 @@ async def _run_node_speedtest(
 	progress_task: asyncio.Task[None] | None = None
 	latest_event: dict[str, Any] | None = None
 
-	def progress_callback(event: dict) -> None:
+	async def progress_callback(event: dict) -> None:
 		"""Send latest progress update to master with bounded in-flight work."""
 		nonlocal progress_task, latest_event
 		latest_event = dict(event)
@@ -505,6 +549,8 @@ async def _run_node_speedtest(
 
 	try:
 		async with lease:
+			# No country_resolver: a node loads no GeoIP data, so the lookup would only cost
+			# DNS time. The package falls back to the ccTLD; a missing code is optional.
 			result = await asyncio.wait_for(run_speedtest(progress_callback=progress_callback), timeout=_SPEEDTEST_RUN_TIMEOUT_SECONDS)
 			if result.get("status") == "ok":
 				lease.mark_success()
@@ -549,16 +595,16 @@ async def _speedtest_scheduler(
 ) -> None:
 	"""Background task that runs daily speedtests during the night window.
 
-	Runs once per day, during 02:00-04:00 local time with jitter to avoid
+	Runs once per day, during 02:00-04:00 UTC with jitter to avoid
 	all nodes running simultaneously.
 	"""
 	while not shutdown_event.is_set():
 		try:
 			# Check if we already ran a test today
 			last_run_date = await asyncio.to_thread(_read_last_speedtest_run)
-			today = dt.now().date()  # noqa: DTZ005  (local calendar day on purpose: pairs with the local night window in app/utils/speedtest_window.py)
+			today = dt.now(UTC).date()
 
-			if last_run_date == today:
+			if await asyncio.to_thread(_ran_speedtest_today, last_run_date, today):
 				# Already ran today. seconds_until_night_window() returns 0.0 for
 				# the whole night window, so without skipping here the loop would
 				# re-run speedtests back-to-back until the window closes. Sleep
@@ -699,16 +745,8 @@ async def _read_limited_response(response: httpx.Response, limit: int) -> bytes:
 async def main() -> None:
 	"""Primary async entry point for the node daemon."""
 	print_banner_once()
-	logging.basicConfig(
-		level=os.environ.get("LOG_LEVEL", "INFO").upper(),
-		format="%(asctime)s | %(levelname)-8s | %(name)s | %(message)s",
-		datefmt="%Y-%m-%d %H:%M:%S",
-	)
-	for name in ("aiosqlite", "httpcore", "httpx", "hpack"):
-		logging.getLogger(name).setLevel(logging.WARNING)
+	setup_logging(os.environ.get("LOG_LEVEL", "INFO"))
 	_log.info("WireBuddy Node Daemon starting...")
-
-	await asyncio.to_thread(_check_firewall_dns_rules)
 
 	def _prepare_data_dir() -> None:
 		DATA_DIR.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -716,8 +754,7 @@ async def main() -> None:
 		# that may already exist with looser permissions.
 		DATA_DIR.chmod(0o700)
 
-	# mkdir and chmod are blocking syscalls; the firewall check above already
-	# offloads its filesystem work the same way.
+	# mkdir and chmod are blocking syscalls, so keep them off the event loop.
 	await asyncio.to_thread(_prepare_data_dir)
 
 	try:
@@ -820,15 +857,7 @@ async def main() -> None:
 		_log.info("Received signal %s, shutting down...", signal.Signals(sig).name)
 		shutdown_event.set()
 
-	def _fallback_signal_handler(_sig: int, _frame: object) -> None:
-		loop.call_soon_threadsafe(shutdown_event.set)
-
-	for sig in (signal.SIGTERM, signal.SIGINT):
-		try:
-			loop.add_signal_handler(sig, _request_shutdown, sig)
-		except (NotImplementedError, RuntimeError):
-			signal.signal(sig, _fallback_signal_handler)
-
+	install_loop_handlers(loop, _request_shutdown)
 	node_state: dict[str, Any] = {
 		"api_secret": api_secret,
 		"config_version": current_config_version,
@@ -923,7 +952,6 @@ async def main() -> None:
 				if enroll_config is not None:
 					try:
 						current_config_version = await asyncio.to_thread(apply_config, enroll_config)
-						await asyncio.to_thread(_check_firewall_dns_rules)
 						if current_config_version is not None:
 							node_state["config_version"] = current_config_version
 							await asyncio.to_thread(_save_state, node_state)
@@ -1628,8 +1656,6 @@ async def _pull_config(
 	_log.info("Received config from master: peers=%d interfaces=%d", len(peers), len(interfaces))
 	new_version = await asyncio.to_thread(apply_config, config)
 	_log.info("Applied new config (version=%s...)", new_version[:16] if new_version else "none")
-	# Check/fix firewall rules now that wg0 exists
-	await asyncio.to_thread(_check_firewall_dns_rules)
 	return new_version
 
 
@@ -1638,7 +1664,7 @@ def _get_uptime() -> float | None:
 	try:
 		with Path("/proc/uptime").open(encoding="ascii") as f:
 			return float(f.read().split()[0])
-	except (OSError, ValueError):
+	except OSError, ValueError:
 		return None
 
 

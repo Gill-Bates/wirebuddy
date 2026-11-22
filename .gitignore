@@ -15,6 +15,7 @@ build/
 full_codebase_*
 *.backup
 *.codex
+/.github/skills/
 
 # Data
 data/
@@ -63,6 +64,11 @@ settings.env
 
 # Documentation
 site/
-.mkdocs-cache/
+.cache/
 docs/changelog.md
 docs/license.md
+
+# Browser regression suite (tests/layout)
+/node_modules/
+/test-results/
+/playwright-report/

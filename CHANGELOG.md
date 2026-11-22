@@ -1,3 +1,26 @@
+## [2.0.0] - 2026-11-22
+
+- ``New`` Breaking: update your Compose file. `TZ` is gone (WireBuddy always schedules in UTC), `KILL` is added for the bundled Unbound, `/dev/net/tun` is no longer mapped, and the container runs with an init process and a process limit.
+- ``New`` Breaking: `WIREBUDDY_MTLS_PROXIES` (default: none) now decides which proxies may send the client-certificate fingerprint; `WIREBUDDY_TRUSTED_PROXIES` no longer covers it.
+- ``New`` Node enrollment tokens are Ed25519-signed: put the public key (`wbpk2:…`) in `WIREBUDDY_ENROLLMENT_VERIFY_KEY` instead of the master secret. Old tokens still work but are deprecated.
+- ``New`` The theme button cycles through Auto (default), Light and Dark, and country flags are served by WireBuddy instead of the jsDelivr CDN.
+- ``New`` Dates, times and numbers follow your browser's locale and time zone; the DNS log API returns ISO 8601 UTC timestamps.
+- ``New`` Scheduling uses UTC: the nightly backup runs at 03:00 UTC (no more drift), the speed test window follows UTC days, and "disable ad-blocker today" lasts until 00:00 UTC.
+- ``New`` Manual speed tests are limited to one per 30 seconds (HTTP 429). Log lines read `<UTC time> | LEVEL | wirebuddy | message`, and running from source requires Python 3.14.
+- ``Fix`` The update notice also appears on a prerelease once its final release is out, GeoIP data appears without a restart (and is retried hourly if unusable), dashboard network rates no longer spike after a counter reset, and the DNS trend chart loads for the 1-year range.
+- ``Fix`` Parallel peer and interface changes no longer create duplicate addresses, overlapping subnets or lost peers, a failed peer create leaves no orphan row, and an exhausted address pool returns HTTP 409 without internal details. Nodes restore all previous configs after a failed update and download IPv6 peer configs correctly.
+- ``Fix`` Metrics and DNS logs: corrupted time-series files are skipped, parallel writes no longer fail, traffic is no longer double-counted after a failed ASN write, and log lines written just before a rotation are no longer lost.
+- ``Fix`` Failed scheduled backups, blocklist updates and maintenance runs are counted as failed and retried with backoff; timed-out commands leave no child processes and shutdown no longer waits for a stuck job.
+- ``Fix`` Upgrading from before multi-node support no longer fails with "no such column: node_id", pages left open for over an hour no longer fail with a CSRF error, and the HTTPS listener falls back to the self-signed certificate when a Let's Encrypt certificate is not yet valid or does not cover the host name.
+- ``Fix`` Settings no longer offer the rejected "No Logs" step for traffic metrics, and the Add User form states the real username rules.
+- ``Security`` WireBuddy refuses to start when its data or time-series directory is a symlink or stays group- or world-writable.
+- ``Security`` Node authentication requires HTTPS under the same conditions as enrollment, a node can only report statistics for its own or roaming peers, nodes no longer open DNS to any destination, and anonymous enrollment requests no longer create the signing key.
+- ``Security`` Client isolation is replaced atomically, creating a peer fails when the stored preshared key cannot be decrypted, and interface and dashboard-layout changes are rate-limited.
+- ``Security`` Client IPs behind trusted proxies come from the real TCP peer, CGNAT addresses (100.64.0.0/10) are refused as outbound targets, and custom regex rules that could stall DNS ingestion are rejected.
+
+<details markdown="1">
+<summary>Previous versions...</summary>
+
 ## [1.7.0] - 2026-10-28
 
 - ``New`` The dashboard is customizable: drag and resize tiles, add or remove widgets, and reset to the default layout. Layouts are saved per user (existing ones migrate automatically and are included in backups); editing needs a viewport of 992 px or more.
@@ -16,9 +39,6 @@
 - ``Security`` Peer enable/disable/migrate and client isolation now fail closed: if a change cannot be applied to the live interface or firewall, the request fails and the stored state is rolled back.
 - ``Security`` Regenerating a node's token now fully re-enrolls it: the old tunnel peer is removed from the live interface and config, stale control commands are purged, and the node's event stream is closed.
 - ``Security`` Rate limiting is counted before authentication and IPv6 clients share one counter per /64; Unbound now runs from fixed absolute paths with locked-down config permissions.
-
-<details markdown="1">
-<summary>Previous versions...</summary>
 
 ## [1.6.2] - 2026-10-01
 
@@ -182,7 +202,7 @@
 
 - ``New`` Node mode is here! 🎉 WIrebuddy can now run on multiple instances at the same time! [↗](https://gill-bates.github.io/wirebuddy/features/multi-node/)
 - ``New`` DNS logging can be enabled or disabled for each peer [↗](https://gill-bates.github.io/wirebuddy/features/dns/#per-peer-dns-query-logging)
-- ``New`` Added the ``tzdata`` package to support time zones [↗](https://gill-bates.github.io/wirebuddy/configuration/environment/#tz)
+- ``New`` Added the ``tzdata`` package to support time zones (the `TZ` setting was removed in 2.0.0)
 - ``New`` PSK is now enabled by default [↗](https://gill-bates.github.io/wirebuddy/configuration/wireguard/#preshared-keys)
 - ``Fix`` Python dependencies updated
 - ``Fix`` Fixed an issue with the test server selection for the speed test

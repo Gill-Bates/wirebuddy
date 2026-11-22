@@ -78,10 +78,7 @@
             // Show published date if available
             if (res.published_at) {
                 publishedRow.classList.remove('d-none');
-                const pubDate = new Date(res.published_at);
-                publishedAtEl.textContent = pubDate.toLocaleDateString(undefined, {
-                    year: 'numeric', month: 'short', day: 'numeric'
-                });
+                publishedAtEl.textContent = window.WBFormat.format(res.published_at, 'date');
             } else {
                 publishedRow.classList.add('d-none');
             }

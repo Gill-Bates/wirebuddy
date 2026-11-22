@@ -14,7 +14,6 @@ Linux host. The repository contains the master Compose file at
 - Linux host (amd64 or arm64)
 - Docker Engine and Docker Compose
 - WireGuard support in the host kernel (Linux 5.6+ or a compatible module)
-- `/dev/net/tun`
 - IP forwarding enabled on the host
 
 Containers share the host kernel. The image therefore supplies `wg` and
@@ -37,7 +36,7 @@ python3 -c "import secrets; print(secrets.token_urlsafe(32))"
 ```
 
 The key must contain at least 32 UTF-8 bytes. Keep it unchanged across
-container recreations; changing or losing it makes encrypted WireGuard and OTP
+container recreations; changing or losing it makes encrypted WireGuard and 2FA
 secrets unreadable.
 
 Start WireBuddy from the repository root:
@@ -75,13 +74,17 @@ The supplied Compose service uses:
 
 - `network_mode: host`
 - all capabilities dropped, then re-added individually: `NET_ADMIN` for
-  WireGuard, plus `NET_BIND_SERVICE`, `SETUID`, `SETGID`, `CHOWN`, and
-  `DAC_OVERRIDE` for the bundled Unbound resolver
+  WireGuard, plus `NET_BIND_SERVICE`, `SETUID`, `SETGID`, `CHOWN`,
+  `DAC_OVERRIDE`, and `KILL` for the bundled Unbound resolver
 - `no-new-privileges:true`
-- `/dev/net/tun`
+- `init: true` and a limit of 512 processes (`pids_limit`)
 - a 40-second stop grace period
+- with `init: true`, `docker stop` reports exit code 143 instead of 0; this has
+  no effect with `restart: always`, but matters for `restart: on-failure` or
+  exit-code monitoring
 - bounded JSON-file log rotation
-- a readiness health check against `/ready`
+- the image's readiness health check against `/ready` (the Compose file
+  defines no health check of its own)
 
 Do not switch the service to bridge or macvlan networking. WireBuddy verifies
 host networking at startup because interface management and conntrack
@@ -122,6 +125,9 @@ WIREBUDDY_PORT=8080
 Because host networking is used, no Docker `ports:` mapping is required. The
 selected port must be free on the host.
 
+Without `WIREBUDDY_HOST`, the default bind address is unchanged: the
+**Only listen on Localhost** setting decides, otherwise `0.0.0.0`.
+
 ## Reverse Proxy
 
 The Docker entrypoint trusts forwarded headers from loopback by default. For a
@@ -135,6 +141,17 @@ trust and the application-level client-IP/HTTPS-cookie detection. A wildcard
 WIREBUDDY_TRUSTED_PROXIES=192.168.1.10/32
 WIREBUDDY_PUBLIC_ORIGIN=https://vpn.example.com
 ```
+
+With a proxy on the same host (for example Caddy), WireBuddy does not need to
+be reachable from the network. Bind it to loopback and set the public origin in
+`.env`; the Compose file passes both variables through:
+
+```bash
+WIREBUDDY_HOST=127.0.0.1
+WIREBUDDY_PUBLIC_ORIGIN=https://vpn.example.com
+```
+
+Leave `WIREBUDDY_HOST` unset when clients connect to WireBuddy directly.
 
 See [Environment Variables](../configuration/environment.md) and the
 [Installation Guide](installation.md#reverse-proxy) for complete proxy
@@ -155,10 +172,11 @@ docker run -d \
   --cap-add SETGID \
   --cap-add CHOWN \
   --cap-add DAC_OVERRIDE \
+  --cap-add KILL \
   --security-opt no-new-privileges:true \
   --stop-timeout 40 \
-  --device /dev/net/tun:/dev/net/tun \
-  -e TZ=Etc/UTC \
+  --init \
+  --pids-limit 512 \
   -e WIREBUDDY_SECRET_KEY="$(python3 -c 'import secrets; print(secrets.token_urlsafe(32))')" \
   -e WIREBUDDY_DATA_DIR=/app/data \
   -v wirebuddy-data:/app/data \
@@ -177,7 +195,7 @@ Two unauthenticated probes are available:
 - `/ready`: readiness including database, scheduler, and expected DNS
   ingestion state
 
-The supplied Compose file and the image health check use `/ready`, so the
+The image health check, which the supplied Compose file inherits, uses `/ready`, so the
 container is reported unhealthy when the database, the scheduler or the DNS log
 ingestion stops working. Use `/health` where you only need to know that the
 process answers.
@@ -225,8 +243,8 @@ docker compose --env-file .env -f docker/docker-compose.yml config
 docker inspect wirebuddy --format '{{.HostConfig.NetworkMode}}'
 ```
 
-The final command must print `host`. Also verify that `/dev/net/tun` exists,
-the configured GUI port is free, and the secret key has at least 32 bytes.
+The final command must print `host`. Also verify that the host kernel provides
+WireGuard (`modprobe wireguard`), the configured GUI port is free, and the secret key has at least 32 bytes.
 
 ## Next Steps
 

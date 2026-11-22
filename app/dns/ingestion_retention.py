@@ -37,7 +37,7 @@ def normalize_dns_log_retention_days(value: int | str | None) -> int:
 	"""Normalize and validate DNS log retention days."""
 	try:
 		parsed = int(value) if value is not None else DEFAULT_DNS_LOG_RETENTION_DAYS
-	except (TypeError, ValueError):
+	except TypeError, ValueError:
 		return DEFAULT_DNS_LOG_RETENTION_DAYS
 	return parsed if parsed in DNS_LOG_RETENTION_OPTIONS else DEFAULT_DNS_LOG_RETENTION_DAYS
 

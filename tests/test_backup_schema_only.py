@@ -446,3 +446,82 @@ def test_scheduled_backup_uses_persisted_options(tmp_path: Path) -> None:
 	assert manifest["tsdb_range"] == "90d"
 	assert "data/data.sql" in members
 	assert any(name.startswith("data/tsdb/") for name in members)
+
+
+# ─── scheduled backup time (03:00 UTC, independent of the process zone) ─────
+_PROCESS_ZONES = ["UTC", "Europe/Berlin", "America/New_York", "Pacific/Auckland"]
+
+
+@pytest.fixture
+def process_zone(monkeypatch):
+	"""Run a test under a given process ``TZ`` and restore it afterwards."""
+	import time
+
+	def _set(name: str) -> None:
+		monkeypatch.setenv("TZ", name)
+		time.tzset()
+
+	yield _set
+	monkeypatch.undo()
+	time.tzset()
+
+
+@pytest.mark.parametrize("zone", _PROCESS_ZONES)
+def test_backup_delay_ignores_the_process_zone(zone, process_zone):
+	from app.tasks.scheduler_config import _seconds_until_backup_time as delay
+
+	process_zone(zone)
+	assert delay(now=datetime(2026, 6, 15, 12, 0, tzinfo=UTC)) == 15 * 3600.0
+	assert delay(now=datetime(2026, 6, 15, 2, 0, tzinfo=UTC)) == 3600.0
+
+
+@pytest.mark.parametrize("day", [(2026, 3, 29), (2026, 10, 25), (2026, 3, 8), (2026, 11, 1)])
+def test_backup_delay_has_no_dst_jump(day):
+	"""The EU and US transition days are ordinary 24 h days in UTC."""
+	from app.tasks.scheduler_config import _seconds_until_backup_time as delay
+
+	three = datetime(*day, 3, 0, tzinfo=UTC)
+	assert delay(now=three) == 24 * 3600.0
+	assert delay(now=three - timedelta(hours=1)) == 3600.0
+
+
+def test_backup_delay_is_strictly_in_the_future_and_honours_min_gap():
+	from app.tasks.scheduler_config import _seconds_until_backup_time as delay
+
+	almost = datetime(2026, 6, 15, 2, 59, 50, tzinfo=UTC)
+	assert delay(now=almost) == 10.0
+	# Finishing 10 s before 03:00 must not schedule a second run for the same night.
+	assert delay(now=almost, min_gap=60.0) == 24 * 3600.0 + 10.0
+
+
+def test_backup_delay_accepts_non_utc_aware_reference():
+	from datetime import timezone
+
+	from app.tasks.scheduler_config import _seconds_until_backup_time as delay
+
+	plus_two = timezone(timedelta(hours=2))
+	assert delay(now=datetime(2026, 6, 15, 14, 0, tzinfo=plus_two)) == 15 * 3600.0
+
+
+def test_backup_runs_at_three_utc_every_day_even_after_a_long_run():
+	from app.tasks.scheduler_config import _seconds_until_backup_time as delay
+
+	now = datetime(2026, 3, 26, 12, 0, tzinfo=UTC)
+	starts = []
+	for day in range(12):
+		start = now + timedelta(seconds=delay(now=now, min_gap=60.0))
+		starts.append(start)
+		# A long run (up to 5 h, beyond the following 03:00 on some days).
+		now = start + timedelta(seconds=300 + day * 1500)
+	assert all((s.hour, s.minute, s.second) == (3, 0, 0) and s.utcoffset() == timedelta(0) for s in starts)
+	assert len({s.date() for s in starts}) == len(starts)  # never twice in one night
+
+
+def test_scheduler_config_does_not_read_the_process_zone():
+	import inspect
+
+	from app.tasks import scheduler_config
+
+	source = inspect.getsource(scheduler_config)
+	assert "TZ" not in source.replace("UTC", "")
+	assert "zoneinfo" not in source.lower()

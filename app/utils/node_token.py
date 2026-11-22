@@ -6,11 +6,15 @@
 
 """Enrollment token generation and verification for Master-Node architecture.
 
-Token format: base64url(JSON_PAYLOAD.HMAC_HEX)
+Two wire formats exist; the format is decided by the literal prefix:
 
-The payload contains the master URL, node identity, and a one-time API
-secret.  The HMAC-SHA256 signature (keyed with WIREBUDDY_SECRET_KEY)
-prevents forgery and guarantees the token was issued by this master.
+- v2 (default): ``wb2.<b64url payload>.<b64url Ed25519 signature>``. Signed with
+  a private key that exists only on the master; nodes verify with the pinned
+  public key and cannot forge tokens.
+- v1 (legacy, deprecated): base64url(JSON_PAYLOAD.HMAC_HEX), HMAC-SHA256 keyed
+  with a key derived from WIREBUDDY_SECRET_KEY, which nodes must hold to verify.
+
+The payload contains the master URL, node identity, and a one-time API secret.
 """
 
 from __future__ import annotations
@@ -28,8 +32,10 @@ from urllib.parse import urlsplit, urlunsplit
 from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey, Ed25519PublicKey
 from cryptography.x509.oid import ExtendedKeyUsageOID, NameOID
 
+from . import enrollment_signing
 from .key_domains import derive_enrollment_hmac_key
 
 MAX_TOKEN_AGE = timedelta(hours=24)
@@ -44,6 +50,7 @@ _NODE_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$")
 _API_SECRET_RE = re.compile(r"^[A-Za-z0-9_-]{32,128}$")
 
 _REQUIRED_PAYLOAD_FIELDS = frozenset({"master_url", "node_id", "node_name", "api_secret", "created_at"})
+_V2_PAYLOAD_FIELDS = _REQUIRED_PAYLOAD_FIELDS | {"v", "kid"}
 _REQUIRED_PAYLOAD_FIELD_TYPES = {
 	"master_url": str,
 	"node_id": str,
@@ -217,27 +224,8 @@ def generate_enrollment_token(
 	return _encode_token(payload_json, signature), api_secret
 
 
-def verify_enrollment_token(
-	token_string: str,
-	secret_key: str,
-	max_age: timedelta | None = MAX_TOKEN_AGE,
-) -> dict[str, str]:
-	"""Decode and verify an enrollment token.
-
-	Returns the parsed payload dict on success.
-	Raises ValueError on any verification failure.
-	"""
-	_require_secret_key(secret_key)
-	payload_json, signature = _decode_token(token_string)
-	expected = _sign_payload(payload_json, secret_key)
-
-	if not hmac.compare_digest(expected, signature):
-		raise ValueError("Token signature verification failed")
-
-	try:
-		payload = json.loads(payload_json)
-	except json.JSONDecodeError as exc:
-		raise ValueError("Token payload is not valid JSON") from exc
+def _validate_payload(payload: object, max_age: timedelta | None) -> dict:
+	"""Validate field types, normalize values and enforce the token lifetime."""
 	if not isinstance(payload, dict):
 		raise ValueError("Token payload must be a JSON object")
 
@@ -264,6 +252,97 @@ def verify_enrollment_token(
 		raise ValueError("Token has expired")
 
 	return payload
+
+
+def token_version(token_string: str) -> int:
+	"""Return the protocol version of a token from its prefix (2 for ``wb2.``, else 1)."""
+	return 2 if enrollment_signing.is_token_v2(token_string) else 1
+
+
+def verify_enrollment_token(
+	token_string: str,
+	secret_key: str,
+	max_age: timedelta | None = MAX_TOKEN_AGE,
+) -> dict[str, str]:
+	"""Decode and verify a legacy (v1, HMAC) enrollment token.
+
+	Returns the parsed payload dict on success.
+	Raises ValueError on any verification failure, including a v2 token.
+	"""
+	_require_secret_key(secret_key)
+	if enrollment_signing.is_token_v2(token_string):
+		raise ValueError("Token is not a legacy v1 token")
+	payload_json, signature = _decode_token(token_string)
+	expected = _sign_payload(payload_json, secret_key)
+
+	if not hmac.compare_digest(expected, signature):
+		raise ValueError("Token signature verification failed")
+
+	try:
+		payload = json.loads(payload_json)
+	except json.JSONDecodeError as exc:
+		raise ValueError("Token payload is not valid JSON") from exc
+	return _validate_payload(payload, max_age)
+
+
+def generate_enrollment_token_v2(
+	master_url: str,
+	node_id: str,
+	node_name: str,
+	signing_key: Ed25519PrivateKey,
+) -> tuple[str, str]:
+	"""Generate a v2 enrollment token signed with the master's Ed25519 key.
+
+	Returns:
+		(token_string, api_secret); same one-time-credential rules as v1.
+	"""
+	master_url = _normalize_master_url(master_url)
+	node_id = _validate_node_id(node_id)
+	node_name = _validate_node_name(node_name)
+
+	api_secret = secrets.token_urlsafe(32)
+	payload = {
+		"v": 2,
+		"kid": enrollment_signing.key_id(signing_key.public_key()),
+		"master_url": master_url,
+		"node_id": node_id,
+		"node_name": node_name,
+		"api_secret": api_secret,
+		"created_at": datetime.now(UTC).isoformat(),
+	}
+	payload_bytes = _serialize_payload(payload).encode("utf-8")
+	signature = enrollment_signing.sign(payload_bytes, signing_key)
+	return enrollment_signing.encode_token_v2(payload_bytes, signature), api_secret
+
+
+def verify_enrollment_token_v2(
+	token_string: str,
+	public_key: Ed25519PublicKey,
+	max_age: timedelta | None = MAX_TOKEN_AGE,
+) -> dict[str, str]:
+	"""Verify a v2 token against a pinned public key.
+
+	Raises ValueError on any failure: bad encoding, signature, key id, schema
+	(unknown or missing fields, version mismatch), content or lifetime.
+	"""
+	if len(token_string) > _MAX_TOKEN_SIZE:
+		raise ValueError("Token too large")
+	payload_bytes, signature = enrollment_signing.decode_token_v2(token_string)
+	enrollment_signing.verify(payload_bytes, signature, public_key)
+
+	try:
+		payload = json.loads(payload_bytes.decode("utf-8"))
+	except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+		raise ValueError("Token payload is not valid JSON") from exc
+	if not isinstance(payload, dict):
+		raise ValueError("Token payload must be a JSON object")
+	if set(payload) != _V2_PAYLOAD_FIELDS:
+		raise ValueError("Token payload has unexpected fields")
+	if payload["v"] != 2 or isinstance(payload["v"], bool):
+		raise ValueError("Unsupported token version")
+	if payload["kid"] != enrollment_signing.key_id(public_key):
+		raise ValueError("Token was signed by a different master key")
+	return _validate_payload(payload, max_age)
 
 
 # ─────────────────────────────────────────────────────────────────────────────

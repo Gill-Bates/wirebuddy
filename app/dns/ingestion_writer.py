@@ -343,7 +343,6 @@ class DnsTsdbWriter:
 			self.batch.clear()
 			self._pending_commit = None
 			self._consecutive_flush_failures = 0
-			# Update flush timer only on success
 			self.last_flush = time.monotonic()
 		except Exception as exc:
 			self._consecutive_flush_failures += 1
@@ -467,50 +466,6 @@ class DnsTsdbWriter:
 			os.fsync(f.fileno())  # Ensure data on disk before offset update
 
 
-def _read_tail_lines(path: Path, max_lines: int) -> list[str]:
-	"""Read up to *max_lines* from end of file without loading entire file."""
-	if max_lines <= 0:
-		return []
-
-	# Use deque for O(1) prepend operations (vs O(n²) list concatenation)
-	lines: deque[bytes] = deque()
-	buffer = b""
-
-	with path.open("rb") as f:
-		f.seek(0, os.SEEK_END)
-		position = f.tell()
-		if position <= 0:
-			return []
-
-		chunk_size = 8192
-		while position > 0 and len(lines) < max_lines:
-			read_size = min(chunk_size, position)
-			position -= read_size
-			f.seek(position)
-			chunk = f.read(read_size)
-			if not chunk:
-				break
-
-			data = chunk + buffer
-			parts = data.split(b"\n")
-			buffer = parts[0]
-			complete = parts[1:]
-			if complete:
-				# O(1) prepend with deque (vs O(n) list concatenation)
-				lines.extendleft(reversed(complete))
-
-		if position == 0 and buffer:
-			lines.appendleft(buffer)
-
-	# Drop synthetic trailing empty segment when file ends with '\n'.
-	if lines and lines[-1] == b"":
-		lines.pop()
-
-	# Take last max_lines entries from deque
-	decoded: list[str] = [raw.decode("utf-8", errors="replace") for raw in list(lines)[-max_lines:]]
-	return decoded
-
-
 def _iter_lines_reverse(path: Path) -> Iterator[str]:
 	"""Yield file lines newest-first without loading the whole file into memory."""
 	with path.open("rb") as f:
@@ -542,17 +497,22 @@ def _iter_lines_reverse(path: Path) -> Iterator[str]:
 
 
 def _normalize_client_filter(client_filter: set[str] | None) -> set[str] | None:
-	"""Canonicalize filter IPs so IPv6 compression differences still match."""
-	if not client_filter:
+	"""Canonicalize filter IPs so IPv6 compression differences still match.
+
+	``None`` means "no filter". An empty set, or one holding only invalid IPs,
+	stays an (empty) filter that matches no client: it must never widen to an
+	unfiltered query.
+	"""
+	if client_filter is None:
 		return None
-	normalized = set()
+	normalized: set[str] = set()
 	for value in client_filter:
 		candidate = parse_ip_str(value)
 		if candidate:
 			normalized.add(candidate)
 		else:
 			_log.warning("DNS_READ invalid client filter IP (ignored): %s", value)
-	return normalized or None
+	return normalized
 
 
 def _query_matches_client_filter(query: dict, client_filter: set[str]) -> bool:
@@ -625,6 +585,8 @@ def read_recent_queries(
 	seen_event_ids: set[str] = set()
 	remaining = max_queries
 	normalized_filter = _normalize_client_filter(client_filter)
+	if normalized_filter is not None and not normalized_filter:
+		return []
 	since_utc = since.astimezone(UTC) if since is not None else None
 	since_day = since_utc.date().isoformat() if since_utc is not None else None
 
@@ -639,10 +601,11 @@ def read_recent_queries(
 			break
 
 		try:
-			if normalized_filter is None and since_utc is None:
-				tail_lines = _read_tail_lines(day_file, remaining)
-				# Parse in reverse order (newest first)
-				for line in reversed(tail_lines):
+			if normalized_filter is None and (since_utc is None or day_file.stem > since_day):
+				# Unfiltered fast path: no per-line checks apart from duplicate
+				# _event_ids and corrupt lines, so keep reading backwards until
+				# `remaining` unique entries are collected or the file starts.
+				for line in _iter_lines_reverse(day_file):
 					if remaining <= 0:
 						break
 					try:
@@ -652,20 +615,6 @@ def read_recent_queries(
 					if _collect_query(query, queries, seen_event_ids):
 						remaining -= 1
 				continue
-
-			if normalized_filter is None and since_utc is not None and day_file.stem > since_day:
-				tail_lines = _read_tail_lines(day_file, remaining)
-				for line in reversed(tail_lines):
-					if remaining <= 0:
-						break
-					try:
-						query = json.loads(line)
-					except json.JSONDecodeError:
-						continue
-					if _collect_query(query, queries, seen_event_ids):
-						remaining -= 1
-				continue
-
 			stop_reading = False
 			check_cutoff = since_utc is not None and day_file.stem == since_day
 			for line in _iter_lines_reverse(day_file):

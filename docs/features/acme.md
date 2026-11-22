@@ -49,10 +49,19 @@ HTTP, WireBuddy additionally starts a small plaintext listener that:
 No authenticated surface is served in clear text, so issuing and renewing
 certificates keeps working with HTTPS switched on. That listener defaults to
 port 80 and is controlled by the `gui_acme_http_port` setting; set it to `0` to
-disable it if something else already handles port 80.
+disable it if something else already handles port 80. The setting lives in the
+`settings` table of the database only, has no UI or API field, and a change
+applies on the next start. An
+invalid port, or one equal to the GUI port, also disables the listener.
 
-Certificates issued this way are picked up automatically: a valid Let's Encrypt
+Certificates issued this way are picked up automatically: a Let's Encrypt
 certificate for the configured Server FQDN replaces the self-signed fallback.
+If that certificate is expired, not yet valid, does not cover the host name, or
+does not match its private key, WireBuddy serves the self-signed certificate
+instead and logs the reason. Staging certificates are never served.
+
+The plaintext listener stays off while neither `WIREBUDDY_PUBLIC_ORIGIN` nor a
+Server FQDN is configured.
 
 !!! important "Restart required"
     Certificates are read only at startup. **Restart WireBuddy after issuing or
@@ -88,8 +97,9 @@ host path is `docker/data/certs/DOMAIN/`.
 
 ## Use the certificate
 
-WireBuddy stores the files but does not switch its Uvicorn listener to HTTPS and
-does not reconfigure or reload an external reverse proxy. Point your proxy's TLS
+Apart from the [built-in HTTPS listener](#with-the-built-in-https-listener),
+WireBuddy only stores the files; it does not reconfigure or reload an external
+reverse proxy. Point your proxy's TLS
 configuration at `fullchain.pem` and `privkey.pem`, then reload the proxy using
 its normal deployment procedure.
 

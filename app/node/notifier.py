@@ -21,9 +21,8 @@ import sqlite3
 from collections.abc import AsyncGenerator, Callable
 
 from anyio import EndOfStream
-from pydantic import TypeAdapter, ValidationError
 
-from .events import NodeCommandPayload, NodeEventBus, NodeEventType, NodeId
+from .events import NodeCommandPayload, NodeEventBus, NodeEventType, _validate_node_id
 
 _log = logging.getLogger(__name__)
 
@@ -31,22 +30,8 @@ _event_bus: NodeEventBus | None = None
 # SSE keepalive interval to prevent proxy timeouts
 _KEEPALIVE_INTERVAL = 25
 
-_node_id_adapter = TypeAdapter(NodeId)
 _SUPPORTED_DB_COMMANDS = frozenset({"config_changed", "restart", "speedtest", "removed"})
 _MAX_CONFIG_VERSION_LEN = 128
-
-
-def _validate_node_id(node_id: str) -> str:
-	"""Validate node ID to prevent injection and memory issues.
-
-	Reuses events.NodeId's format so this module can't drift out of sync
-	with what the event bus itself accepts (a mismatch here previously
-	rejected node_ids the bus considered valid).
-	"""
-	try:
-		return _node_id_adapter.validate_python(node_id)
-	except ValidationError as exc:
-		raise ValueError(f"Invalid node_id: {node_id!r}") from exc
 
 
 def _validate_config_version(version: str) -> str:

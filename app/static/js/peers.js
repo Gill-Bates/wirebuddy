@@ -11,7 +11,6 @@ if (!peersApp) {
     console.warn('peers.js loaded without #peers-app context');
 } else {
     const canManagePeers = peersApp.dataset.canManagePeers === '1';
-    const flagIconBaseUrl = peersApp.dataset.flagIconBaseUrl || 'https://cdn.jsdelivr.net/npm/flag-icons@7.3.2/flags/4x3';
 
     const ALLOWED_IPS_PRESETS = {
         full: '0.0.0.0/0, ::/0',
@@ -345,7 +344,7 @@ if (!peersApp) {
         img.className = 'peer-country-flag';
         img.alt = `${code.toUpperCase()} flag`;
         img.decoding = 'async';
-        img.src = `${flagIconBaseUrl}/${code}.svg`;
+        img.src = window.WB.flags.url(code);
         img.dataset.countryCode = code;
         img.addEventListener('error', () => img.remove(), { once: true });
         return img;

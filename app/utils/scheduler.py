@@ -50,6 +50,7 @@ class _Job:
 	initial_delay: float = 0.0
 	timeout: float | None = None  # Per-job execution timeout (None = no limit)
 	jitter_pct: float = 0.0  # Random jitter as percentage of interval (0.0 to 0.5)
+	next_delay: Callable[[], float] | None = None  # Calendar scheduling: seconds until the next run, asked after each run
 	last_success: datetime | None = None
 	last_attempt: datetime | None = None
 	run_count: int = 0
@@ -77,6 +78,8 @@ class Scheduler:
 		self._jobs: dict[str, _Job] = {}
 		self._tasks: dict[str, asyncio.Task] = {}
 		self._cancel_drain_task: asyncio.Task | None = None
+		# Tasks that survived cancellation; referenced so they are not garbage collected mid-run.
+		self._abandoned_tasks: set[asyncio.Task] = set()
 		self._stop_event: asyncio.Event | None = None
 		self._started = False
 
@@ -95,6 +98,7 @@ class Scheduler:
 		initial_delay: float = 0.0,
 		timeout: float | None = None,
 		jitter_pct: float = 0.0,
+		next_delay: Callable[[], float] | None = None,
 	) -> None:
 		"""Register a periodic job.
 
@@ -106,6 +110,10 @@ class Scheduler:
 			initial_delay: Seconds to wait before first execution
 			timeout: Per-execution timeout in seconds (None = no limit)
 			jitter_pct: Random jitter as percentage of interval (0.0 to 0.5, e.g. 0.1 = ±10%)
+			next_delay: Optional calendar rule. Called after every run and returns the seconds
+				until the next run, so wall-clock jobs (for example "daily at 03:00") do not
+				drift by run duration or jitter. ``interval_seconds`` is then only informational;
+				after a failure the retry backoff still applies as a lower bound.
 
 		Raises:
 			RuntimeError: If scheduler is already running
@@ -145,6 +153,7 @@ class Scheduler:
 			initial_delay=initial_delay,
 			timeout=timeout,
 			jitter_pct=jitter_pct,
+			next_delay=next_delay,
 		)
 
 	def remove(self, name: str) -> None:
@@ -232,7 +241,8 @@ class Scheduler:
 		"""Gracefully stop all jobs, waiting up to timeout for clean exit.
 
 		Phase 1: Set stop event and wait for tasks to finish gracefully.
-		Phase 2: Cancel any stubborn tasks that didn't stop in time.
+		Phase 2: Cancel any stubborn tasks that didn't stop in time and wait up to
+		``timeout`` again; tasks still running after that are logged and abandoned.
 
 		Args:
 			timeout: Maximum seconds to wait for tasks to finish gracefully
@@ -257,8 +267,18 @@ class Scheduler:
 				_log.warning("SCHEDULER %d tasks did not stop gracefully, forcing cancel", len(not_done))
 				for task in not_done:
 					task.cancel()
-				# Await cancelled tasks to prevent 'Task was destroyed' warnings
-				await asyncio.gather(*not_done, return_exceptions=True)
+				# Bounded drain: a job that delays or suppresses CancelledError must
+				# not block shutdown. Such tasks stay referenced (see below).
+				_, stuck = await asyncio.wait(not_done, timeout=timeout)
+				if stuck:
+					_log.error(
+						"SCHEDULER %d tasks ignored cancellation, abandoning them: %s",
+						len(stuck),
+						", ".join(sorted(t.get_name() for t in stuck)),
+					)
+					self._abandoned_tasks.update(stuck)
+					for task in stuck:
+						task.add_done_callback(self._abandoned_tasks.discard)
 
 		self._tasks.clear()
 		self._cancel_drain_task = None
@@ -331,6 +351,15 @@ class Scheduler:
 				jittered_interval=_jittered_interval(),
 				failure_jitter=_failure_jitter(),
 			)
+			if job.next_delay is not None:
+				try:
+					calendar_delay = float(job.next_delay())
+				except Exception:
+					_log.exception("SCHEDULER job=%s next_delay failed, using the fixed interval", job.name)
+					calendar_delay = job.interval_seconds
+				if not math.isfinite(calendar_delay):
+					calendar_delay = job.interval_seconds
+				next_run_local = now + max(_MIN_INTERVAL, calendar_delay, backoff)
 			if backoff > 0:
 				_log.error(
 					"SCHEDULER job=%s failed (%d consecutive), backing off %.0fs",

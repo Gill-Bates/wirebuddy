@@ -4,9 +4,6 @@
 # Copyright (C) 2026 Gill-Bates http://github.com/Gill-Bates
 #
 
-# SPDX-License-Identifier: MIT
-#
-
 """Conntrack sampling must not advance the baseline before a durable write.
 
 ``prepare_country_traffic()`` computes deltas without moving ``_ct_prev``; the
@@ -136,3 +133,67 @@ def test_single_phase_wrapper_still_advances(_reset_conntrack):
 	# Single-phase committed immediately, so an identical pass is now empty.
 	country2, _asn2 = _run([_LINE_T1])
 	assert not country2
+
+
+def test_failed_asn_write_does_not_double_count_country_bytes(_reset_conntrack, tmp_path, monkeypatch):
+	"""Country stored, ASN write fails once: the retry must not store the country bytes again."""
+	from app.tasks import scheduled
+
+	written: list[tuple[str, object]] = []
+	fail_asn_once = [True]
+
+	def fake_append(_dir, *, peer_key, metric, value, at=None, **_kw):
+		if peer_key == ct.ASN_TRAFFIC_KEY and fail_asn_once[0]:
+			fail_asn_once[0] = False
+			raise OSError("disk full")
+		written.append((peer_key, value))
+
+	def fake_aggregate(deltas, _mapping=None):
+		return ({"xx": {"rx": 800, "tx": 500}}, {"64500": {"rx": 800, "tx": 500}}) if deltas else ({}, {})
+
+	monkeypatch.setattr(scheduled.tsdb, "append_point", fake_append)
+	scheduled._pending_asn_points.clear()
+	subnets = [ipaddress.ip_network(_SUBNET)]
+	gateways = {ipaddress.ip_address(_GATEWAY)}
+
+	def _pass(line):
+		with (
+			mock.patch.object(ct, "_get_wireguard_subnets", return_value=(subnets, gateways)),
+			mock.patch.object(ct, "_read_conntrack_lines", return_value=[line]),
+			mock.patch.object(ct, "_CONNTRACK_ACCT") as acct,
+			mock.patch.object(ct, "_aggregate_traffic", side_effect=fake_aggregate),
+			mock.patch.object(ct, "_serialize_agg", side_effect=lambda agg: agg),
+		):
+			acct.read_text.return_value = "1"
+			scheduled._flush_pending_asn_points(tmp_path)
+			sample = ct.prepare_country_traffic()
+			if not sample.is_empty:
+				scheduled._persist_country_sample(tmp_path, sample, ct.commit_country_traffic)
+
+	_pass(_LINE_T0)  # baseline
+	_pass(_LINE_T1)  # country ok, ASN fails
+	_pass(_LINE_T1)  # nothing new; pending ASN point is retried
+	_pass(_LINE_T1)
+
+	countries = [v for k, v in written if k == ct.GEO_TRAFFIC_KEY]
+	asns = [v for k, v in written if k == ct.ASN_TRAFFIC_KEY]
+	assert countries == [{"xx": {"rx": 800, "tx": 500}}]
+	assert asns == [{"64500": {"rx": 800, "tx": 500}}]
+	assert not scheduled._pending_asn_points
+
+
+def test_failed_country_write_keeps_baseline_for_redelivery(_reset_conntrack, tmp_path, monkeypatch):
+	"""If the country write itself fails nothing is committed, so the sample is re-delivered."""
+	from app.tasks import scheduled
+
+	def failing_append(*_a, **_kw):
+		raise OSError("disk full")
+
+	monkeypatch.setattr(scheduled.tsdb, "append_point", failing_append)
+	scheduled._pending_asn_points.clear()
+	_prepare([_LINE_T0])
+	sample = _prepare([_LINE_T1])
+	with pytest.raises(OSError, match="disk full"):
+		scheduled._persist_country_sample(tmp_path, sample, ct.commit_country_traffic)
+	assert not _prepare([_LINE_T1]).is_empty
+	assert not scheduled._pending_asn_points

@@ -42,7 +42,7 @@ from ..db.sqlite_nodes import (
 	delete_node_interfaces,
 	get_all_nodes,
 )
-from ..db.sqlite_peers import get_all_peers
+from ..db.sqlite_peers import MAX_ALLOCATABLE_HOSTS, get_all_peers
 from ..db.sqlite_runtime import transaction
 from ..db.sqlite_settings import (
 	get_dns_blocklist_enabled,
@@ -58,6 +58,7 @@ from ..dns.unbound_config import write_local_data_overrides
 from ..node import notifier as node_notifier
 from ..utils.config import WG_CONFIG_PATH
 from ..utils.deps import get_config, get_conn, get_tsdb_dir
+from ..utils.rate_limit import RATE_LIMIT_HEAVY, rate_limit
 from ..utils.vault import encrypt as vault_encrypt
 from .auth import require_admin
 from .response import ok_response
@@ -196,7 +197,7 @@ def _get_default_route_iface() -> str:
 					detected = parts[0]
 					_log.debug("AUTO_DETECTED_DEFAULT_ROUTE_IFACE iface=%s", detected)
 					return detected
-	except (OSError, StopIteration, IndexError):
+	except OSError, StopIteration, IndexError:
 		pass
 	_log.warning("Could not detect default route interface, falling back to eth0")
 	return "eth0"
@@ -213,12 +214,15 @@ def _script_fingerprint(script: str | None) -> str:
 def _validate_interface_addresses(
 	address: str,
 	address6: str | None,
+	*,
+	enforce_pool_size: bool = True,
 ) -> tuple[ipaddress.IPv4Interface, str | None]:
 	"""Validate the already-resolved IPv4/IPv6 address strings for an interface.
 
 	Shared by create and update: callers resolve their own effective address
 	(create uses the payload directly; update falls back to the existing row
-	for PATCH-omitted fields) before calling this.
+	for PATCH-omitted fields) before calling this. ``enforce_pool_size`` rejects
+	IPv4 subnets the peer allocator cannot serve (larger than /16).
 
 	Raises:
 		HTTPException(422): On invalid format, wrong IP version, or a
@@ -234,6 +238,11 @@ def _validate_interface_addresses(
 		raise HTTPException(
 			status_code=422,
 			detail="address must include a subnet prefix (e.g. /24), not a /32 host address",
+		)
+	if enforce_pool_size and v4.network.num_addresses > MAX_ALLOCATABLE_HOSTS:
+		raise HTTPException(
+			status_code=422,
+			detail=f"address subnet is too large for peer allocation (at most {MAX_ALLOCATABLE_HOSTS} addresses, i.e. /16)",
 		)
 
 	if address6:
@@ -456,19 +465,30 @@ def _persist_new_interface_sync(
 	conf_file = config_path / f"{payload.name}.conf"
 	# Convert unique-name conflicts into a client error.
 	try:
-		db_create_interface(
-			conn,
-			name=payload.name,
-			private_key=private_key_encrypted,
-			public_key=public_key,
-			address=payload.address,
-			address6=v6_str,
-			listen_port=payload.listen_port,
-			dns=payload.dns,
-			post_up=post_up,
-			post_down=post_down,
-			show_on_dashboard=payload.show_on_dashboard,
-		)
+		# Re-check conflicts under the write lock; the pre-check in the handler is
+		# only fail-fast and a concurrent create could have taken the range since.
+		with transaction(conn, immediate=True):
+			_check_subnet_and_port_conflicts(
+				ipaddress.ip_interface(payload.address).network,
+				ipaddress.ip_interface(v6_str).network if v6_str else None,
+				payload.listen_port,
+				list_interfaces(conn),
+			)
+			db_create_interface(
+				conn,
+				name=payload.name,
+				private_key=private_key_encrypted,
+				public_key=public_key,
+				address=payload.address,
+				address6=v6_str,
+				listen_port=payload.listen_port,
+				dns=payload.dns,
+				post_up=post_up,
+				post_down=post_down,
+				show_on_dashboard=payload.show_on_dashboard,
+			)
+	except HTTPException:
+		raise
 	except sqlite3.IntegrityError:
 		raise HTTPException(status_code=409, detail=f"Interface '{payload.name}' already exists")
 	except Exception:
@@ -539,6 +559,14 @@ def _update_interface_sync(
 
 	try:
 		with transaction(conn, immediate=True):
+			# Re-check under the write lock (see _persist_new_interface_sync).
+			_check_subnet_and_port_conflicts(
+				ipaddress.ip_interface(address).network,
+				ipaddress.ip_interface(address6).network if address6 else None,
+				listen_port,
+				list_interfaces(conn),
+				exclude_name=name,
+			)
 			db_update_interface(
 				conn,
 				name=name,
@@ -563,6 +591,8 @@ def _update_interface_sync(
 				conn=conn,
 				pepper=pepper,
 			)
+	except HTTPException:
+		raise
 	except Exception:
 		_log.exception("INTERFACE_UPDATE_FAILED name=%s", name)
 		if old_config_content and conf_file.exists():
@@ -649,7 +679,7 @@ def _delete_interface_sync(
 	return public_keys, node_versions, cleanup_warning
 
 
-@router.post("/interfaces", status_code=201)
+@router.post("/interfaces", status_code=201, dependencies=[Depends(rate_limit(RATE_LIMIT_HEAVY))])
 async def create_interface(
 	request: Request,
 	payload: InterfaceCreate,
@@ -809,10 +839,8 @@ async def create_interface(
 	return ok_response(data=data)
 
 
-# PUT replaces the full resource; PATCH handles partial updates.
-# Current implementation uses PATCH semantics (partial update via model_fields_set).
-# Removing @router.put decorator to avoid semantic confusion.
-@router.patch("/interfaces/{name}", status_code=200)
+# PATCH only: the handler applies partial updates (model_fields_set), which PUT would misstate.
+@router.patch("/interfaces/{name}", status_code=200, dependencies=[Depends(rate_limit(RATE_LIMIT_HEAVY))])
 async def update_interface(
 	request: Request,
 	name: str,
@@ -839,7 +867,8 @@ async def update_interface(
 		raise HTTPException(status_code=422, detail="listen_port cannot be null")
 
 	v6_str = payload.address6 if "address6" in fields_set else iface["address6"]
-	v4, v6_str = _validate_interface_addresses(new_address, v6_str)
+	# Only a changed address is size-checked: an existing larger interface stays editable.
+	v4, v6_str = _validate_interface_addresses(new_address, v6_str, enforce_pool_size=new_address != iface["address"])
 
 	new_dns = payload.dns if "dns" in fields_set else iface["dns"]
 	new_post_up = payload.post_up if "post_up" in fields_set else iface["post_up"]
@@ -951,7 +980,7 @@ async def update_interface(
 	return ok_response(data=data)
 
 
-@router.delete("/interfaces/{name}", status_code=200)
+@router.delete("/interfaces/{name}", status_code=200, dependencies=[Depends(rate_limit(RATE_LIMIT_HEAVY))])
 async def delete_interface(
 	name: str,
 	conn: sqlite3.Connection = Depends(get_conn),
@@ -1090,7 +1119,7 @@ async def get_next_subnet(
 				# Check if it matches 10.13.X.Y pattern
 				if octets[0] == 10 and octets[1] == 13:
 					used_v4_octets.add(octets[2])
-			except (ValueError, TypeError):
+			except ValueError, TypeError:
 				pass
 
 		# Parse IPv6 address
@@ -1103,7 +1132,7 @@ async def get_next_subnet(
 				if parts[0] == "fd13" and parts[1] == "0013":
 					# Third group is the variable part
 					used_v6_groups.add(int(parts[2], 16))
-			except (ValueError, TypeError):
+			except ValueError, TypeError:
 				pass
 
 		# Collect used port

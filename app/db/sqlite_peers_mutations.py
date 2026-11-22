@@ -18,6 +18,7 @@ from ..utils import vault
 from ..utils.config import get_config
 from ..utils.time import utcnow
 from .sqlite_interfaces import get_interface
+from .sqlite_peers import allocate_peer_ip
 from .sqlite_runtime import UNSET, UnsetType, transaction
 
 _VALID_ALLOWED_IPS_MODES = frozenset({"full", "split", "custom"})
@@ -41,6 +42,12 @@ _ALLOWED_UPDATE_ASSIGNMENTS = frozenset(
 )
 
 _log = logging.getLogger(__name__)
+
+
+class PeerPoolExhaustedError(ValueError):
+	"""No peer address can be allocated for the interface."""
+
+
 _MAX_BLOCKLIST_IDS = 128
 _MAX_BLOCKLIST_ID_LENGTH = 128
 _MAX_BLOCKLIST_IDS_BYTES = 8192
@@ -260,8 +267,14 @@ def create_peer(
 	client_isolation: bool = False,
 	node_id: str | None = None,
 	allow_all_nodes: bool = False,
+	allocate_address: bool = False,
 ) -> int:
 	"""Create a new peer and return the peer ID.
+
+	allocate_address: Pick the next free ``peer_address`` of *interface* inside the
+	               same ``BEGIN IMMEDIATE`` transaction as the insert, so the
+	               address is reserved once this returns. Mutually exclusive with
+	               *peer_address*; raises ``PeerPoolExhaustedError`` when none is free.
 
 	blocklist_ids: JSON array of enabled blocklist IDs (e.g., ["ads", "porn"]).
 	               None means all blocklists enabled.
@@ -272,6 +285,8 @@ def create_peer(
 	now = utcnow()
 	public_key = _validate_public_key(public_key)
 	allowed_ips = _normalize_cidr_csv(allowed_ips, field="allowed_ips", max_entries=_MAX_ALLOWED_IPS_ENTRIES)
+	if allocate_address and peer_address is not None:
+		raise ValueError("peer_address and allocate_address are mutually exclusive")
 	peer_address = (
 		_normalize_cidr_csv(peer_address, field="peer_address", max_entries=_MAX_PEER_ADDRESS_ENTRIES, interface_mode=True)
 		if peer_address is not None
@@ -298,6 +313,11 @@ def create_peer(
 			raise ValueError(f"Peer with public_key {public_key!r} already exists")
 		if get_interface(conn, interface) is None:
 			raise ValueError(f"Unknown interface: {interface!r}")
+		if allocate_address:
+			allocated = allocate_peer_ip(conn, interface)
+			if allocated is None:
+				raise PeerPoolExhaustedError(f"No available IP addresses in interface {interface!r} subnet")
+			peer_address = _normalize_cidr_csv(allocated, field="peer_address", max_entries=_MAX_PEER_ADDRESS_ENTRIES, interface_mode=True)
 		if peer_address is not None:
 			_assert_peer_address_not_in_use(conn, interface=interface, peer_address=peer_address)
 		cur = conn.execute(

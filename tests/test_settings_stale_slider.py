@@ -4,9 +4,6 @@
 # Copyright (C) 2026 Gill-Bates http://github.com/Gill-Bates
 #
 
-# SPDX-License-Identifier: MIT
-#
-
 """Static wiring checks: the peer stale threshold is a range slider that sends real months."""
 
 from __future__ import annotations

@@ -14,10 +14,12 @@ isolate peers from the host, additional INPUT rules would be required.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import logging
 import re
 import sqlite3
+import weakref
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from ipaddress import IPv4Address, IPv6Address, ip_address, ip_interface
@@ -27,6 +29,7 @@ from starlette.concurrency import run_in_threadpool
 from ..db.sqlite_interfaces import (
 	get_interface,
 )
+from ..db.sqlite_peers import iter_peer_address_ips
 
 _log = logging.getLogger(__name__)
 MAX_CHAIN = 28
@@ -38,6 +41,7 @@ __all__ = [
 	"cleanup_client_isolation",
 	"client_iso_chain_name",
 	"extract_peer_ips",
+	"shutdown_interface_fail_closed",
 ]
 
 # Linux interface name validation (IFNAMSIZ=16, but 15 chars max)
@@ -54,6 +58,7 @@ _FW_CONFIG = {
 
 # Maximum stale rules to remove in one pass (prevents infinite loops)
 MAX_STALE_RULES = 50
+_SHUTDOWN_TIMEOUT_SECONDS = 30.0
 
 # iptables stderr phrases that are benign for a given operation. A rule-install
 # operation (-I/-A) has no benign failure: a missing DROP rule is a policy bypass.
@@ -116,14 +121,17 @@ def _sorted_ips(ip_list: set[str]) -> list[str]:
 	return sorted(ip_list, key=_sort_key)
 
 
-def client_iso_chain_name(interface_name: str, *, ipv6: bool = False) -> str:
+def client_iso_chain_name(interface_name: str, *, ipv6: bool = False, staging: bool = False) -> str:
 	"""Return deterministic firewall chain name for client-isolation rules.
+
+	``staging=True`` names the scratch chain a new rule set is built in before
+	it replaces the live chain (same length, different prefix).
 
 	SECURITY: Truncates the base name BEFORE appending the hash suffix to
 	ensure the hash is never clipped. This prevents collisions when different
 	interface names normalize to the same truncated base.
 	"""
-	prefix = "WBISO6_" if ipv6 else "WBISO4_"
+	prefix = ("WBIST" if staging else "WBISO") + ("6_" if ipv6 else "4_")
 
 	# Hash suffix for collision prevention (6 hex chars = 24 bits)
 	hash_suffix = hashlib.sha256(interface_name.encode()).hexdigest()[:6]
@@ -145,18 +153,11 @@ def extract_peer_ips(peer_address: str | None) -> tuple[str | None, str | None]:
 		return None, None
 	v4: str | None = None
 	v6: str | None = None
-	for part in str(peer_address).split(","):
-		item = part.strip()
-		if not item:
-			continue
-		try:
-			addr = ip_interface(item)
-		except ValueError:
-			continue
-		if isinstance(addr.ip, IPv4Address):
-			v4 = str(addr.ip)
+	for ip in iter_peer_address_ips(peer_address):
+		if isinstance(ip, IPv4Address):
+			v4 = str(ip)
 		else:
-			v6 = str(addr.ip)
+			v6 = str(ip)
 	return v4, v6
 
 
@@ -294,12 +295,31 @@ def _load_isolation_inputs(
 	return v4_subnet, v6_subnet, isolated_v4, isolated_v6
 
 
+_APPLY_LOCKS: weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, dict[str, asyncio.Lock]] = weakref.WeakKeyDictionary()
+
+
 async def apply_client_isolation_runtime(
 	interface_name: str,
 	conn: sqlite3.Connection,
 	run_wg_command: Callable[..., Awaitable[tuple[int, str, str]]] | None = None,
 ) -> IsolationResult:
 	"""Apply per-peer client-isolation rules to a running interface.
+
+	Applies for one interface run one at a time: they share one staging chain,
+	and the inputs are read inside the lock so the last apply sees the newest
+	state. Process-local, like the rest of the control plane (single worker).
+	"""
+	locks = _APPLY_LOCKS.setdefault(asyncio.get_running_loop(), {})
+	async with locks.setdefault(interface_name, asyncio.Lock()):
+		return await _apply_client_isolation_unlocked(interface_name, conn, run_wg_command)
+
+
+async def _apply_client_isolation_unlocked(
+	interface_name: str,
+	conn: sqlite3.Connection,
+	run_wg_command: Callable[..., Awaitable[tuple[int, str, str]]] | None = None,
+) -> IsolationResult:
+	"""Apply per-peer client-isolation rules (caller holds the interface lock).
 
 	Returns:
 	    IsolationResult with counts of successful/failed rule applications.
@@ -378,31 +398,63 @@ async def apply_client_isolation_runtime(
 			result.errors.append(str(e))
 			return
 
-		# Create/flush chain
-		await _run_ignore(cmd, "-N", chain)
-		await _run_ignore(cmd, "-F", chain)
+		stg = client_iso_chain_name(interface_name, ipv6=ipv6, staging=True)
 
-		# Remove stale FORWARD jump rules (don't count cleanup toward success/failure)
-		for _ in range(MAX_STALE_RULES):
-			code_del, _, _ = await run_wg_command(cmd, "-D", "FORWARD", "-i", interface_name, "-o", interface_name, "-j", chain)
-			if code_del != 0:
-				break
-		else:
-			_log.warning("CLIENT_ISO: hit removal limit (%d) for chain %s", MAX_STALE_RULES, chain)
+		async def _drop_jumps(target: str) -> None:
+			# Cleanup only: not counted toward success/failure.
+			for _ in range(MAX_STALE_RULES):
+				code_del, _, _ = await run_wg_command(cmd, "-D", "FORWARD", "-i", interface_name, "-o", interface_name, "-j", target)
+				if code_del != 0:
+					return
+			_log.warning("CLIENT_ISO: hit removal limit (%d) for chain %s", MAX_STALE_RULES, target)
 
-		if isolated_ips:
-			await _run_ignore(cmd, "-I", "FORWARD", "1", "-i", interface_name, "-o", interface_name, "-j", chain)
-			for ip in _sorted_ips(set(isolated_ips)):
-				try:
-					safe_ip = _validate_ip_or_subnet(ip, "peer IP")
-				except ValueError as e:
-					_log.error("CLIENT_ISO: %s", e)
-					result.errors.append(str(e))
-					continue
-				await _run_ignore(cmd, "-A", chain, "-s", f"{safe_ip}{host_mask}", "-d", safe_subnet, "-j", "DROP")
-				await _run_ignore(cmd, "-A", chain, "-s", safe_subnet, "-d", f"{safe_ip}{host_mask}", "-j", "DROP")
-		else:
+		async def _discard(target: str) -> None:
+			await _drop_jumps(target)
+			await run_wg_command(cmd, "-F", target)
+			await run_wg_command(cmd, "-X", target)
+
+		if not isolated_ips:
+			await _discard(stg)
+			await _drop_jumps(chain)
+			await _run_ignore(cmd, "-F", chain)
 			await _run_ignore(cmd, "-X", chain)
+			return
+
+		# Atomic replacement: build the complete rule set in a staging chain and
+		# only then switch FORWARD over. Any failure before the switch discards the
+		# staging chain and leaves the live chain (and its isolation) untouched.
+		await _discard(stg)
+		failed_before = result.rules_failed
+		await _run_ignore(cmd, "-N", stg)
+		await _run_ignore(cmd, "-F", stg)
+		ips: list[str] = []
+		for ip in _sorted_ips(set(isolated_ips)):
+			try:
+				ips.append(_validate_ip_or_subnet(ip, "peer IP"))
+			except ValueError as e:
+				_log.error("CLIENT_ISO: %s", e)
+				result.errors.append(str(e))
+		if len(ips) != len(set(isolated_ips)):
+			await _discard(stg)
+			return
+		for safe_ip in ips:
+			if result.rules_failed > failed_before:
+				break
+			await _run_ignore(cmd, "-A", stg, "-s", f"{safe_ip}{host_mask}", "-d", safe_subnet, "-j", "DROP")
+			await _run_ignore(cmd, "-A", stg, "-s", safe_subnet, "-d", f"{safe_ip}{host_mask}", "-j", "DROP")
+		if result.rules_failed == failed_before:
+			await _run_ignore(cmd, "-I", "FORWARD", "1", "-i", interface_name, "-o", interface_name, "-j", stg)
+		if result.rules_failed > failed_before:
+			await _discard(stg)
+			return
+
+		# Switched over. Retire the previous chain, then give the new one the
+		# canonical name that PostUp/PostDown and cleanup know. A failed rename
+		# leaves the staging chain live (still isolating) and is reported.
+		await _drop_jumps(chain)
+		await run_wg_command(cmd, "-F", chain)
+		await run_wg_command(cmd, "-X", chain)
+		await _run_ignore(cmd, "-E", stg, chain)
 
 	# Apply for both IP versions
 	await _apply_for_version(v4_subnet, isolated_v4, ipv6=False)
@@ -435,16 +487,43 @@ async def cleanup_client_isolation(
 	for ipv6 in (False, True):
 		config = _FW_CONFIG["v6" if ipv6 else "v4"]
 		cmd = config["cmd"]
-		chain = client_iso_chain_name(interface_name, ipv6=ipv6)
+		# The staging chain can outlive a failed atomic swap, so remove it too.
+		for chain in (client_iso_chain_name(interface_name, ipv6=ipv6), client_iso_chain_name(interface_name, ipv6=ipv6, staging=True)):
+			# Remove all FORWARD jump rules pointing to our chain
+			for _ in range(MAX_STALE_RULES):
+				code, _, _ = await run_wg_command(cmd, "-D", "FORWARD", "-i", interface_name, "-o", interface_name, "-j", chain)
+				if code != 0:
+					break
 
-		# Remove all FORWARD jump rules pointing to our chain
-		for _ in range(MAX_STALE_RULES):
-			code, _, _ = await run_wg_command(cmd, "-D", "FORWARD", "-i", interface_name, "-o", interface_name, "-j", chain)
-			if code != 0:
-				break
-
-		# Flush and delete the chain (ignore errors if chain doesn't exist)
-		await run_wg_command(cmd, "-F", chain)
-		await run_wg_command(cmd, "-X", chain)
+			# Flush and delete the chain (ignore errors if chain doesn't exist)
+			await run_wg_command(cmd, "-F", chain)
+			await run_wg_command(cmd, "-X", chain)
 
 	_log.debug("CLIENT_ISO cleanup completed for %s", interface_name)
+
+
+async def shutdown_interface_fail_closed(
+	interface_name: str,
+	run_wg_command: Callable[..., Awaitable[tuple[int, str, str]]] | None = None,
+) -> bool:
+	"""Bring an interface down because its isolation could not be enforced.
+
+	Returns True only when ``wg-quick down`` succeeded (isolation chains are then
+	removed); False when the interface may still be running without isolation.
+	"""
+	if not _IFACE_RE.fullmatch(interface_name):
+		return False
+	if run_wg_command is None:
+		from .wireguard_utils import run_wg_command as _run_wg_command
+
+		run_wg_command = _run_wg_command
+	try:
+		code, _, stderr = await asyncio.wait_for(run_wg_command("wg-quick", "down", interface_name), timeout=_SHUTDOWN_TIMEOUT_SECONDS)
+	except (TimeoutError, OSError) as exc:
+		_log.error("CLIENT_ISO fail-closed shutdown of %s failed: %s", interface_name, exc)
+		return False
+	if code != 0:
+		_log.error("CLIENT_ISO fail-closed shutdown of %s failed, it may run WITHOUT isolation: %s", interface_name, stderr)
+		return False
+	await cleanup_client_isolation(interface_name, run_wg_command)
+	return True

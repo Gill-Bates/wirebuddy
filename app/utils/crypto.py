@@ -74,7 +74,6 @@ def verify_password(password: str, password_hash: str) -> bool:
 	Uses constant-time comparison to prevent timing attacks.
 	"""
 	try:
-		# Parse the hash format
 		parts = password_hash.split("$")
 		if len(parts) != 3:
 			return False
@@ -110,7 +109,7 @@ def verify_password(password: str, password_hash: str) -> bool:
 		# Constant-time comparison
 		return hmac.compare_digest(dk, stored_hash)
 
-	except (ValueError, IndexError, TypeError):
+	except ValueError, IndexError, TypeError:
 		return False
 
 

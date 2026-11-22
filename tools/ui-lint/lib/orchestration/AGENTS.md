@@ -1,5 +1,5 @@
 <!-- Parent: ../AGENTS.md -->
-<!-- Generated: 2026-09-21 | Updated: 2026-09-21 -->
+<!-- Generated: 2026-09-21 | Updated: 2026-11-22 -->
 # orchestration
 
 ## Purpose
@@ -21,20 +21,12 @@ Facade and small runner for the extended audits: re-exports console, axe, perfor
 
 ### Testing Requirements
 
-- Covered by `tests/orchestration/audit-runtime.spec.js`, `tests/audit-helpers.spec.js`. Run `cd tools/ui-lint && npx playwright test <spec>` (no playwright.config file; defaults apply).
-
-### Common Patterns
-
-- No special constraints beyond the parent directory guidance.
+- Covered by `tests/orchestration/audit-runtime.spec.js`, `tests/audit-helpers.spec.js`. Run `cd tools/ui-lint && npx playwright test <spec>`.
 
 ## Dependencies
 
 ### Internal
 
 - `../accessibility/`, `../browsers/`, `../console/`, `../dom/`, `../fonts/`, `../performance/`, `../visual/`
-
-### External
-
-- No special constraints beyond the parent directory guidance.
 
 <!-- MANUAL: Any manually added notes below this line are preserved on regeneration -->

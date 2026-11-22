@@ -60,7 +60,7 @@ ACME_DIRECTORY_STAGING = "https://acme-staging-v02.api.letsencrypt.org/directory
 # Domain name validation pattern (RFC 1123 hostname)
 # Used by CertificateRequest model and delete_certificate path parameter
 _DOMAIN_PATTERN = r"^[a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?)*$"
-_ACME_TOKEN_RE = re.compile(r"^[A-Za-z0-9_-]{1,256}$")
+ACME_TOKEN_RE = re.compile(r"^[A-Za-z0-9_-]{1,256}$")
 
 # Challenge TTL in seconds (10 minutes)
 CHALLENGE_TTL = 600
@@ -510,7 +510,6 @@ class ACMEClient:
 		# Calculate current key thumbprint
 		current_thumbprint = self._get_jwk_thumbprint()
 
-		# Check for existing account URL
 		self.account_url = await asyncio.to_thread(self._load_existing_account_url, current_thumbprint)
 		if self.account_url:
 			_log.info("Using existing ACME account: %s", self.account_url)
@@ -674,7 +673,6 @@ class ACMEClient:
 
 	def save_certificate(self, domain: str, cert_pem: bytes, key_pem: bytes, is_staging: bool = False) -> PathLib:
 		"""Save certificate, chain, and key to disk."""
-		# Create domain directory
 		domain_dir = self.certs_dir / domain
 		domain_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
 
@@ -734,7 +732,7 @@ def _read_valid_challenges(challenge_file: PathLib) -> dict[str, dict]:
 	try:
 		content = challenge_file.read_text()
 		data = json.loads(content) if content else {}
-	except (OSError, json.JSONDecodeError):
+	except OSError, json.JSONDecodeError:
 		return {}
 	now = time.time()
 	valid: dict[str, dict] = {token: entry for token, entry in data.items() if isinstance(entry, dict) and entry.get("expires", 0) > now}
@@ -977,7 +975,6 @@ async def request_certificate(
 				finally:
 					await asyncio.to_thread(_release_domain_lock, account_lock_fd)
 
-				# Create order
 				order_url, order = await client.order_certificate(req.domain)
 				_log.info("Created order: %s", order_url)
 
@@ -988,7 +985,6 @@ async def request_certificate(
 				auth_url = order["authorizations"][0]
 				authorization = await client.get_authorization(auth_url)
 
-				# Get HTTP-01 challenge
 				token, key_auth = client.get_http01_challenge(authorization)
 
 				# Store challenge response (both in-memory and file)
@@ -1111,7 +1107,7 @@ async def serve_challenge(
 	Configure your reverse proxy to forward this path.
 	"""
 	# Validate token format to prevent log spam
-	if not _ACME_TOKEN_RE.fullmatch(token):
+	if not ACME_TOKEN_RE.fullmatch(token):
 		raise HTTPException(status_code=404, detail="Invalid token format")
 
 	key_auth = await asyncio.to_thread(get_challenge_response, token, certs_dir)

@@ -371,7 +371,7 @@ def _get_wireguard_subnets() -> tuple[
 						iface_result.returncode,
 						(iface_result.stderr or "").strip(),
 					)
-			except (FileNotFoundError, subprocess.TimeoutExpired):
+			except FileNotFoundError, subprocess.TimeoutExpired:
 				pass
 
 		# Method 3: read interface addresses from the application database.
@@ -497,7 +497,7 @@ def _parse_line(line: str) -> dict[str, Any] | None:
 			"bytes_orig": int(fields["bytes"][0]),  # client → internet (upload / tx)
 			"bytes_reply": int(fields["bytes"][1]),  # internet → client (download / rx)
 		}
-	except (ValueError, IndexError):
+	except ValueError, IndexError:
 		return None
 
 

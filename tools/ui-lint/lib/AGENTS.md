@@ -1,5 +1,5 @@
 <!-- Parent: ../AGENTS.md -->
-<!-- Generated: 2026-09-21 | Updated: 2026-10-27 -->
+<!-- Generated: 2026-09-21 | Updated: 2026-11-22 -->
 # lib
 
 ## Purpose
@@ -46,7 +46,12 @@ Shared implementation modules for the UI linter: token-driven configuration, des
 | `design-tokens/themes/` | Theme overlays and drift diffing (see `design-tokens/themes/AGENTS.md`) |
 | `dom/` | DOM mutation-stability observer (see `dom/AGENTS.md`) |
 | `dom-runtime/` | DOM snapshot engine (see `dom-runtime/AGENTS.md`) |
-| `findings/engine/, policies/, scopes/, severity/, explainability/, exports/` | Findings evaluation pipeline (each has its own `AGENTS.md`) |
+| `findings/engine/` | Findings pipeline core: policy evaluation, dedup, correlation, severity scoring (see `findings/engine/AGENTS.md`) |
+| `findings/policies/` | Declarative finding policies per area (`build*Policy`) (see `findings/policies/AGENTS.md`) |
+| `findings/scopes/` | Page-scope predicates (route/device) (see `findings/scopes/AGENTS.md`) |
+| `findings/severity/` | Severity vocabulary, weights, escalation/downgrade (see `findings/severity/AGENTS.md`) |
+| `findings/explainability/` | Finding explanations and remediation hints (see `findings/explainability/AGENTS.md`) |
+| `findings/exports/` | Public findings exports used by `findings.mjs` (see `findings/exports/AGENTS.md`) |
 | `fonts/` | Font loading, FOUT, icon-font checks (see `fonts/AGENTS.md`) |
 | `orchestration/` | Extended-audit runner and facade (see `orchestration/AGENTS.md`) |
 | `performance/` | Performance metric collectors (see `performance/AGENTS.md`) |
@@ -77,7 +82,7 @@ Shared implementation modules for the UI linter: token-driven configuration, des
 
 ### Internal
 
-- `../rules/` (rules import `rule-registry.mjs` and diagnostics helpers), `/opt/wirebuddy/app/static` CSS (design tokens)
+- `../rules/` (rules import `rule-registry.mjs` and diagnostics helpers), `app/static/css` (design tokens)
 
 ### External
 

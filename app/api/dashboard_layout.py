@@ -27,6 +27,7 @@ from ..db.sqlite_dashboard import (
 	set_dashboard_layout,
 )
 from ..utils.deps import get_conn
+from ..utils.rate_limit import RATE_LIMIT_API, rate_limit
 from .auth import get_current_user
 from .response import OkResponse, ok_response
 
@@ -106,7 +107,12 @@ async def get_layout(
 	return ok_response(data={"layout": stored})
 
 
-@router.put("/layout", response_model=OkResponse[dict[str, object]])
+# One PUT per finished edit session ("Done"), so RATE_LIMIT_API (120/min) never touches drag/resize.
+@router.put(
+	"/layout",
+	response_model=OkResponse[dict[str, object]],
+	dependencies=[Depends(rate_limit(RATE_LIMIT_API))],
+)
 async def put_layout(
 	body: DashboardLayout,
 	conn: sqlite3.Connection = Depends(get_conn),
@@ -124,7 +130,11 @@ async def put_layout(
 	return ok_response(data={"layout": layout})
 
 
-@router.delete("/layout", response_model=OkResponse[dict[str, object]])
+@router.delete(
+	"/layout",
+	response_model=OkResponse[dict[str, object]],
+	dependencies=[Depends(rate_limit(RATE_LIMIT_API))],
+)
 async def delete_layout(
 	conn: sqlite3.Connection = Depends(get_conn),
 	user: sqlite3.Row = Depends(get_current_user),

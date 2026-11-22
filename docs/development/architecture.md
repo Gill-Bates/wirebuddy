@@ -93,8 +93,10 @@ graph TB
 
 - **Master**: Full application with web UI, API, and database
 - **Nodes**: Lightweight WireGuard-only servers with sync daemon
-- **Sync Protocol**: HTTPS with mutual certificate authentication
-- **Config Distribution**: Pull-based model with version tracking
+- **Sync Protocol**: HTTPS with a per-node Bearer API secret; the node certificate
+  fingerprint is checked only behind a trusted mTLS proxy
+- **Config Distribution**: Pull-based model with version tracking; the master pushes
+  change notifications over SSE
 
 ## Technology Stack
 
@@ -124,6 +126,11 @@ points therefore reference it as a factory:
 ```bash
 uvicorn app:create_app --factory --host 0.0.0.0 --port 8000
 ```
+
+This starts the bare application. The real TCP peer address that
+`WIREBUDDY_MTLS_PROXIES` is checked against is only captured by
+`python -m app.server`; started directly, the node mTLS fingerprint header is
+always ignored, and uvicorn's own `--proxy-headers` option applies.
 
 ### Router Pattern
 
@@ -381,13 +388,13 @@ script per page (`dashboard.js`, `peers.js`, `traffic.js`, `dns-page.js`,
 | Module | Responsibility |
 |---|---|
 | `api.js` | The single `api(method, url, data)` wrapper: same-origin enforcement, CSRF header, `401` redirect to `/login` |
-| `core/` | `dom.js`, `logger.js`, `design-tokens.js` — primitives shared by every page |
-| `components/` | Reusable widgets such as `retention-slider.js` |
+| `core/` | `dom.js`, `flags.js`, `format.js` — primitives shared by every page |
 | `base-ui.js`, `modal.js`, `toast.js`, `theme.js`, `ui-state.js` | Chrome shared across templates |
 | `reconnect.js` | Backs off and retries while the backend is unreachable |
 
-Page scripts go through `api()` rather than calling `fetch` directly, so CSRF and
-session-expiry handling exist in exactly one place.
+Page scripts make their JSON API calls through `api()`, so CSRF and session-expiry
+handling live in one place; direct `fetch` calls are limited to cases `api()` does
+not cover, such as binary downloads and the reconnect probe.
 
 ### Chart Integration
 
@@ -408,7 +415,9 @@ out on purpose), and a runtime stage with Unbound, iptables, conntrack, and
 
 The image starts through `ENTRYPOINT ["/entrypoint.sh"]`, which branches on
 `SERVER_MODE`: `master` reads the GUI host/port out of the SQLite `settings`
-table and starts Uvicorn, while `node` execs the enrollment daemon instead.
+table (overridable with `WIREBUDDY_HOST`/`WIREBUDDY_PORT`) and execs
+`python -m app.server`, which serves plain HTTP
+or the built-in HTTPS listener; `node` execs the enrollment daemon instead.
 
 The container runs as **root**. WireGuard interface management, iptables, and
 Unbound's privilege drop all need capabilities that an unprivileged UID cannot
@@ -423,8 +432,20 @@ services:
   wirebuddy:
     image: giiibates/wirebuddy:latest
     network_mode: host
+    init: true
+    pids_limit: 512
+    cap_drop:
+      - ALL
     cap_add:
       - NET_ADMIN
+      - NET_BIND_SERVICE
+      - SETUID
+      - SETGID
+      - CHOWN
+      - DAC_OVERRIDE
+      - KILL
+    security_opt:
+      - no-new-privileges:true
     volumes:
       - ./data:/app/data
     environment:
@@ -437,7 +458,7 @@ services:
 
 - SQLite WAL mode for concurrent reads
 - Indexes on frequently queried columns
-- Connection pooling (AsyncIO)
+- One `sqlite3` connection per request; blocking work runs in a worker thread
 
 ### Caching
 
@@ -448,16 +469,16 @@ services:
 ### Async Operations
 
 - FastAPI async handlers
-- Async database queries (aiosqlite)
-- Background tasks (BackgroundTasks)
+- aiosqlite for the periodic SQLite maintenance jobs
+- Scheduled jobs on the in-process scheduler (`app/tasks/`)
 
 ## Scalability
 
 The control plane is deliberately a **single process on a single host**. The job
 queue, rate limiter, and session/MFA caches live in process memory, so a second
-Uvicorn worker would make that state diverge; `WIREBUDDY_SKIP_APPLICATION_LOCK`
-guards the data directory against a second control plane instead of coordinating
-one. SQLite is local and not replicated.
+Uvicorn worker would make that state diverge. An application lock on the data
+directory refuses a second control plane instead of coordinating one
+(`WIREBUDDY_SKIP_APPLICATION_LOCK` bypasses it). SQLite is local and not replicated.
 
 VPN capacity scales out horizontally through [nodes](../features/multi-node.md):
 data-plane traffic is distributed across node servers while configuration stays
@@ -466,11 +487,13 @@ is not.
 
 ## Monitoring & Observability
 
-Logging is plain-text and human-oriented, not JSON: `app/main.py`
-installs a colored formatter on a TTY and a humanizing formatter otherwise, both
-of which normalize noisy third-party messages. Standard levels apply
+Logging is plain-text and human-oriented, not JSON: every record, uvicorn's
+included, is one line `<UTC time> | LEVEL | wirebuddy | message` with control
+characters escaped. Warnings and errors go to stderr, everything else to stdout;
+color is used only on a TTY (`NO_COLOR` and `FORCE_COLOR` apply), and noisy
+aiosqlite messages are rewritten into readable text. Standard levels apply
 (`LOG_LEVEL`), and security-relevant events — logins, MFA and passkey changes,
-password changes, administrative mutations — are written to the same stream.
+password changes, administrative mutations — are written to the same log.
 
 There is no Prometheus exporter, metrics endpoint family, or built-in alerting.
 Integrations consume the authenticated REST endpoints and the `/health` and

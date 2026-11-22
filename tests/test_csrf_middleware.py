@@ -4,9 +4,6 @@
 # Copyright (C) 2026 Gill-Bates http://github.com/Gill-Bates
 #
 
-# SPDX-License-Identifier: MIT
-#
-
 """Characterisation tests for the double-submit CSRF middleware.
 
 The middleware runs in front of a minimal app so every decision it makes is
@@ -66,11 +63,47 @@ def test_safe_method_passes_and_issues_a_token_cookie(app):
 	assert response.json()["csrf"] in cookie
 
 
-def test_existing_token_is_reused_without_a_new_cookie(app):
+def test_existing_token_is_kept_and_its_cookie_lifetime_refreshed_on_safe_requests(app):
 	response = _send(app, "GET", "/ui/dashboard", cookies={"csrf_token": TOKEN})
 
 	assert response.json()["csrf"] == TOKEN
+	cookie = response.headers["set-cookie"]
+	assert cookie.startswith(f"csrf_token={TOKEN};")
+	assert f"Max-Age={csrf._CSRF_COOKIE_MAX_AGE}" in cookie
+
+
+def test_unsafe_request_does_not_touch_the_token_cookie(app):
+	response = _send(app, "POST", "/ui/x", cookies=SESSION, headers={"Origin": BASE, "X-CSRF-Token": TOKEN})
+
+	assert response.status_code == 200
 	assert "set-cookie" not in response.headers
+
+
+def test_long_browser_session_keeps_one_token_and_still_validates(app):
+	# Every safe view re-sends the same token with a fresh Max-Age, so the browser never drops it.
+	for _ in range(12):
+		response = _send(app, "GET", "/ui/dashboard", cookies={"csrf_token": TOKEN})
+		assert response.json()["csrf"] == TOKEN
+		cookie = response.headers["set-cookie"]
+		assert cookie.startswith(f"csrf_token={TOKEN};") and f"Max-Age={csrf._CSRF_COOKIE_MAX_AGE}" in cookie
+
+	response = _send(app, "POST", "/ui/x", cookies=SESSION, headers={"Origin": BASE, "X-CSRF-Token": TOKEN})
+	assert response.status_code == 200
+
+
+@pytest.mark.parametrize(
+	"headers",
+	[
+		{"Origin": BASE},
+		{"Origin": BASE, "X-CSRF-Token": "wrong"},
+		{"Origin": "http://evil.test", "X-CSRF-Token": TOKEN},
+	],
+)
+def test_refreshed_session_still_rejects_bad_mutations(app, headers):
+	_send(app, "GET", "/ui/dashboard", cookies={"csrf_token": TOKEN})
+	response = _send(app, "POST", "/ui/x", cookies=SESSION, headers=headers)
+
+	assert response.status_code == 403
 
 
 def test_same_origin_post_with_matching_header_passes(app):

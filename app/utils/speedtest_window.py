@@ -4,18 +4,20 @@
 # Copyright (C) 2026 Gill-Bates http://github.com/Gill-Bates
 #
 
-"""Speedtest scheduling calculations shared between master and nodes."""
+"""Speedtest scheduling calculations shared between master and nodes (UTC only)."""
 
 import random
 import time
-from datetime import datetime as dt
-from datetime import timedelta
+from datetime import UTC, date, datetime, timedelta
 
 
-def local_wall_clock_timestamp(day, hour: int) -> float:
-	"""Return the local timestamp for a wall-clock hour using system DST rules."""
-	wall_time = dt(day.year, day.month, day.day, hour, 0, 0)
-	return time.mktime(wall_time.timetuple())
+def utc_hour_timestamp(day: date, hour: int) -> float:
+	"""Return the epoch timestamp of ``hour``:00 UTC on ``day``.
+
+	UTC has no DST, so every day has exactly one such slot and the result does
+	not depend on the process time zone.
+	"""
+	return datetime(day.year, day.month, day.day, hour, 0, 0, tzinfo=UTC).timestamp()
 
 
 def seconds_until_night_window(
@@ -24,17 +26,16 @@ def seconds_until_night_window(
 	min_runtime: float = 300.0,
 	now_ts: float | None = None,
 ) -> float:
-	"""Calculate seconds until a jittered start time in the local night window.
+	"""Calculate seconds until a jittered start time in the UTC night window.
 
 	If currently inside the window with enough remaining time, returns 0.0
 	to allow immediate start.
 	"""
 	now_time = time.time() if now_ts is None else now_ts
-	now_local = dt.fromtimestamp(now_time)
-	today = now_local.date()
+	today = datetime.fromtimestamp(now_time, UTC).date()
 
-	start_today = local_wall_clock_timestamp(today, start_hour)
-	end_today = local_wall_clock_timestamp(today, end_hour)
+	start_today = utc_hour_timestamp(today, start_hour)
+	end_today = utc_hour_timestamp(today, end_hour)
 
 	if start_today <= now_time < end_today:
 		remaining = end_today - now_time
@@ -43,10 +44,10 @@ def seconds_until_night_window(
 		# Too late in current window, defer to next day
 		today += timedelta(days=1)
 
-	start_next = local_wall_clock_timestamp(today, start_hour)
+	start_next = utc_hour_timestamp(today, start_hour)
 	if now_time >= start_next:
 		today += timedelta(days=1)
-		start_next = local_wall_clock_timestamp(today, start_hour)
+		start_next = utc_hour_timestamp(today, start_hour)
 
 	# Calculate delay with jitter (0-10 min)
 	jitter = random.uniform(0.0, 600.0)  # noqa: S311  (timing jitter, not security-relevant)
@@ -65,8 +66,7 @@ def seconds_until_next_day_window(
 	re-running back-to-back.
 	"""
 	now_time = time.time() if now_ts is None else now_ts
-	now_local = dt.fromtimestamp(now_time)
-	tomorrow = now_local.date() + timedelta(days=1)
-	start_next = local_wall_clock_timestamp(tomorrow, start_hour)
+	tomorrow = datetime.fromtimestamp(now_time, UTC).date() + timedelta(days=1)
+	start_next = utc_hour_timestamp(tomorrow, start_hour)
 	jitter = random.uniform(0.0, 600.0)  # noqa: S311  (timing jitter, not security-relevant)
 	return max(0.0, (start_next - now_time) + jitter)
