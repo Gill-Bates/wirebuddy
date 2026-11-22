@@ -99,7 +99,7 @@ ARG VCS_REF
 ARG APT_CACHE_DATE
 
 LABEL maintainer="Gill-Bates <github.com/Gill-Bates>" \
-    description="WireBuddy - Lightweight WireGuard Management WebUI" \
+    description="WireBuddy - Self-hosted WireGuard management with DNS ad-blocking, multi-node clusters and traffic analytics" \
     org.opencontainers.image.version="${APP_VERSION}" \
     org.opencontainers.image.created="${BUILD_DATE}" \
     org.opencontainers.image.revision="${VCS_REF}" \

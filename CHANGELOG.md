@@ -1,3 +1,9 @@
+## [2.0.1] - 2026-xx-xx
+
+
+<details markdown="1">
+<summary>Previous versions...</summary>
+
 ## [2.0.0] - 2026-11-22
 
 - ``New`` Breaking: update your Compose file. `TZ` is gone (WireBuddy always schedules in UTC), `KILL` is added for the bundled Unbound, `/dev/net/tun` is no longer mapped, and the container runs with an init process and a process limit.
@@ -17,9 +23,6 @@
 - ``Security`` Node authentication requires HTTPS under the same conditions as enrollment, a node can only report statistics for its own or roaming peers, nodes no longer open DNS to any destination, and anonymous enrollment requests no longer create the signing key.
 - ``Security`` Client isolation is replaced atomically, creating a peer fails when the stored preshared key cannot be decrypted, and interface and dashboard-layout changes are rate-limited.
 - ``Security`` Client IPs behind trusted proxies come from the real TCP peer, CGNAT addresses (100.64.0.0/10) are refused as outbound targets, and custom regex rules that could stall DNS ingestion are rejected.
-
-<details markdown="1">
-<summary>Previous versions...</summary>
 
 ## [1.7.0] - 2026-10-28
 

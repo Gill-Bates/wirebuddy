@@ -4,7 +4,7 @@
 # Copyright (C) 2026 Gill-Bates http://github.com/Gill-Bates
 #
 
-"""WireBuddy – Lightweight WireGuard Management WebUI."""
+"""WireBuddy – Self-hosted WireGuard management with DNS ad-blocking, multi-node clusters and traffic analytics."""
 
 from __future__ import annotations
 

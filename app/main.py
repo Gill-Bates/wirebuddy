@@ -1214,7 +1214,7 @@ def create_app() -> FastAPI:
 
 	app = FastAPI(
 		title="WireBuddy",
-		description="Lightweight WireGuard Management WebUI",
+		description="Self-hosted WireGuard management with DNS ad-blocking, multi-node clusters and traffic analytics",
 		version=VERSION,
 		lifespan=_lifespan,
 		docs_url=None,
