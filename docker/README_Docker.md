@@ -4,38 +4,52 @@
 Use WireGuard with ease!
 </p>
 
-[![Docker Pulls](https://img.shields.io/docker/pulls/giiibates/wirebuddy?logo=docker&logoColor=white)](https://hub.docker.com/r/giiibates/wirebuddy)
-![Platforms](https://img.shields.io/badge/Platform-linux%2Famd64%20%7C%20linux%2Farm64-lightgrey?logo=linux&logoColor=white)
+<p align="center">
+  <a href="https://github.com/Gill-Bates/wirebuddy/releases"><img src="https://img.shields.io/github/v/release/Gill-Bates/wirebuddy?logo=github&logoColor=white" alt="GitHub Release"></a>
+  <a href="https://hub.docker.com/r/giiibates/wirebuddy"><img src="https://img.shields.io/docker/pulls/giiibates/wirebuddy?logo=docker&logoColor=white" alt="Docker Pulls"></a>
+  <a href="https://hub.docker.com/r/giiibates/wirebuddy"><img src="https://img.shields.io/badge/Platform-linux%2Famd64%20%7C%20linux%2Farm64-lightgrey?logo=linux&logoColor=white" alt="Supported Platforms"></a>
+  <a href="https://github.com/Gill-Bates/wirebuddy/blob/main/LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="License"></a>
+</p>
+
+<p align="center">
+  <a href="https://gill-bates.github.io/wirebuddy/getting-started/quick-start/"><img src="https://img.shields.io/badge/Quick%20Start-168B75?style=for-the-badge&logo=docker&logoColor=white" alt="Quick Start"></a>
+  <a href="https://gill-bates.github.io/wirebuddy/"><img src="https://img.shields.io/badge/Documentation-34495E?style=for-the-badge&logo=readthedocs&logoColor=white" alt="Documentation"></a>
+  <a href="https://gill-bates.github.io/wirebuddy/changelog/"><img src="https://img.shields.io/badge/Changelog-34495E?style=for-the-badge&logo=keepachangelog&logoColor=white" alt="Changelog"></a>
+</p>
 
 ---
 
 A complete self-hosted VPN solution with web-based management, integrated Unbound DNS resolver, ad-blocking, real-time traffic analytics, and GeoIP visualization.
 
-![WireBuddy dashboard: nodes, connections, traffic, bandwidth, peer locations map, and speedtest history](https://raw.githubusercontent.com/Gill-Bates/wirebuddy/main/.github/img/screen_2.jpeg)
+<p align="center">
+  <img src="https://raw.githubusercontent.com/Gill-Bates/wirebuddy/main/.github/img/screen_2.jpeg" alt="WireBuddy dashboard: nodes, connections, traffic, bandwidth, peer locations map, and speedtest history" width="800"><br>
+  <em>Dashboard — network status, peer locations, and speedtest history at a glance.</em>
+</p>
 
-*Dashboard — network status, peer locations, and speedtest history at a glance.*
-
-### More screenshots
-
-![WireBuddy login screen](https://raw.githubusercontent.com/Gill-Bates/wirebuddy/main/.github/img/screen_1.jpeg)
-
-*Login — Auto/Light/Dark theme toggle, no account enumeration on failed attempts.*
-
-![WireBuddy traffic page: per-peer chart plus destination breakdown by country and ASN](https://raw.githubusercontent.com/Gill-Bates/wirebuddy/main/.github/img/screen_3.jpeg)
-
-*Traffic — per-peer RX/TX charts with destination breakdown by country and ASN.*
-
-![WireBuddy DNS ad-blocking: query stats, top blocked domains, block-rate trend, and live query log](https://raw.githubusercontent.com/Gill-Bates/wirebuddy/main/.github/img/screen_4.jpeg)
-
-*DNS ad-blocking — live query log, top blocked domains, and block-rate trend.*
-
-![WireBuddy WireGuard settings: global MTU/keepalive/PSK options, interfaces, and traffic analysis toggle](https://raw.githubusercontent.com/Gill-Bates/wirebuddy/main/.github/img/screen_5.jpeg)
-
-*WireGuard Settings — global tunnel defaults, interface management, and traffic analysis.*
-
-![WireBuddy logs settings: retention sliders and storage stats for traffic, DNS, peer, and speedtest metrics](https://raw.githubusercontent.com/Gill-Bates/wirebuddy/main/.github/img/screen_6.jpeg)
-
-*Logs — per-dataset retention and storage stats, with one-click purge.*
+<details>
+  <summary align="center"><b>More screenshots</b></summary>
+  <br>
+  <p align="center">
+    <img src="https://raw.githubusercontent.com/Gill-Bates/wirebuddy/main/.github/img/screen_1.jpeg" alt="WireBuddy login screen" width="800"><br>
+    <em>Login — Auto/Light/Dark theme toggle, no account enumeration on failed attempts.</em>
+  </p>
+  <p align="center">
+    <img src="https://raw.githubusercontent.com/Gill-Bates/wirebuddy/main/.github/img/screen_3.jpeg" alt="WireBuddy traffic page: per-peer chart plus destination breakdown by country and ASN" width="800"><br>
+    <em>Traffic — per-peer RX/TX charts with destination breakdown by country and ASN.</em>
+  </p>
+  <p align="center">
+    <img src="https://raw.githubusercontent.com/Gill-Bates/wirebuddy/main/.github/img/screen_4.jpeg" alt="WireBuddy DNS ad-blocking: query stats, top blocked domains, block-rate trend, and live query log" width="800"><br>
+    <em>DNS ad-blocking — live query log, top blocked domains, and block-rate trend.</em>
+  </p>
+  <p align="center">
+    <img src="https://raw.githubusercontent.com/Gill-Bates/wirebuddy/main/.github/img/screen_5.jpeg" alt="WireBuddy WireGuard settings: global MTU/keepalive/PSK options, interfaces, and traffic analysis toggle" width="800"><br>
+    <em>WireGuard Settings — global tunnel defaults, interface management, and traffic analysis.</em>
+  </p>
+  <p align="center">
+    <img src="https://raw.githubusercontent.com/Gill-Bates/wirebuddy/main/.github/img/screen_6.jpeg" alt="WireBuddy logs settings: retention sliders and storage stats for traffic, DNS, peer, and speedtest metrics" width="800"><br>
+    <em>Logs — per-dataset retention and storage stats, with one-click purge.</em>
+  </p>
+</details>
 
 ## Features
 
@@ -79,3 +93,9 @@ setup, see the **[Documentation](https://gill-bates.github.io/wirebuddy/getting-
 Released under the [MIT License](https://github.com/Gill-Bates/wirebuddy/blob/main/LICENSE).
 
 Maintained by [Gill-Bates](https://github.com/Gill-Bates).
+
+<p align="center">
+  <a href="https://www.buymeacoffee.com/tnsteinerx">
+    <img src="https://img.buymeacoffee.com/button-api/?text=Buy%20me%20a%20beer&emoji=%F0%9F%8D%BA&slug=tnsteinerx&button_colour=FFDD00&font_colour=000000&font_family=Cookie&outline_colour=000000&coffee_colour=ffffff" alt="Buy me a beer">
+  </a>
+</p>
